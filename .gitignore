@@ -1,0 +1,20 @@
+# 密钥与本地数据：绝不提交
+.env
+.env.*
+!.env.example
+
+# 本地运行产物（线上数据存放在 site 分支，且已加密）
+site/
+_pages/
+out/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+
+# 本地预览配置
+.claude/

@@ -1,0 +1,75 @@
+{
+  "code": "OK",
+  "message": "成功",
+  "data": {
+    "asin": "B0TEST0001",
+    "asinUrl": "",
+    "availableDate": 1745164800000,
+    "brand": "SampleBrand",
+    "brandUrl": "",
+    "bsrId": "home-garden",
+    "bsrLabel": "Home & Kitchen",
+    "bsrRank": 26865,
+    "subcategories": [
+      {
+        "rank": 3,
+        "code": "3733831",
+        "label": "Buffets & Sideboards"
+      }
+    ],
+    "createdTime": 1745344150000,
+    "dimensions": "15.7\"D x 32.7\"W x 31.7\"H",
+    "firstRatingDate": 1750176000000,
+    "imageUrl": "",
+    "lqs": 96,
+    "nodeId": 3733831,
+    "nodeIdPath": "1055398:1063306:3733781:3733831",
+    "nodeLabelPath": "Home & Kitchen:Furniture:Dining Room Furniture:Buffets & Sideboards",
+    "nodeLabelPathLocale": null,
+    "parent": "B0TEST0002",
+    "price": 1019.99,
+    "primePrice": -1.0,
+    "deliveryPrice": -1.0,
+    "coupon": "52.00",
+    "questions": null,
+    "rating": 4.3,
+    "ratings": 366,
+    "reviews": null,
+    "variantRatings": 0,
+    "variantReviews": 0,
+    "sellerId": "A0SAMPLESELLER",
+    "sellerName": "Sample Seller",
+    "fulfillment": "FBM",
+    "sellers": 1,
+    "marketplace": "US",
+    "title": "Sample furniture product title",
+    "updatedTime": 1789105711000,
+    "variations": 80,
+    "weight": "75.4 pounds",
+    "zoomImageUrl": "",
+    "skuList": [],
+    "variationList": [
+      {
+        "asin": "B0TEST0003",
+        "attribute": "Color: Jagger Camel D | Size: 1"
+      },
+      {
+        "asin": "B0TEST0004",
+        "attribute": "Color: Jagger Camel C | Size: 4"
+      },
+      {
+        "asin": "B0TEST0005",
+        "attribute": "Color: Jagger Ebony C | Size: 4"
+      }
+    ],
+    "features": [],
+    "overviews": "",
+    "badge": {
+      "bestSeller": "N",
+      "amazonChoice": "N",
+      "newRelease": "N",
+      "ebc": "Y",
+      "video": "Y"
+    }
+  }
+}

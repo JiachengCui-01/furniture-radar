@@ -1,0 +1,70 @@
+{
+  "code": "OK",
+  "message": "成功",
+  "data": {
+    "asinDetail": {
+      "asin": "B0TEST0001",
+      "title": "Sample furniture product title",
+      "brand": "SampleBrand",
+      "availableDate": 1745369400000,
+      "category": "Home & Kitchen",
+      "categoryId": "1055398",
+      "imageUrl": "",
+      "rating": 4.3,
+      "ratings": 366,
+      "trends": null,
+      "nodeIdPath": "1055398:1063306:3733781:3733831",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Dining Room Furniture:Buffets & Sideboards",
+      "subcategories": [
+        {
+          "rank": 3,
+          "code": "3733831",
+          "label": "Buffets & Sideboards"
+        }
+      ]
+    },
+    "dailyItemList": [
+      {
+        "date": "2025-08-01",
+        "bsr": 65440,
+        "sales": 17,
+        "amount": 13599,
+        "price": 800
+      },
+      {
+        "date": "2025-08-02",
+        "bsr": 64690,
+        "sales": 17,
+        "amount": 13599,
+        "price": 800
+      },
+      {
+        "date": "2025-08-03",
+        "bsr": 81260,
+        "sales": 14,
+        "amount": 11199,
+        "price": 800
+      }
+    ],
+    "monthItemList": [
+      {
+        "date": "2025-08",
+        "sales": 632,
+        "amount": 519392,
+        "price": 828
+      },
+      {
+        "date": "2025-09",
+        "sales": 676,
+        "amount": 597677,
+        "price": 902
+      },
+      {
+        "date": "2025-10",
+        "sales": 584,
+        "amount": 551461,
+        "price": 945
+      }
+    ]
+  }
+}

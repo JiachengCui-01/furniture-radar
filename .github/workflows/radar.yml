@@ -1,0 +1,158 @@
+name: 家具爆品雷达
+
+on:
+  schedule:
+    # 每天 UTC 00:17（北京时间 08:17）检查一次；距上次成功运行满 3 天（config.yaml 可改）才真正拉数据
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略 3 天间隔，立即运行"
+        type: boolean
+        default: true
+      notify:
+        description: "完成后推送钉钉"
+        type: boolean
+        default: true
+      budget:
+        description: "本期卖家精灵调用上限（留空用 config.yaml）"
+        type: string
+        default: ""
+
+permissions:
+  contents: write   # 把加密数据和报告推到 site 分支
+  pages: write      # 部署 GitHub Pages
+  id-token: write
+  actions: write    # 保活：防止 60 天无活动后定时任务被停用
+
+concurrency:
+  group: radar
+  cancel-in-progress: false
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      published: ${{ steps.run.outputs.published }}
+      report_id: ${{ steps.run.outputs.report_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 取回历史数据（site 分支，已加密）
+        run: |
+          mkdir -p site
+          if git ls-remote --exit-code --heads origin site >/dev/null 2>&1; then
+            git fetch --quiet --depth 1 origin site
+            git archive FETCH_HEAD | tar -x -C site
+          fi
+
+      - name: 运行雷达
+        id: run
+        env:
+          SELLERSPRITE_SECRET_KEY: ${{ secrets.SELLERSPRITE_SECRET_KEY }}
+          REPORT_KEY: ${{ secrets.REPORT_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          REPORT_BASE_URL: ${{ vars.REPORT_BASE_URL }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && '--force' || '' }}
+          BUDGET: ${{ github.event_name == 'workflow_dispatch' && inputs.budget || '' }}
+        run: |
+          python -m radar run --site-dir site --github-output $FORCE ${BUDGET:+--budget "$BUDGET"}
+
+      - name: 保存到 site 分支（只保留最新一次提交，仓库不会越来越大）
+        if: steps.run.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd site
+          git init -q -b site
+          git add -A
+          git -c user.name="radar-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "radar: ${{ steps.run.outputs.report_id }}"
+          for i in 1 2 3; do
+            git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site:site && break
+            sleep 5
+          done
+          rm -rf .git
+
+      - name: 准备网站文件（不包含 data/）
+        if: steps.run.outputs.published == 'true'
+        run: |
+          mkdir -p _pages
+          cp -r site/. _pages/
+          rm -rf _pages/data
+
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.run.outputs.published == 'true'
+        with:
+          path: _pages
+
+      - name: 保活
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/radar.yml/enable" || true
+
+  deploy:
+    needs: radar
+    if: needs.radar.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+  notify:
+    needs: [radar, deploy]
+    if: needs.radar.outputs.published == 'true' && (github.event_name == 'schedule' || inputs.notify)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 取回最新数据
+        run: |
+          mkdir -p site
+          git fetch --quiet --depth 1 origin site
+          git archive FETCH_HEAD | tar -x -C site
+      - name: 推送钉钉
+        env:
+          REPORT_KEY: ${{ secrets.REPORT_KEY }}
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+          REPORT_BASE_URL: ${{ vars.REPORT_BASE_URL || needs.deploy.outputs.page_url }}
+        run: python -m radar notify --site-dir site
+
+  alert:
+    needs: [radar, deploy, notify]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 钉钉失败告警（不含任何数据）
+        env:
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+        run: |
+          python -m radar alert --stage "${{ needs.radar.result != 'success' && '数据采集/分析' || needs.deploy.result != 'success' && '网站部署' || '钉钉推送' }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

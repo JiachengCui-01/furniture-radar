@@ -1,0 +1,76 @@
+{
+  "code": "OK",
+  "message": "成功",
+  "data": [
+    {
+      "nodeIdPath": "1055398:1063306",
+      "nodeLabelPath": "Home & Kitchen:Furniture",
+      "products": 199398,
+      "nodeLabelLocale": "家具",
+      "nodeLabelPathLocale": "家居用品:家具"
+    },
+    {
+      "nodeIdPath": "2972638011:553824",
+      "nodeLabelPath": "Patio, Lawn & Garden:Patio Furniture & Accessories",
+      "products": 71510,
+      "nodeLabelLocale": "庭院家具及配件",
+      "nodeLabelPathLocale": "庭院、草坪和园艺:庭院家具及配件"
+    },
+    {
+      "nodeIdPath": "1055398:1063306:1063318",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Living Room Furniture",
+      "products": 55368,
+      "nodeLabelLocale": "客厅家具",
+      "nodeLabelPathLocale": "家居用品:家具:客厅家具"
+    },
+    {
+      "nodeIdPath": "1055398:1063306:1063308",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Bedroom Furniture",
+      "products": 42528,
+      "nodeLabelLocale": "家具卧室",
+      "nodeLabelPathLocale": "家居用品:家具:家具卧室"
+    },
+    {
+      "nodeIdPath": "1055398:1063306:3733781",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Kitchen & Dining Room Furniture",
+      "products": 30413,
+      "nodeLabelLocale": "厨房",
+      "nodeLabelPathLocale": "家居用品:家具:厨房"
+    },
+    {
+      "nodeIdPath": "1055398:1063306:1063312",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Home Office Furniture",
+      "products": 26569,
+      "nodeLabelLocale": "家庭办公家具",
+      "nodeLabelPathLocale": "家居用品:家具:家庭办公家具"
+    },
+    {
+      "nodeIdPath": "1064954:1069102",
+      "nodeLabelPath": "Office Products:Office Furniture & Lighting",
+      "products": 26197,
+      "nodeLabelLocale": "办公家具",
+      "nodeLabelPathLocale": "办公产品:办公家具"
+    },
+    {
+      "nodeIdPath": "2972638011:553824:14135022011",
+      "nodeLabelPath": "Patio, Lawn & Garden:Patio Furniture & Accessories:Umbrellas & Shade",
+      "products": 24679,
+      "nodeLabelLocale": "室外伞和遮阳伞",
+      "nodeLabelPathLocale": "庭院、草坪和园艺:庭院家具及配件:室外伞和遮阳伞"
+    },
+    {
+      "nodeIdPath": "1055398:1063306:1063308:3733101",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Bedroom Furniture:Beds, Frames & Bases",
+      "products": 21310,
+      "nodeLabelLocale": "床，框架",
+      "nodeLabelPathLocale": "家居用品:家具:家具卧室:床，框架"
+    },
+    {
+      "nodeIdPath": "1055398:1063306:1063318:680098011",
+      "nodeLabelPath": "Home & Kitchen:Furniture:Living Room Furniture:Tables",
+      "products": 18820,
+      "nodeLabelLocale": "桌子",
+      "nodeLabelPathLocale": "家居用品:家具:客厅家具:桌子"
+    }
+  ]
+}

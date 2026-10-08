@@ -1,0 +1,76 @@
+{
+  "code": "OK",
+  "message": "成功",
+  "data": {
+    "guestId": null,
+    "pages": 2,
+    "page": 1,
+    "size": 20,
+    "total": 36,
+    "took": 0,
+    "url": null,
+    "order": {
+      "field": "",
+      "desc": true
+    },
+    "items": [
+      {
+        "author": "reviewer",
+        "title": "Sample furniture product title",
+        "content": "Sample review text.",
+        "date": 1788710400000,
+        "star": 3,
+        "authorLabels": [],
+        "skus": [],
+        "images": [],
+        "videos": null,
+        "likes": 0,
+        "image": true,
+        "video": false,
+        "verified": true,
+        "vine": false,
+        "free": false,
+        "experience": false
+      },
+      {
+        "author": "reviewer",
+        "title": "Sample furniture product title",
+        "content": "Sample review text.",
+        "date": 1787932800000,
+        "star": 1,
+        "authorLabels": [],
+        "skus": [],
+        "images": [],
+        "videos": null,
+        "likes": 0,
+        "image": true,
+        "video": false,
+        "verified": true,
+        "vine": false,
+        "free": false,
+        "experience": false
+      },
+      {
+        "author": "reviewer",
+        "title": "Sample furniture product title",
+        "content": "Sample review text.",
+        "date": 1787155200000,
+        "star": 1,
+        "authorLabels": [],
+        "skus": [],
+        "images": [],
+        "videos": null,
+        "likes": 0,
+        "image": true,
+        "video": false,
+        "verified": true,
+        "vine": false,
+        "free": false,
+        "experience": false
+      }
+    ],
+    "terminal": null,
+    "hasNextPage": true,
+    "guestVisited": false
+  }
+}
