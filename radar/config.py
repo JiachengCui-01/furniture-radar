@@ -50,7 +50,8 @@ DEFAULTS: dict = {
         "monthly_cap": 900,
         "review_checks": 5,
         "stable_refresh_every": 3,
-        "min_interval_seconds": 0.4,
+        "min_interval_seconds": 1.0,
+        "rate_limit_wait_seconds": 60,
     },
     "schedule": {"min_days_between_runs": 3},
     "thresholds": {

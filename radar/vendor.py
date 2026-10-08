@@ -16,12 +16,20 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import fields as field_sets
+from . import log
 from .mcp_client import McpClient, McpToolError, McpUnavailable
 
 Transport = Callable[[str, dict], str]
 
 # 厂商返回这些字眼时视为积分/权限问题，整轮停止，而不是逐个失败
-_QUOTA_HINTS = ("积分", "余额", "额度", "quota", "credit", "insufficient", "points", "次数")
+_QUOTA_HINTS = ("积分", "余额", "额度", "quota", "credit", "insufficient", "points")
+# 限流（实测返回“每分钟访问已达上限”）：等一会儿重试即可，不算失败
+_RATE_HINTS = ("每分钟", "访问已达上限", "频繁", "rate limit", "too many", "429")
+
+
+def _rate_limited(message: str) -> bool:
+    text = message.lower()
+    return any(hint in text for hint in _RATE_HINTS)
 
 
 class BudgetExhausted(RuntimeError):
@@ -103,6 +111,8 @@ class Vendor:
     budget: Budget
     live: bool = True
     min_interval: float = 0.0
+    rate_limit_wait: float = 60.0
+    rate_limit_retries: int = 3
     # 返回 McpTool 列表的函数（tools/list 不计费），用来判断参数要不要包一层 request
     schema_loader: Callable[[], list] | None = None
     calls: list[dict] = field(default_factory=list)
@@ -142,24 +152,38 @@ class Vendor:
             self.calls.append({"tool": tool, "purpose": purpose, "status": "cached", "billable": False})
             return Reply(tool, prepared, "cached", data, billable=False)
 
-        self.budget.charge()
-        payload = self._send(tool, prepared)
+        for attempt in range(self.rate_limit_retries + 1):
+            self.budget.charge()
+            payload = self._send(tool, prepared)
+            if isinstance(payload, Reply):
+                message, envelope = payload.detail, None
+            else:
+                try:
+                    envelope = json.loads(payload) if payload.strip() else {}
+                except ValueError:
+                    self.calls.append({"tool": tool, "purpose": purpose, "status": "error", "billable": True})
+                    return Reply(tool, prepared, "error", detail=f"非 JSON 响应: {payload[:200]}", billable=True)
+                message = str(envelope.get("message") or "") if isinstance(envelope, dict) \
+                    and str(envelope.get("code", "OK")).upper() != "OK" else ""
+            if message and _rate_limited(message) and attempt < self.rate_limit_retries:
+                # 限流的请求没有真正执行：退回预算，等一会儿再试
+                self.budget.used -= 1
+                self.calls.append({"tool": tool, "purpose": purpose, "status": "rate_limited", "billable": False})
+                log.info(f"卖家精灵限流，{self.rate_limit_wait:.0f} 秒后重试")
+                time.sleep(self.rate_limit_wait)
+                continue
+            break
+
         if isinstance(payload, Reply):  # 工具级错误
             self.calls.append({"tool": tool, "purpose": purpose, "status": payload.status,
                                "billable": True, "detail": payload.detail[:200]})
             return payload
 
-        try:
-            envelope = json.loads(payload) if payload.strip() else {}
-        except ValueError:
-            self.calls.append({"tool": tool, "purpose": purpose, "status": "error", "billable": True})
-            return Reply(tool, prepared, "error", detail=f"非 JSON 响应: {payload[:200]}", billable=True)
-
         if isinstance(envelope, dict) and "code" in envelope and str(envelope.get("code")).upper() != "OK":
             message = str(envelope.get("message") or envelope.get("code"))
             self.calls.append({"tool": tool, "purpose": purpose, "status": "rejected",
                                "billable": True, "detail": message[:200]})
-            if any(hint in message.lower() for hint in _QUOTA_HINTS):
+            if any(hint in message.lower() for hint in _QUOTA_HINTS) and not _rate_limited(message):
                 raise QuotaExhausted(f"卖家精灵拒绝调用：{message}")
             return Reply(tool, prepared, "rejected", detail=message, billable=True)
 
@@ -187,7 +211,7 @@ class Vendor:
                 return self.transport(tool, arguments)
             except McpToolError as exc:
                 message = str(exc)
-                if any(hint in message.lower() for hint in _QUOTA_HINTS):
+                if any(hint in message.lower() for hint in _QUOTA_HINTS) and not _rate_limited(message):
                     raise QuotaExhausted(f"卖家精灵拒绝调用：{message}") from exc
                 return Reply(tool, arguments, "rejected", detail=message, billable=True)
             except McpUnavailable as exc:

@@ -44,7 +44,7 @@ discovery:
 
 # ---------------- 追踪池 ----------------
 pool:
-  max_size: 150                      # 最多追踪多少个 ASIN（每个 ASIN 刷新一次 = 1 次调用）
+  max_size: 150                      # 核心追踪池上限（另加上升榜和探索位；实际刷新多少由预算决定）
   per_node_top: 4                    # 每个子类目按销量取前 N（同一父体只取一个）
   momentum_top: 30                   # 全局按“上升势头”再取前 N
   watch_runs: 3                      # 被标记过的 ASIN 继续追踪的期数
@@ -59,7 +59,8 @@ budget:
   monthly_cap: 900                   # 每月总上限
   review_checks: 5                   # 每期对可疑商品做评论核查的个数（每个 1~2 次调用）
   stable_refresh_every: 3            # 稳定商品每隔 N 期才刷新一次
-  min_interval_seconds: 0.4          # 两次调用之间的最小间隔
+  min_interval_seconds: 1.0          # 两次调用之间的最小间隔（卖家精灵有每分钟次数上限）
+  rate_limit_wait_seconds: 60        # 被限流（“每分钟访问已达上限”）时等待多久再重试，最多重试 3 次
 
 schedule:
   min_days_between_runs: 3           # 每天检查一次，距上次成功运行满 N 天才真正执行

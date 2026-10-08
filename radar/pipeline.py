@@ -118,6 +118,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         transport, client = mcp_transport(secrets.sellersprite_url, secrets.sellersprite_key)
         schema_loader = client.list_tools
     vendor = Vendor(transport, Budget(limit), live=live, min_interval=float(bcfg["min_interval_seconds"]) if live else 0,
+                    rate_limit_wait=float(bcfg.get("rate_limit_wait_seconds", 60)) if live else 0,
                     schema_loader=schema_loader)
     log.info(f"本期调用预算 {limit} 次（本月已用 {used_this_month}/{bcfg['monthly_cap']}）")
 

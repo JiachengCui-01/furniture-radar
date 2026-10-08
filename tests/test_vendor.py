@@ -71,3 +71,12 @@ def test_argument_shape_follows_tool_schema():
     assert vendor.args("asin_detail", nested=False, asin="A") == {"request": {"asin": "A"}}
     assert vendor.args("review", nested=True, asin="A") == {"asin": "A"}
     assert vendor.args("unknown", nested=True, asin="A", page=None) == {"request": {"asin": "A"}}
+
+
+def test_rate_limit_waits_retries_and_refunds_budget():
+    limited = json.dumps({"code": "ERROR", "message": "每分钟访问已达上限"})
+    transport = Recorder([limited, limited, fixture_text("product_research")])
+    vendor = Vendor(transport, Budget(2), live=False, rate_limit_wait=0)
+    reply = vendor.call("product_research", request(marketplace="US", nodeIdPath="1"))
+    assert reply.ok and len(transport.seen) == 3
+    assert vendor.budget.used == 1 and vendor.billable_calls == 1  # 限流的两次不占预算
