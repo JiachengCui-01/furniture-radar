@@ -56,6 +56,11 @@ def cmd_alert(args, cfg, secrets) -> int:
     return 0
 
 
+# 演示 / 测试用：追踪池放开到整个基线
+TRACK_ALL = {"max_size": 400, "opportunity_min_units": 0, "opportunity_min_growth": -10**9,
+             "opportunity_max_age_days": 10**6}
+
+
 def cmd_demo(args, cfg, secrets) -> int:
     """用模拟数据跑两期，生成可以直接用浏览器打开的报告（不花积分）。"""
     from .demo import SyntheticWorld
@@ -68,9 +73,9 @@ def cmd_demo(args, cfg, secrets) -> int:
             path.unlink() if path.is_file() else path.rmdir()
     key = secrets.report_key or crypto.generate_master_key()
     demo_secrets = Secrets(report_key=key, report_base_url="", llm_api_key=secrets.llm_api_key if args.llm else "")
-    # 演示不花钱：每期全部刷新、探索整个基线
+    # 演示不花钱：每期全部刷新、把整个基线都当作候选
     cfg = {**cfg, "budget": {**cfg["budget"], "stable_refresh_every": 1, "per_run": 400, "bootstrap_run": 400},
-           "pool": {**cfg["pool"], "explore_per_run": 400}}
+           "pool": {**cfg["pool"], **TRACK_ALL}}
     now = datetime.now(timezone.utc) - timedelta(days=3 * (args.runs - 1))
     world = SyntheticWorld(now.date())
     result = None

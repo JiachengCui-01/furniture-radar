@@ -8,9 +8,11 @@ import html
 import re
 
 from ..analyze import display_name
+from ..tracking import REASON_CN
 from .sparkline import bars, sparkline
 
-LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted"}
+LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
+               "low": "muted"}
 
 
 def esc(value) -> str:
@@ -196,7 +198,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode==
 def _tags(item: dict) -> str:
     out = []
     for tag in item["tags"]:
-        cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货")) else \
+        cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分")) else \
             "good" if tag in ("持续型", "潜力", "爬升型", "新品起量") else \
             "info" if any(k in tag for k in ("季节", "大促", "热销", "变体")) else ""
         out.append(f'<span class="tag {cls}">{esc(tag)}</span>')
@@ -392,7 +394,8 @@ def _traits(tr: dict) -> str:
 def _changes(diff: dict, by_asin: dict) -> str:
     if diff.get("first"):
         return '<p class="empty">本期没有可对比的上一期（首期或监控范围刚调整），从下一期开始显示变化。</p>'
-    names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察"}
+    names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
+             "low": "评分偏低"}
 
     def name(asin: str) -> str:
         item = by_asin.get(asin)
@@ -418,18 +421,20 @@ def _changes(diff: dict, by_asin: dict) -> str:
 
 
 def _all_table(items: list[dict]) -> str:
-    order = {"fake": 0, "surge": 1, "potential": 2, "hot": 3, "watch": 4}
+    order = {"fake": 0, "surge": 1, "potential": 2, "hot": 3, "watch": 4, "low": 5}
     rows = []
     for i in sorted(items, key=lambda x: (order[x["label"]], -(x.get("recent_avg28") or 0))):
         rows.append(
             f"<tr><td><a href=\"https://www.amazon.com/dp/{esc(i['asin'])}\" target=_blank rel=\"noopener noreferrer\">"
             f"{esc(i['asin'])}</a></td><td>{esc(i['brand'])}</td><td>{esc(i['node_cn'] or i['node_name'])}</td>"
-            f"<td>{esc(i['label_cn'])}</td><td class=n>{fmt_num(i.get('recent_avg28'))}</td>"
+            f"<td>{esc(i['label_cn'])}</td><td>{esc(REASON_CN.get(i.get('source') or '', ''))}</td>"
+            f"<td class=n>{fmt_num(i.get('recent_avg28'))}</td>"
             f"<td class=n>{fmt_int(i.get('bsr'))}</td><td class=n>{fmt_price(i.get('price'))}</td>"
-            f"<td class=n>{fmt_int(i.get('ratings'))}</td><td class=n>{i['fake']['score']}</td>"
+            f"<td class=n>{fmt_num(i.get('rating'))}</td><td class=n>{fmt_int(i.get('ratings'))}</td>"
+            f"<td class=n>{i['fake']['score']}</td>"
             f"<td>{esc('、'.join(i['tags']))}</td></tr>")
-    return ("<div class=tbl><table><thead><tr><th>ASIN</th><th>品牌</th><th>子类目</th><th>判定</th>"
-            "<th class=n>近28天日均</th><th class=n>BSR</th><th class=n>价格</th><th class=n>评论</th>"
+    return ("<div class=tbl><table><thead><tr><th>ASIN</th><th>品牌</th><th>子类目</th><th>判定</th><th>来源</th>"
+            "<th class=n>近28天日均</th><th class=n>BSR</th><th class=n>价格</th><th class=n>评分</th><th class=n>评论</th>"
             "<th class=n>异常分</th><th>标签</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
 
 
@@ -437,8 +442,14 @@ def _method(cfg: dict) -> str:
     th = cfg["thresholds"]
     s, h, p, f = th["surge"], th["hot"], th["potential"], th["fake"]
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
+<li><b>评分门槛</b>：评分低于 {th['min_rating']} 的商品不进入任何板块和外观分析样本，也不占追踪名额；
+各板块按排序取前几名，剔除的由后面的商品依次补位。评分优先取最新日数据（月度榜单的评分是月末快照，可能过时），还没有评论的新品不受限。</li>
 <li>数据来自卖家精灵：月度头部商品（product_research，已结束月份）+ 每个 ASIN 约 400 天的日销量/BSR/价格（asin_prediction）。
 日销量是卖家精灵根据 BSR 估算的，因此以 BSR 中位数为主信号，销量用于门槛和倍数。</li>
+<li><b>候选与新鲜度</b>：所有判定都基于每个商品截至最近一天的日数据。候选来自三处：卖家精灵近 30 天榜单（销量增长、BSR 上升、新品，每期刷新）、
+上期爆款的相似款（近 30 天数据）、月度头部名单。每期的追踪名额依次给：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']} + 全部类目里销量最大的）、
+相似款、机会候选（机会分最高的 {cfg['pool']['opportunity_every_run']} 个每期都看，其余按最久没查轮流查）。
+机会分综合销量增长率、近 7 天 BSR 改善、子类目内销量位次、是否上架半年内。</li>
 <li><b>突然爆火</b>：近 {'/'.join(map(str, s['windows']))} 天 BSR 中位数 ≤ 之前 {s['base_days']} 天的 {s['bsr_ratio']} 倍，
 且日均销量 ≥ 之前的 {s['sales_ratio']} 倍、≥ {s['min_daily_sales']} 件。持续型 = 近 7 天 ≥{s['sustained_days']} 天达到基线 {s['sustained_mult']} 倍；
 脉冲型 = ≤2 天贡献 ≥{s['pulse_share']:.0%} 增量；季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格下降 ≥{s['price_drop']:.0%}。
@@ -446,7 +457,7 @@ def _method(cfg: dict) -> str:
 <li><b>持续热销</b>：近 {h['lookback_months']} 个月中 ≥{h['months_required']} 个月月销量达到所在子类目 Top{h['rank_in_node']} 水平，
 近 6 个月波动系数 ≤{h['max_cv']}，近 3 个月趋势不低于 {h['min_trend']:.0%}/月，且近 28 天没有明显下滑。</li>
 <li><b>潜力</b>：上架 {p['min_age_days']}~{p['max_age_days']} 天，月销量增长 ≥{p['min_monthly_growth']:.0%}/月，
-近 28 天日均 ≥ 再之前 28 天的 {p['min_recent_ratio']} 倍，评论 &lt;{p['max_ratings']}、评分 ≥{p['min_rating']}，且无异常信号。</li>
+近 28 天日均 ≥ 再之前 28 天的 {p['min_recent_ratio']} 倍，评论 &lt;{p['max_ratings']}，且无异常信号。</li>
 <li><b>异常信号（假爆火）</b>：留评率异常、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、短时脉冲、
 评论集中在少数几天、非验证购买占比高等，累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。
 变体多的商品评论为父体共享，不计算评论/销量比；评论暴增且父体/变体变化标记为“变体合并”，不计分。异常信号仅供人工核实参考。</li>
@@ -465,7 +476,10 @@ def render(ctx: dict) -> str:
     chips = "".join(f'<span class="chip">{esc(c)}</span>' for c in (
         f"数据月份 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
         f"追踪 {counts['total']} 个 ASIN", f"本期刷新 {cov['refreshed']} 个",
-        f"上升中 {counts.get('rising', 0)} 个", f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次", f"总结：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"))
+        f"上升中 {counts.get('rising', 0)} 个",
+        *([f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"] if cov.get("candidates") else []),
+        *([f"评分低于 {ctx['cfg']['thresholds']['min_rating']} 不上榜 {counts['low']} 个"] if counts.get("low") else []),
+        f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次", f"总结：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"))
     history = ""
     if ctx.get("history"):
         history = '<p class="hist sub">往期报告：' + "".join(
@@ -487,5 +501,5 @@ def render(ctx: dict) -> str:
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="all" style="--c:var(--muted)"><h2><span class="dot"></span>全部追踪商品</h2>
 <details><summary>展开 {counts['total']} 个商品明细</summary>{_all_table(ctx['items'])}</details>{_method(ctx['cfg'])}</section>
-<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 每个板块最多展示 {top_n} 个 · 报告已加密，仅持有链接的人可查看</footer>
+<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 各板块只收评分 ≥{ctx['cfg']['thresholds']['min_rating']} 的商品，按排序取前 {top_n} 个 · 报告已加密，仅持有链接的人可查看</footer>
 </div>{POPUP}</body></html>"""

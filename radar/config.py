@@ -39,13 +39,17 @@ DEFAULTS: dict = {
         "newcomers_per_node": 30,
         "newcomer_min_revenue": 20000,
         "risers_per_root": 50,
+        "risers_new_per_root": 50,
         "risers_min_units": 300,
         "risers_orders": ["total_units_growth", "bsr_rank_cr"],
         "risers_max_prev_bsr": 1_000_000,
-        "risers_every_run": False,
+        "similar_seeds": 3,
+        "similar_size": 20,
+        "similar_cooldown_runs": 3,
     },
-    "pool": {"max_size": 135, "per_node_top": 6, "momentum_top": 20, "watch_runs": 3,
-             "risers_top": 15, "explore_per_run": 5, "explore_cooldown_runs": 6},
+    "pool": {"max_size": 155, "core_max": 80, "per_node_top": 1, "watch_runs": 3, "similar_max": 10,
+             "opportunity_every_run": 20, "opportunity_min_units": 300, "opportunity_min_growth": 20,
+             "opportunity_max_age_days": 180},
     "budget": {
         "per_run": 175,
         "bootstrap_run": 230,
@@ -59,6 +63,7 @@ DEFAULTS: dict = {
     "schedule": {"min_days_between_runs": 3},
     "thresholds": {
         "stale_days": 4,
+        "min_rating": 4.0,
         "surge": {
             "windows": [7, 14], "base_days": 28, "bsr_ratio": 0.5, "sales_ratio": 2.0,
             "min_daily_sales": 3, "sustained_mult": 1.5, "sustained_days": 5,
@@ -72,8 +77,7 @@ DEFAULTS: dict = {
         "rising": {"min_ratio": 1.3, "min_daily_sales": 3},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
-            "min_recent_ratio": 1.2, "max_ratings": 300, "min_rating": 4.0,
-            "min_daily_sales": 2,
+            "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,
         },
         "fake": {
             "suspect_score": 3, "high_score": 5, "review_rate_mult": 3,

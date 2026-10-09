@@ -29,35 +29,46 @@ scope:
   #  - path: "1055398:1063306:1063318:3733551"
   #    label: 沙发
 
-# ---------------- 发现（每个自然月只跑一次） ----------------
+# ---------------- 发现 ----------------
+# 卖家精灵的商品榜单有两种：传月份 = 已结束月份的月末快照（月度名单，每月查一次）；
+# 不传月份 = 截至当天的近 30 天数据（近 30 天榜单，每期刷新）。
 discovery:
   top_per_node: 50                   # 每个子类目取多少个头部商品
   order_field: total_amount          # 头部排序字段（total_amount=销售额）
   merge_variations: true             # 同一父体只取一条（不合并时头部 50 名常常只有 1~5 个不同商品）
   newcomer_max_nodes: 12             # 在销量最大的 N 个子类目里额外查新品
   newcomers_per_node: 30
-  newcomer_min_revenue: 20000        # 新品月销售额门槛（美元）
-  # 上升榜：每个根类目按“月销量增长率”和“近 7 天 BSR 增长率”各查一次（每月 6 次调用），
-  # 覆盖头部 50 名以外刚起量的商品。最终是否爆火仍由日数据判定。
+  newcomer_min_revenue: 20000        # 新品月销售额门槛（美元，近 30 天新品榜也用它）
+  # 近 30 天榜单（每期刷新，每期约 6 次调用）：每个根类目按“销量增长率”“近 7 天 BSR 增长率”各取前 N，
+  # 再按上架时间倒序取销售额达标的新品。覆盖头部 50 名以外、最近才起量的商品；最终是否爆火由日数据判定。
   risers_per_root: 50                # 0 = 关闭
-  risers_min_units: 300              # 月销量下限，过滤小基数的排名跳动
+  risers_new_per_root: 50            # 新品榜，0 = 关闭
+  risers_min_units: 300              # 近 30 天销量下限，过滤小基数的排名跳动
   risers_orders: [total_units_growth, bsr_rank_cr]
   risers_max_prev_bsr: 1000000       # 之前 BSR 高于此值的多为断货恢复，剔除
-  risers_every_run: false            # 月度数据是月末快照，每期重复查结果不变，保持 false
+  # 相似款：上期爆火/潜力商品里取前 N 个作种子，查同类竞品（每个 1 次调用，返回约 15 个近 30 天数据的商品）
+  similar_seeds: 3
+  similar_size: 20
+  similar_cooldown_runs: 3           # 同一种子 N 期内不重复查；查到的相似款保留 N 期作为候选
 
-# ---------------- 追踪池 ----------------
+# ---------------- 追踪池（每个商品每期 1 次调用拉日数据） ----------------
+# 按顺序填满：必看 → 相似款 → 机会候选。同一父体只取一个，评分不达标的不占名额，由后面的依次补位。
+# 池子大小还会受本期剩余预算限制。
 pool:
-  max_size: 135                      # 核心追踪池上限（另加上升榜 15 + 探索位 5）
-  per_node_top: 6                    # 每个子类目按销量取前 N（同一父体只取一个）
-  momentum_top: 20                   # 全局按“上升势头”再取前 N
-  watch_runs: 3                      # 被标记过的 ASIN 继续追踪的期数
-  risers_top: 15                     # 从 BSR 上升榜里取前 N 个加入追踪
-  explore_per_run: 5                 # 探索位：每期从基线里轮换抽查 N 个（发现本月才起量的商品）
-  explore_cooldown_runs: 6           # 抽查过的 N 期内不重复抽查
+  max_size: 155
+  core_max: 80                       # 必看名额：往期爆火/潜力/异常 + 每个子类目月销量前 N，
+  per_node_top: 1                    #   还有剩就按月销量从全部子类目里补（持续热销板块的大卖家不会漏）
+  watch_runs: 3                      # 被标为爆火/潜力/异常的 ASIN 继续必看的期数
+  similar_max: 10                    # 相似款名额
+  # 机会候选 = 近 30 天上升榜 / 新品榜 / 相似款，加上月度名单里增长快或上架半年内的商品，按机会分排序：
+  opportunity_every_run: 20          # 机会分最高的 N 个每期都看，其余按“最久没查”轮流查
+  opportunity_min_units: 300         # 月销量（或近 30 天销量）下限
+  opportunity_min_growth: 20         # 月度名单里：销量增长 ≥ N%
+  opportunity_max_age_days: 180      #   或上架不超过 N 天
 
 # ---------------- 卖家精灵调用预算 ----------------
 budget:
-  per_run: 175                       # 每期调用上限（追踪池约 170 个商品全部刷新 + 可疑商品核查）
+  per_run: 175                       # 每期调用上限（近 30 天榜单 ~6 + 相似款 ~3 + 追踪池约 145 + 核查 / 材质）
   bootstrap_run: 230                 # 需要重新发现子类目的那一期（首期 / 换范围 / 每月初）
   monthly_cap: 1800                  # 每月总上限
   review_checks: 5                   # 每期对可疑商品做评论核查的个数（每个 1~2 次调用）
@@ -72,6 +83,9 @@ schedule:
 # ---------------- 判定阈值 ----------------
 thresholds:
   stale_days: 4                      # 日数据超过 N 天没更新 → 标记“数据陈旧”
+  # 评分门槛：评分低于此值的商品不进入任何榜单（爆火 / 潜力 / 热销 / 异常 / 外观分析样本），
+  # 也不占追踪名额，由排在后面的商品依次补位。评分优先取最新日数据，没有评论的新品不受限。
+  min_rating: 4.0
   surge:                             # 突然爆火
     windows: [7, 14]                 # 近 N 天 vs 之前 28 天
     base_days: 28
@@ -101,8 +115,7 @@ thresholds:
     max_age_days: 180
     min_monthly_growth: 0.15         # 完整月份的月销量环比增长 ≥15%
     min_recent_ratio: 1.2            # 近 28 天日均 ≥ 再之前 28 天日均的 1.2 倍
-    max_ratings: 300
-    min_rating: 4.0
+    max_ratings: 300                 # 评分要求见上面的 min_rating
     min_daily_sales: 2
   fake:                              # 假爆火 / 异常信号评分
     suspect_score: 3                 # ≥3 分：疑似

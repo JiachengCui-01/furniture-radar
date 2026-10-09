@@ -54,6 +54,8 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
     limit = int(cfg["budget"]["review_checks"])
     jobs: list[tuple[float, str, str]] = []
     for item in items:
+        if item["label"] == "low":
+            continue  # 评分不达标的不会上榜，不必花调用核查
         rec = state["asins"].get(item["asin"]) or {}
         checks = rec.get("checks") or {}
         as_of = clock.parse_day(item.get("as_of"))

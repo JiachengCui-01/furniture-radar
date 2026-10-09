@@ -6,6 +6,7 @@
 4. 销量最大的若干子类目再查一次新品（按上架时间倒序 + 最低销售额）。
 
 结果约 1500~2000 个 ASIN 的月度指标，作为“基线”与追踪池的来源。
+另外每期都会刷新近 30 天榜单（find_risers）和爆款相似款（find_similar），见各函数说明。
 预算中途用完时保存进度，下期接着跑同一个月份。
 """
 from __future__ import annotations
@@ -249,38 +250,70 @@ def owning_node(path: str, nodes: list[dict]) -> dict | None:
     return best
 
 
-def find_risers(vendor: Vendor, cfg: dict, period: str, nodes: list[dict]) -> list[dict]:
-    """上升榜：每个根类目按“月销量增长率”和“近 7 天 BSR 增长率”各查一次，
-    覆盖头部 50 名以外、刚开始起量的商品。
+def _fresh_row(row: dict, nodes: list[dict], source: str, rank: int, cfg: dict) -> dict | None:
+    """近 30 天榜单里的一行：归到已选中的子类目，剔除范围外的和断货恢复的（之前 BSR 几百万）。"""
+    max_prev = float(cfg["discovery"].get("risers_max_prev_bsr", 1_000_000))
+    prev_bsr = (_num(row.get("bsr")) or 0) + (_num(row.get("bsrCv")) or 0)
+    if prev_bsr > max_prev:
+        return None
+    node = owning_node(str(row.get("nodeIdPath") or ""), nodes)
+    item = normalize_product(row, node, source, rank) if node else None
+    return item if keep_product(item, cfg) else None
 
-    实测两种排序都有噪音：BSR 增长率榜前排多是断货后恢复的商品（之前 BSR 几百万），
-    销量增长率榜会有整组变体同时出现。所以这里去掉“之前 BSR > risers_max_prev_bsr”的，
+
+def find_risers(vendor: Vendor, cfg: dict, nodes: list[dict]) -> list[dict]:
+    """近 30 天榜单（每期刷新）：product_research 不传 month 时，返回的是截至当天的近 30 天数据
+    （传 month 只有已结束月份的月末快照）。每个根类目查：
+      - 按“销量增长率”“近 7 天 BSR 增长率”排序的上升榜；
+      - 按上架时间倒序、近 30 天销售额达标的新品榜。
+
+    实测两种上升排序都有噪音：BSR 增长率榜前排多是断货后恢复的商品（之前 BSR 几百万），
+    销量增长率榜会有整组变体同时出现。所以去掉“之前 BSR > risers_max_prev_bsr”的，
     并按父体去重；最终是否爆火由日数据判定。"""
     dcfg = cfg["discovery"]
     size = int(dcfg.get("risers_per_root", 0))
-    if size <= 0 or not nodes:
+    new_size = int(dcfg.get("risers_new_per_root", 0))
+    if (size <= 0 and new_size <= 0) or not nodes:
         return []
-    max_prev = float(dcfg.get("risers_max_prev_bsr", 1_000_000))
     found: dict[str, dict] = {}
     parents: set[str] = set()
-    for order_field in dcfg.get("risers_orders") or ["total_units_growth", "bsr_rank_cr"]:
+
+    def keep(item: dict | None) -> None:
+        if not item:
+            return
+        key = item["parent"] or item["asin"]
+        if item["asin"] in found or key in parents:
+            return
+        found[item["asin"]] = item
+        parents.add(key)
+
+    lists = [(order, size, {"minUnits": dcfg.get("risers_min_units")}, "riser")
+             for order in (dcfg.get("risers_orders") or ["total_units_growth", "bsr_rank_cr"])] if size > 0 else []
+    if new_size > 0:
+        lists.append(("available_date", new_size, {"minRevenue": dcfg.get("newcomer_min_revenue")}, "fresh_new"))
+    for order_field, n, limits, source in lists:
         for root in cfg["scope"]["roots"]:
             reply = vendor.call("product_research", request(
-                marketplace=cfg["marketplace"], nodeIdPath=root["path"], nodeIdPathEqual="false", month=period,
-                size=size, page=1, minUnits=dcfg.get("risers_min_units"), variation=_variation(cfg),
-                order={"field": order_field, "desc": True}), purpose="上升榜")
+                marketplace=cfg["marketplace"], nodeIdPath=root["path"], nodeIdPathEqual="false",
+                size=n, page=1, variation=_variation(cfg), order={"field": order_field, "desc": True},
+                **limits), purpose="近30天榜单")
             for rank, row in enumerate(reply.rows, start=1):
-                prev_bsr = (_num(row.get("bsr")) or 0) + (_num(row.get("bsrCv")) or 0)
-                if prev_bsr > max_prev:
-                    continue
-                node = owning_node(str(row.get("nodeIdPath") or ""), nodes)
-                item = normalize_product(row, node, "riser", rank) if node else None
-                if not keep_product(item, cfg):
-                    continue
-                key = item["parent"] or item["asin"]
-                if item["asin"] in found or key in parents:
-                    continue
+                keep(_fresh_row(row, nodes, source, rank, cfg))
+    log.info(f"近 30 天榜单：{len(found)} 个候选")
+    return list(found.values())
+
+
+def find_similar(vendor: Vendor, cfg: dict, seeds: list[str], nodes: list[dict]) -> list[dict]:
+    """相似款：asin_competitor 返回与种子商品同类的竞品（约 15 个，近 30 天数据，与 product_research 同结构）。
+    种子是上期的爆火/潜力商品，用来顺藤摸瓜找同一波趋势里的其他商品。"""
+    found: dict[str, dict] = {}
+    for seed in seeds:
+        reply = vendor.call("asin_competitor", vendor.args(
+            "asin_competitor", nested=False, marketplace=cfg["marketplace"], asin=seed,
+            size=int(cfg["discovery"].get("similar_size", 20))), purpose="相似款")
+        for rank, row in enumerate(reply.rows, start=1):
+            item = _fresh_row(row, nodes, "similar", rank, cfg)
+            if item and item["asin"] != seed and item["asin"] not in found:
+                item["seed"] = seed
                 found[item["asin"]] = item
-                parents.add(key)
-    log.info(f"上升榜：{len(found)} 个候选")
     return list(found.values())

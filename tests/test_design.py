@@ -6,6 +6,7 @@ import httpx
 
 from radar import crypto, pipeline, store, vision
 from radar.cli import _decrypt_page
+from radar.cli import TRACK_ALL
 from radar.config import Secrets
 from radar.demo import SyntheticWorld
 from radar.detect import design
@@ -74,7 +75,7 @@ def test_vision_tags_are_cached(cfg):
 
 def _two_runs(cfg, master_key, tmp_path):
     cfg["budget"].update(stable_refresh_every=1, per_run=400, bootstrap_run=400)
-    cfg["pool"]["explore_per_run"] = 400
+    cfg["pool"].update(TRACK_ALL)
     start = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
     world = SyntheticWorld(start.date())
     secrets = Secrets(report_key=master_key)

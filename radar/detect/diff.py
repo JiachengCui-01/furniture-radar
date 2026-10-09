@@ -12,7 +12,7 @@ def compare(prev_run: dict | None, current: dict[str, str]) -> dict:
     transitions = [
         {"asin": a, "from": prev[a], "to": l}
         for a, l in current.items()
-        if a in prev and prev[a] != l and (l in LABELS or prev[a] in LABELS) and l != "watch"
+        if a in prev and prev[a] != l and (l in LABELS or prev[a] in LABELS) and l not in ("watch", "low")
     ]
     cooled = [a for a, l in prev.items() if l == "surge" and current.get(a) in ("watch", "hot")]
     return {"first": False, "prev_id": prev_run.get("id"), "new": new, "transitions": transitions,

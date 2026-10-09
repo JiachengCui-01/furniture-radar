@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from radar import crypto, pipeline, store
-from radar.cli import _decrypt_page
+from radar.cli import TRACK_ALL, _decrypt_page
 from radar.config import Secrets
 from radar.demo import SyntheticWorld
 
@@ -16,7 +16,7 @@ START = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
 @pytest.fixture
 def world_run(cfg, master_key, tmp_path):
     cfg["budget"].update(stable_refresh_every=1, per_run=400, bootstrap_run=400)
-    cfg["pool"]["explore_per_run"] = 400
+    cfg["pool"].update(TRACK_ALL)
     world = SyntheticWorld(START.date())
     secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
     site = tmp_path / "site"
@@ -121,17 +121,29 @@ def test_send_last_posts_action_card(world_run, cfg):
     assert "%23k%3D" in card["singleURL"]  # 密钥片段被完整编码进按钮链接
 
 
-def test_risers_are_tracked_without_exploration(cfg, master_key, tmp_path):
-    """探索位关掉时，BSR 上升榜仍能把头部以外的上升商品带进追踪池。"""
-    cfg["pool"]["explore_per_run"] = 0
+def test_recent_lists_and_similar_feed_the_pool(cfg, master_key, tmp_path):
+    """默认名额下：近 30 天榜单每期刷新并带进追踪池；第二期用上期爆款查相似款。"""
+    cfg["discovery"]["risers_min_units"] = 100
+    cfg["pool"]["opportunity_min_units"] = 50  # 模拟世界里的商品销量偏小
     world = SyntheticWorld(START.date())
-    pipeline.run(cfg, Secrets(report_key=master_key), tmp_path, transport=world, now=START)
-    state = store.load(tmp_path, crypto.parse_master_key(master_key))
+    secrets = Secrets(report_key=master_key)
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
+    master = crypto.parse_master_key(master_key)
+    state = store.load(tmp_path, master)
     risers = state["risers"]["items"]
-    assert risers and state["risers"]["period"] == "202609"
+    assert risers and state["risers"]["run"] == 1
     assert all(r["node"] != "1055398:1063306:1063318:3733551" for r in risers)  # 被排除的沙发不会混进来
-    tracked = set(state["runs"][-1]["labels"])
-    assert tracked & {r["asin"] for r in risers}
+    assert set(state["runs"][-1]["labels"]) & {r["asin"] for r in risers}
+    assert "asin_competitor" not in world.calls  # 第一期还没有爆款作种子
+
+    world.advance(3)
+    before = len(world.calls)
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=3))
+    state = store.load(tmp_path, master)
+    assert state["risers"]["run"] == 2 and "asin_competitor" in world.calls[before:]
+    similar = {p["asin"] for p in state["similar"]["items"]}
+    assert similar and any(state["asins"][a].get("pool_reason") == "similar" for a in similar if a in state["asins"])
+    assert len(state["runs"][-1]["labels"]) <= cfg["pool"]["max_size"]
 
 
 def test_scope_change_rediscovers_without_cross_scope_diff(cfg, master_key, tmp_path):

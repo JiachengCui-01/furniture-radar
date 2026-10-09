@@ -1,4 +1,4 @@
-"""一次完整运行：发现 → 选池 → 刷新日数据 → 判定 → 核查 → 报告 → 加密发布 →（可选）钉钉。"""
+"""一次完整运行：发现 → 近 30 天榜单 / 相似款 → 选池 → 刷新日数据 → 判定 → 核查 → 报告 → 加密发布 →（可选）钉钉。"""
 from __future__ import annotations
 
 import os
@@ -14,6 +14,9 @@ from .notify import dingtalk
 from .report import render as report_render
 from .report import shell
 from .vendor import Budget, BudgetExhausted, Transport, Vendor, mcp_transport
+
+
+FORGET_RUNS = 20  # 连续这么多期没进池的 ASIN 从状态里删除
 
 
 @dataclass
@@ -137,29 +140,29 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
                     schema_loader=schema_loader)
     log.info(f"本期调用预算 {limit} 次（本月已用 {used_this_month}/{bcfg['monthly_cap']}）")
 
-    # 1. 发现（月度基线）+ BSR 上升榜
+    # 1. 发现（月度基线）+ 近 30 天榜单（每期刷新）+ 上期爆款的相似款
     disc = ensure_discovery(vendor, cfg, state, today)
-    risers = state.get("risers") or {}
-    if disc and disc.get("nodes") and (cfg["discovery"].get("risers_every_run")
-                                       or risers.get("period") != disc["period"]):
+    if disc and disc.get("nodes"):
         try:
-            items = discovery.find_risers(vendor, cfg, disc["period"], disc["nodes"])
-            state["risers"] = {"period": disc["period"], "run": run_seq, "items": items}
+            state["risers"] = {"run": run_seq, "date": today.isoformat(),
+                               "items": discovery.find_risers(vendor, cfg, disc["nodes"])}
         except BudgetExhausted:
-            log.warn("BSR 上升榜：预算不足，跳过")
+            log.warn("近 30 天榜单：预算不足，跳过")
+        refresh_similar(vendor, cfg, state, disc, run_seq)
 
-    # 2. 追踪池
-    pool, reasons = tracking.select_pool(disc, state, cfg, today)
+    # 2. 追踪池：大小不超过本期还能刷新的个数（给核查和材质查询留出预算）
+    reserve = min(int(bcfg["review_checks"]) + int(bcfg.get("material_lookups", 0)), vendor.budget.remaining // 4)
+    pool, reasons = tracking.select_pool(disc, state, cfg, today, limit=vendor.budget.remaining - reserve)
     for asin in pool:
         rec = state["asins"].setdefault(asin, {"asin": asin, "first_seen_run": run_seq, "obs": []})
         rec["last_pool_run"] = run_seq
-        if reasons.get(asin) == "explore":
-            rec["explored_run"] = run_seq
-    explored = sum(1 for r in reasons.values() if r == "explore")
-    log.info(f"追踪池 {len(pool)} 个 ASIN（其中探索 {explored} 个）")
+        rec["pool_reason"] = reasons[asin]
+    n_cands = len(tracking.opportunity_candidates(disc, state, cfg, today))
+    mix = {k: sum(1 for r in reasons.values() if r == k) for k in tracking.REASON_CN}
+    log.info(f"追踪池 {len(pool)} 个 ASIN（" + " / ".join(f"{tracking.REASON_CN[k]} {v}" for k, v in mix.items())
+             + f"；机会候选共 {n_cands} 个）")
 
-    # 3. 刷新日数据（给核查留出预算）
-    reserve = min(int(bcfg["review_checks"]) + int(bcfg.get("material_lookups", 0)), vendor.budget.remaining // 4)
+    # 3. 刷新日数据
     plan = tracking.plan_fetch(pool, state, run_seq, cfg, vendor.budget.remaining - reserve)
     refreshed = 0
     try:
@@ -169,7 +172,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     log.info(f"刷新日数据 {refreshed}/{len(plan)} 个")
 
     # 4. 判定 + 核查 + 再判定
-    extra_rows = {p["asin"]: p for p in (state.get("risers") or {}).get("items") or []}
+    extra_rows = tracking.fresh_rows(state)
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows)
     jobs = verify.select(result["items"], state, cfg, today)
     if jobs and vendor.budget.remaining > 0:
@@ -191,7 +194,8 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     # 5. 报告
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
     report_id = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
-    coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit}
+    coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
+                "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"]}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today)
@@ -215,11 +219,14 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     state["run_seq"] = run_seq
     state["last_success"] = now_utc.isoformat(timespec="seconds")
     state["calls"][month] = used_this_month + vendor.billable_calls
-    for asin in [a for a, rec in state["asins"].items() if int(rec.get("last_pool_run", 0)) < run_seq - 6]:
-        if int(rec.get("explored_run", -10_000)) >= run_seq - int(cfg["pool"].get("explore_cooldown_runs", 6)):
-            state["asins"][asin].pop("series", None)  # 保留“最近抽查过”的记号，丢掉大块日数据
-            continue
-        del state["asins"][asin]
+    # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
+    # 轮查靠它排先后。很久没进池的整条删除。
+    for asin, rec in list(state["asins"].items()):
+        last = int(rec.get("last_pool_run", 0))
+        if last < run_seq - FORGET_RUNS:
+            del state["asins"][asin]
+        elif last < run_seq:
+            rec.pop("series", None)
     store.save(site, master, state)
 
     url = build_url(cfg, secrets, report_id, key_text)
@@ -232,6 +239,30 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     if notify:
         out.notified = send_last(cfg, secrets, site)
     return out
+
+
+def refresh_similar(vendor: Vendor, cfg: dict, state: dict, disc: dict, run_seq: int) -> None:
+    """上期爆火（其次潜力）的商品作种子查相似款；同一种子 similar_cooldown_runs 期内不重复查。
+    相似款保留 similar_cooldown_runs 期，期间都可以作为候选。"""
+    dcfg = cfg["discovery"]
+    cooldown = int(dcfg.get("similar_cooldown_runs", 3))
+    labels = (state["runs"][-1].get("labels") or {}) if state.get("runs") else {}
+    seeds = [a for want in ("surge", "potential") for a, (label, *_r) in labels.items() if label == want
+             and int((state["asins"].get(a) or {}).get("similar_run", -10_000)) < run_seq - cooldown + 1]
+    seeds = seeds[: int(dcfg.get("similar_seeds", 0))]
+    kept = [p for p in (state.get("similar") or {}).get("items") or [] if p.get("run", 0) > run_seq - cooldown]
+    found: list[dict] = []
+    try:
+        for seed in seeds:
+            rows = discovery.find_similar(vendor, cfg, [seed], disc["nodes"])
+            state["asins"].setdefault(seed, {"asin": seed, "obs": []})["similar_run"] = run_seq
+            found.extend(dict(p, run=run_seq) for p in rows)
+    except BudgetExhausted:
+        log.warn("相似款：预算不足，跳过")
+    if seeds:
+        log.info(f"相似款：{len(seeds)} 个上期爆款带出 {len(found)} 个同类商品")
+    new = {p["asin"] for p in found}
+    state["similar"] = {"run": run_seq, "items": found + [p for p in kept if p["asin"] not in new]}
 
 
 def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict]]:
@@ -300,7 +331,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels,
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
-        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget")},
+        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }
@@ -318,7 +349,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     last = state["runs"][-1]
     disc = state.get("discovery")
     today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()
-    extra_rows = {p["asin"]: p for p in (state.get("risers") or {}).get("items") or []}
+    extra_rows = tracking.fresh_rows(state)
     items = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows)["items"]
     coverage = last.get("coverage") or {}
     if not coverage:

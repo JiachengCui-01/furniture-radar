@@ -1,11 +1,15 @@
 """追踪池与日数据刷新。
 
-追踪池（本地计算，不花调用）：
-  1. 往期被标为 爆火/潜力/异常/热销 的 ASIN（watchlist）
-  2. 上升势头最强的（BSR 改善率、上架时间、子类目内销量位次）
-  3. 每个子类目轮流取销量前几（同一父体只取一个，避免五个颜色挤满报告）
-  4. BSR 上升榜（按近 7 天 BSR 增长率排序）里的前几名
-  5. 探索位：从基线里轮换抽查（月度榜单发现不了本月才起量的商品）
+卖家精灵的数据有两种新鲜度：月度榜单（已结束月份的月末快照）和近 30 天榜单 / 单个商品日数据（截至当天）。
+“新”只能靠日数据，每个 ASIN 1 次调用；所以每期约 150 个名额的分配决定了能发现多少机会。
+
+追踪池（本地计算，不花调用），按顺序填满 max_size：
+  1. 必看（≤ core_max）：往期被标为 爆火/潜力/异常 的 + 每个子类目月销量前 per_node_top（轮流取），
+     名额还有剩就按月销量从全部子类目里补（持续热销板块按月销量排，床架这类大类目的头部不能漏）
+  2. 相似款（≤ similar_max）：上期爆款的同类竞品（近 30 天数据）
+  3. 机会候选（剩余名额）：近 30 天上升榜 / 新品榜 / 相似款，以及月度名单里增长快或上架半年内的商品，
+     按机会分排序；分数最高的 opportunity_every_run 个每期都看，其余按“最久没查”轮流查。
+同一父体只取一个；评分低于 min_rating 的不占名额，各类都由排在后面的商品依次补位。
 
 刷新（每个 ASIN 1 次 asin_prediction 调用，返回约 400 天日数据）：
   A 档：新进池、上期被标记的 → 每期刷新
@@ -17,19 +21,22 @@ import zlib
 from datetime import datetime, timezone
 
 from . import clock, log
+from .detect.rules import current_rating, low_rating
 from .discovery import clean_text, keep_product
 from .series import Daily, build_daily
 from .vendor import Vendor
 
 FLAG_LABELS = ("surge", "potential", "fake")
-WATCH_LABELS = ("surge", "potential", "fake", "hot")
+FRESH_SOURCES = ("riser", "fresh_new", "similar")  # 近 30 天数据（截至当天）
+REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "similar": "爆款相似款",
+             "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
 
 
 def watchlist(state: dict, runs: int) -> list[str]:
     out: list[str] = []
     for run in (state.get("runs") or [])[-runs:][::-1]:
         for asin, (label, *_rest) in (run.get("labels") or {}).items():
-            if label in WATCH_LABELS and asin not in out:
+            if label in FLAG_LABELS and asin not in out:
                 out.append(asin)
     return out
 
@@ -48,103 +55,138 @@ def _pct_rank(values: list[float | None]) -> list[float]:
     return out
 
 
-def momentum_rank(reps: list[dict], today) -> list[dict]:
-    """bsrCr：BSR 改善率（%），正数=排名上升（例如 bsr 45557→32275，bsrCv=13282，bsrCr=29.15）。"""
-    if not reps:
+def opportunity_rank(cands: list[dict], today) -> list[dict]:
+    """机会分 = 销量增长率 35% + 近 7 天 BSR 改善率 20% + 子类目内销量位次 20% + 上架半年内 15% + 近 30 天数据 10%。
+    units_gr 在近 30 天榜单里是“近 30 天 vs 之前 30 天”，在月度名单里是月环比；bsr_cr 为正 = 排名上升。"""
+    if not cands:
         return []
-    bsr_pct = _pct_rank([p.get("bsr_cr") for p in reps])
+    growth = _pct_rank([None if p.get("units_gr") is None else min(p["units_gr"], 500) for p in cands])
+    bsr = _pct_rank([p.get("bsr_cr") for p in cands])
     by_node: dict[str, list[dict]] = {}
-    for p in reps:
+    for p in cands:
         by_node.setdefault(p["node"], []).append(p)
     unit_pct: dict[str, float] = {}
     for items in by_node.values():
-        ranks = _pct_rank([p["units"] for p in items])
-        for p, r in zip(items, ranks):
+        for p, r in zip(items, _pct_rank([p["units"] for p in items])):
             unit_pct[p["asin"]] = r
     scored = []
-    for p, b in zip(reps, bsr_pct):
+    for p, g, b in zip(cands, growth, bsr):
         age = clock.days_between(clock.parse_day(p.get("available")), today)
         young = 1.0 if age is not None and age <= 180 else 0.0
-        scored.append((0.5 * b + 0.3 * unit_pct.get(p["asin"], 0.5) + 0.2 * young, p))
+        fresh = 1.0 if p["sources"][0] in FRESH_SOURCES else 0.0
+        scored.append((0.35 * g + 0.2 * b + 0.2 * unit_pct.get(p["asin"], 0.5) + 0.15 * young + 0.1 * fresh, p))
     scored.sort(key=lambda t: -t[0])
     return [p for _, p in scored]
 
 
-def select_pool(disc: dict | None, state: dict, cfg: dict, today) -> tuple[list[str], dict[str, str]]:
-    pcfg = cfg["pool"]
-    products = list(((disc or {}).get("products") or {}).values())
+def fresh_rows(state: dict) -> dict[str, dict]:
+    """本期的近 30 天行：上升榜 / 新品榜优先，其次相似款。"""
+    rows = {p["asin"]: p for p in (state.get("similar") or {}).get("items") or []}
+    rows.update({p["asin"]: p for p in (state.get("risers") or {}).get("items") or []})
+    return rows
 
+
+def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> list[dict]:
+    """机会候选（按机会分排序）：近 30 天榜单和相似款全部纳入；月度名单里只取增长快或上架半年内的。
+    同一 ASIN 用最新的一行；评分不达标、销量太小、标题不在范围内的剔除；同一父体只留销量最大的。"""
+    pcfg = cfg["pool"]
+    floor = cfg["thresholds"].get("min_rating")
+    min_units = float(pcfg.get("opportunity_min_units", 0))
+    min_growth = float(pcfg.get("opportunity_min_growth", 0))
+    max_age = int(pcfg.get("opportunity_max_age_days", 180))
+    nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
+    rows = {**((disc or {}).get("products") or {}), **fresh_rows(state)}
     best: dict[str, dict] = {}
-    for p in products:
+    for p in rows.values():
+        if not p.get("node") or (nodes and p["node"] not in nodes) or not keep_product(p, cfg):
+            continue
+        if (p.get("units") or 0) < min_units:
+            continue
+        if low_rating(current_rating(state["asins"].get(p["asin"]), p), floor):
+            continue
+        if p["sources"][0] not in FRESH_SOURCES:
+            age = clock.days_between(clock.parse_day(p.get("available")), today)
+            if (p.get("units_gr") or 0) < min_growth and not (age is not None and age <= max_age):
+                continue
         key = p.get("parent") or p["asin"]
         if key not in best or (p["units"] or 0) > (best[key]["units"] or 0):
             best[key] = p
-    reps = list(best.values())
+    return opportunity_rank(list(best.values()), today)
+
+
+def select_pool(disc: dict | None, state: dict, cfg: dict, today,
+                limit: int | None = None) -> tuple[list[str], dict[str, str]]:
+    """返回 (ASIN 列表, 入选原因)。limit：本期还能刷新多少个（预算），池子不会超过它。"""
+    pcfg = cfg["pool"]
+    size = int(pcfg["max_size"]) if limit is None else max(0, min(int(pcfg["max_size"]), limit))
+    core_max = min(size, int(pcfg.get("core_max", size)))
+    products = list(((disc or {}).get("products") or {}).values())
+    fresh = fresh_rows(state)
+    by_asin = {**fresh, **{p["asin"]: p for p in products}}
+    floor = cfg["thresholds"].get("min_rating")
 
     order: list[str] = []
     reason: dict[str, str] = {}
+    parents: set[str] = set()
 
-    def add(asin: str, why: str) -> None:
-        if asin not in reason:
-            reason[asin] = why
-            order.append(asin)
+    def add(asin: str, why: str, cap: int) -> bool:
+        rec = state["asins"].get(asin) or {}
+        row = by_asin.get(asin)
+        key = (row or {}).get("parent") or rec.get("parent") or asin
+        if len(order) >= cap or asin in reason or key in parents:
+            return False
+        if low_rating(current_rating(rec, row), floor):
+            return False
+        reason[asin] = why
+        order.append(asin)
+        parents.add(key)
+        return True
 
+    # 1. 必看：往期上榜的 + 每个子类目月销量前几（轮流取，截断时每个子类目都有覆盖）+ 全部类目里销量最大的
     nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
     for asin in watchlist(state, pcfg["watch_runs"]):
         rec = state["asins"].get(asin) or {}
         if nodes and rec.get("node") not in nodes:
             continue  # 范围调整后，旧范围里的商品（例如沙发、床垫）不再追踪
-        if not keep_product(rec, cfg):
-            continue
-        add(asin, "watch")
-    for p in momentum_rank(reps, today)[: pcfg["momentum_top"]]:
-        add(p["asin"], "momentum")
-
+        if keep_product(rec, cfg):
+            add(asin, "watch", core_max)
     by_node: dict[str, list[dict]] = {}
-    for p in reps:
-        by_node.setdefault(p["node"], []).append(p)
+    for p in products:
+        if "top" in p["sources"]:
+            by_node.setdefault(p["node"], []).append(p)
     for items in by_node.values():
         items.sort(key=lambda p: -(p["units"] or 0))
-    for rank in range(pcfg["per_node_top"]):  # 轮流取，截断时每个子类目都有覆盖
-        for items in by_node.values():
-            if rank < len(items):
-                add(items[rank]["asin"], "top")
-
-    order = order[: pcfg["max_size"]]
-
-    # BSR 上升榜（头部 50 名以外刚起量的商品），同一父体只取一个
-    by_asin = {p["asin"]: p for p in products}
-    chosen_parents = {(by_asin.get(a) or {}).get("parent") or a for a in order}
-    risers = sorted((state.get("risers") or {}).get("items") or [], key=lambda p: p.get("rank") or 999)
-    added = 0
-    for p in risers:
-        if added >= int(pcfg.get("risers_top", 0)):
+    taken = {node: 0 for node in by_node}
+    for _ in range(int(pcfg["per_node_top"])):
+        for node, items in by_node.items():
+            # 评分不达标 / 同父体的跳过，由本子类目下一名补位
+            for i in range(taken[node], len(items)):
+                taken[node] = i + 1
+                if add(items[i]["asin"], "top", core_max):
+                    break
+    for p in sorted((p for items in by_node.values() for p in items), key=lambda p: -(p["units"] or 0)):
+        if len(order) >= core_max:
             break
-        key = p.get("parent") or p["asin"]
-        if p["asin"] in reason or key in chosen_parents:
-            continue
-        reason[p["asin"]] = "riser"
-        order.append(p["asin"])
-        chosen_parents.add(key)
-        added += 1
+        add(p["asin"], "top", core_max)
 
-    # 探索位：月度榜单看不到“本月才开始爆”的商品，所以每期再从基线里轮换抽查一批，
-    # 按势头排序、跳过最近抽查过的；查出爆火/潜力/异常的会进入 watchlist 持续追踪。
-    explore = int(pcfg.get("explore_per_run", 0))
-    recent = int(pcfg.get("explore_cooldown_runs", 6))
-    run_seq = int(state.get("run_seq") or 0) + 1
-    picked = 0
-    for p in momentum_rank(reps, today):
-        if picked >= explore:
+    # 2. 相似款：上期爆款的同类竞品，最新的优先
+    similar = sorted((state.get("similar") or {}).get("items") or [], key=lambda p: (-p.get("run", 0), p["rank"]))
+    cap = min(size, len(order) + int(pcfg.get("similar_max", 0)))
+    for p in similar:
+        if (p.get("units") or 0) >= float(pcfg.get("opportunity_min_units", 0)) and keep_product(p, cfg):
+            add(p["asin"], "similar", cap)
+
+    # 3. 机会候选：分数最高的每期都看，其余按“最久没查”轮流
+    cands = opportunity_candidates(disc, state, cfg, today)
+    every = int(pcfg.get("opportunity_every_run", 0))
+    for p in cands[:every]:
+        add(p["asin"], "opportunity", size)
+    rest = [(int((state["asins"].get(p["asin"]) or {}).get("last_pool_run", -10_000)), i, p)
+            for i, p in enumerate(cands[every:])]
+    for _, _, p in sorted(rest, key=lambda t: (t[0], t[1])):
+        if len(order) >= size:
             break
-        if p["asin"] in reason:
-            continue
-        rec = state["asins"].get(p["asin"]) or {}
-        if run_seq - int(rec.get("explored_run", -10_000)) < recent:
-            continue
-        reason[p["asin"]] = "explore"
-        order.append(p["asin"])
-        picked += 1
+        add(p["asin"], "rotate", size)
     return order, {a: reason[a] for a in order}
 
 
@@ -234,8 +276,7 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
 def refresh(vendor: Vendor, plan: list[str], state: dict, disc: dict | None, cfg: dict,
             run_seq: int) -> int:
     """按计划刷新；预算用完时由调用方捕获 BudgetExhausted。返回成功刷新的个数。"""
-    products = {**{p["asin"]: p for p in (state.get("risers") or {}).get("items") or []},
-                **((disc or {}).get("products") or {})}
+    products = {**fresh_rows(state), **((disc or {}).get("products") or {})}
     done = 0
     for i, asin in enumerate(plan, start=1):
         if fetch_one(vendor, asin, state, cfg, run_seq, products.get(asin)):

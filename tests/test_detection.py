@@ -1,8 +1,9 @@
 """判定规则的单元测试：用合成的 120 天日序列覆盖各种形态。"""
 from datetime import date, timedelta
 
+from radar import analyze
 from radar.detect import fakehot
-from radar.detect.rules import evaluate_hot, evaluate_potential, evaluate_surge
+from radar.detect.rules import current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating
 from radar.series import Daily, find_pulses
 from radar.verify import summarize_reviews
 
@@ -103,11 +104,40 @@ def test_potential(cfg):
     assert p and p["recent_ratio"] > 1.5 and p["growth"] > 0.5
 
 
-def test_potential_rejects_low_rating(cfg):
-    d = make([round(1.2 * 2.718 ** (i / 38), 1) for i in range(115)])
-    rec = {"available": (END - timedelta(days=114)).isoformat(), "obs": [{"ratings": 30, "rating": 3.6}],
-           "months": _months([90, 200, 420])}
-    assert evaluate_potential(rec, d, END, cfg["thresholds"]["potential"]) is None
+def _rec(sales, rating, available="2024-01-01", ratings=400):
+    d = make(sales)
+    return {"series": {"start": d.start.isoformat(), "bsr": d.bsr, "sales": d.sales, "price": d.price},
+            "available": available, "obs": [{"date": END.isoformat(), "ratings": ratings, "rating": rating}]}
+
+
+def test_low_rating_is_dropped_and_next_one_fills_in(cfg):
+    """评分低于 4.0 的爆火商品不上榜、不进外观分析样本，排在后面的依次补位。"""
+    surge = [5] * 110 + [18] * 10
+    state = {"asins": {"B1": _rec(surge, 3.9), "B2": _rec(surge, 4.0), "B3": _rec(surge, 4.5)}}
+    items = analyze.analyze(state, None, ["B1", "B2", "B3"], cfg, END)["items"]
+    by_asin = {i["asin"]: i for i in items}
+    assert by_asin["B1"]["label"] == "low" and by_asin["B1"]["tags"][0] == "评分 3.9 低于 4.0"
+    assert by_asin["B2"]["label"] == by_asin["B3"]["label"] == "surge"
+    sec = analyze.sections(items, 2)
+    assert [i["asin"] for i in sec["surge"]] == ["B2", "B3"]
+    assert sec["counts"]["surge"] == 2 and sec["counts"]["low"] == 1
+    assert "B1" not in {i["asin"] for i in analyze.focus_items(items)}
+
+
+def test_low_rated_potential_is_dropped(cfg):
+    potential = [round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)]
+    rec = _rec(potential, 3.6, available=(END - timedelta(days=114)).isoformat(), ratings=30)
+    rec["months"] = _months([90, 200, 420])
+    assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
+    item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["label"] == "low" and "潜力" in item["tags"]
+
+
+def test_rating_prefers_latest_daily_data():
+    assert current_rating({"obs": [{"rating": 4.6}]}, {"rating": 3.6}) == 4.6  # 月度快照可能过时
+    assert current_rating({"obs": []}, {"rating": 3.6}) == 3.6
+    assert low_rating(3.9, 4.0) and not low_rating(4.0, 4.0)
+    assert not low_rating(None, 4.0) and not low_rating(0, 4.0)  # 还没有评论的新品不受限
 
 
 # ---------------------------------------------------------------- 假爆火 ----

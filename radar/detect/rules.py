@@ -9,6 +9,17 @@ from ..series import (Daily, closed_months, cv, daily_avg_of_month, log_growth, 
                       same_window_last_year, surge_metrics, surge_shape)
 
 
+def current_rating(rec: dict | None, row: dict | None) -> float | None:
+    """当前评分：优先取最近一次日数据里的（asin_prediction，实时），没有才用月度榜单的（月末快照，可能过时）。"""
+    rating = ((rec or {}).get("obs") or [{}])[-1].get("rating")
+    return rating if rating is not None else (row or {}).get("rating")
+
+
+def low_rating(rating: float | None, min_rating: float | None) -> bool:
+    """评分低于门槛的商品不进入任何榜单。还没有评分（没有评论）的不算低分。"""
+    return bool(min_rating) and bool(rating) and rating < min_rating
+
+
 def deal_overlap(start: date, end: date, deal_windows: list[dict]) -> str | None:
     for deal in deal_windows or []:
         lo, hi = clock.parse_day(deal.get("start")), clock.parse_day(deal.get("end"))
@@ -134,8 +145,6 @@ def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict) -> dict | No
     obs = (rec.get("obs") or [{}])[-1]
     ratings, rating = obs.get("ratings"), obs.get("rating")
     if ratings is not None and ratings >= cfg["max_ratings"]:
-        return None
-    if rating is not None and rating < cfg["min_rating"]:
         return None
 
     idx = d.index_of(as_of)

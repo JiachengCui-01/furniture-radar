@@ -85,20 +85,88 @@ def test_build_daily_fills_gaps():
     assert d.sales == [5, None, None, 4] and d.as_of() == date(2026, 1, 4)
 
 
-def test_pool_dedupes_parents_and_rotates_exploration(cfg):
+def _opportunities(n=30):
+    return {f"A{i}": {"asin": f"A{i}", "parent": f"P{i}", "node": f"N{i % 2}", "units": 1000 - i,
+                      "units_gr": 100 - i, "bsr_cr": 30 - i, "available": "2025-01-01", "sources": ["top"]}
+            for i in range(n)}
+
+
+def test_pool_dedupes_parents(cfg):
     products = {}
     for i in range(30):
-        products[f"A{i}"] = {"asin": f"A{i}", "parent": f"P{i // 3}", "node": f"N{i % 2}", "units": 100 - i,
-                             "bsr_cr": i, "available": "2025-01-01", "sources": ["top"]}
-    cfg["pool"].update(per_node_top=2, momentum_top=2, explore_per_run=3, max_size=50)
-    state = {"asins": {}, "runs": [], "run_seq": 0}
-    pool, reasons = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1))
+        products[f"A{i}"] = {"asin": f"A{i}", "parent": f"P{i // 3}", "node": f"N{i % 2}", "units": 1000 - i,
+                             "units_gr": 50, "bsr_cr": i, "available": "2025-01-01", "sources": ["top"]}
+    cfg["pool"].update(per_node_top=2, max_size=50)
+    pool, _ = tracking.select_pool({"products": products}, {"asins": {}, "runs": []}, cfg, date(2026, 10, 1))
     parents = [products[a]["parent"] for a in pool]
-    assert len(parents) == len(set(parents))  # 同一父体只出现一次
-    explored = [a for a in pool if reasons[a] == "explore"]
-    assert len(explored) == 3
-    for a in explored:
-        state["asins"][a] = {"explored_run": 1}
-    state["run_seq"] = 1
+    assert len(parents) == len(set(parents)) == 10  # 同一父体只出现一次
+
+
+def test_pool_rotates_opportunities(cfg):
+    """机会候选比名额多：机会分最高的每期都看，其余按“最久没查”轮流。"""
+    products = _opportunities()
+    cfg["pool"].update(per_node_top=0, core_max=0, similar_max=0, opportunity_every_run=2, max_size=8)
+    state = {"asins": {}, "runs": []}
+    pool, reasons = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1))
+    assert [a for a in pool if reasons[a] == "opportunity"] == ["A0", "A1"]
+    first = [a for a in pool if reasons[a] == "rotate"]
+    assert first == ["A2", "A3", "A4", "A5", "A6", "A7"]
+    for a in pool:
+        state["asins"][a] = {"last_pool_run": 1}
     pool2, reasons2 = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 4))
-    assert not set(explored) & {a for a in pool2 if reasons2[a] == "explore"}
+    assert [a for a in pool2 if reasons2[a] == "opportunity"] == ["A0", "A1"]
+    assert [a for a in pool2 if reasons2[a] == "rotate"] == ["A8", "A9", "A10", "A11", "A12", "A13"]
+
+
+def test_pool_order_core_similar_then_opportunities(cfg):
+    """必看先占名额，再给相似款，剩下的给机会候选；池子不超过本期预算。"""
+    products = _opportunities(10)
+    state = {"asins": {"W1": {"node": "N0", "title": "Desk"}},
+             "runs": [{"labels": {"W1": ["surge", 0]}}],
+             "similar": {"items": [{"asin": "S1", "parent": None, "node": "N1", "units": 900, "units_gr": 5,
+                                    "rank": 1, "run": 1, "title": "Desk", "sources": ["similar"]}]}}
+    cfg["pool"].update(per_node_top=1, core_max=3, similar_max=1, opportunity_every_run=3, max_size=20)
+    pool, reasons = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1), limit=6)
+    assert pool[:4] == ["W1", "A0", "A1", "S1"]
+    assert [reasons[a] for a in pool[:4]] == ["watch", "top", "top", "similar"]
+    # 机会分前 3 是 A0、A1、A2：前两个已在必看里，不重复占名额
+    assert pool[4:] == ["A2", "A3"] and reasons["A2"] == "opportunity" and reasons["A3"] == "rotate"
+
+
+def test_find_risers_uses_recent_30_days_and_find_similar_parses(cfg):
+    calls = []
+
+    def transport(tool, args):
+        calls.append((tool, args))
+        if tool == "asin_competitor":
+            return fixture_text("asin_competitor")
+        return fixture_text("product_research")
+
+    nodes = [_node("1055398:1063306:1063308:3733251", "H:Bedroom Furniture:Nightstands", root="1055398:1063306"),
+             _node("1055398:1063306:3733781:3733831", "x:y:Buffets & Sideboards", root="1055398:1063306")]
+    vendor = Vendor(transport, Budget(20), live=False)
+    discovery.find_risers(vendor, cfg, nodes)
+    research = [a["request"] for t, a in calls if t == "product_research"]
+    assert research and all("month" not in r for r in research)  # 不传月份 = 截至当天的近 30 天
+    assert {r["order"]["field"] for r in research} == {"total_units_growth", "bsr_rank_cr", "available_date"}
+
+    found = discovery.find_similar(vendor, cfg, ["B0TEST0100"], nodes)
+    asins = [p["asin"] for p in found]
+    assert asins == ["B0TEST0101", "B0TEST0102"]  # 去掉种子自己、软包、断货恢复
+    assert found[1]["units_gr"] == 41.2 and found[1]["sources"] == ["similar"] and found[1]["seed"] == "B0TEST0100"
+
+
+def test_pool_skips_low_rated_and_backfills(cfg):
+    """评分低于 4.0 的不占追踪名额，由同子类目排在后面的依次补位；评分优先看最新日数据。"""
+    products = {f"A{i}": {"asin": f"A{i}", "node": "N", "units": 1000 - i * 100, "rating": r,
+                          "available": "2025-01-01", "sources": ["top"]}
+                for i, r in enumerate([3.5, 4.4, 4.2, 4.8, 3.6])}
+    cfg["pool"].update(per_node_top=2, core_max=2, opportunity_every_run=0)
+    state = {"asins": {"A1": {"obs": [{"rating": 3.8}]},     # 月度快照 4.4，最新 3.8
+                       "A4": {"obs": [{"rating": 4.6}]}},    # 月度快照 3.6，最新 4.6
+             "runs": [], "run_seq": 0}
+    pool, _ = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1))
+    assert pool == ["A2", "A3"]
+    cfg["pool"]["core_max"] = 3  # 每个子类目取完后，按销量从全部类目里补
+    pool, _ = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1))
+    assert pool == ["A2", "A3", "A4"]

@@ -7,7 +7,7 @@ from . import clock
 from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
-from .detect.rules import evaluate_hot, evaluate_potential, evaluate_surge
+from .detect.rules import current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating
 from .series import Daily, closed_months, median
 
 def display_name(brand: str, title: str) -> str:
@@ -18,7 +18,10 @@ def display_name(brand: str, title: str) -> str:
     return f"{brand} {title}"
 
 
-LABEL_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察"}
+LABEL_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
+            "low": "评分偏低"}
+# 不进入任何榜单和外观分析样本的标签
+UNLISTED = ("fake", "low")
 
 
 def node_stats(disc: dict | None, cfg: dict) -> dict[str, dict]:
@@ -85,7 +88,11 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
 
-    if fake["level"]:
+    rating = current_rating(rec, disc_row)
+    low = low_rating(rating, th.get("min_rating"))
+    if low:  # 评分不达标：不进任何榜单，由排在后面的商品依次补位
+        label = "low"
+    elif fake["level"]:
         label = "fake"
     elif surge:
         label = "surge"
@@ -96,7 +103,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     else:
         label = "watch"
 
-    tags: list[str] = []
+    tags: list[str] = [f"评分 {rating} 低于 {th['min_rating']}"] if low else []
     if surge:
         tags.append(surge["kind"])
         if surge["seasonal"]:
@@ -134,7 +141,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "node_cn": rec.get("node_cn") or (disc_row or {}).get("node_cn") or "",
         "price": (_last(d.price) if d else None) or rec.get("price"),
         "bsr": _last(d.bsr) if d else None,
-        "rating": obs.get("rating"),
+        "rating": rating,
         "ratings": obs.get("ratings"),
         "variations": rec.get("variations"),
         "age_days": age,
@@ -156,6 +163,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "recent_avg7": (surge or {}).get("recent_avg") if surge else _avg(d, idx, 7),
         "recent_avg28": _avg(d, idx, 28),
         "fetched_run": rec.get("fetched_run"),
+        "source": rec.get("pool_reason"),
     }
 
 
@@ -195,12 +203,12 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
     return {"surge": surge[:top_n], "fake": fake[:top_n], "potential": potential[:top_n], "hot": hot[:top_n],
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
-                       "rising": sum(1 for i in items if i.get("rising") and i["label"] != "fake"),
-                       "total": len(items)}}
+                       "rising": sum(1 for i in items if i.get("rising") and i["label"] not in UNLISTED),
+                       "low": sum(1 for i in items if i["label"] == "low"), "total": len(items)}}
 
 
 def focus_items(items: list[dict]) -> list[dict]:
-    """外观分析的样本：突然爆火 + 潜力 + 上升中（都排除异常信号），按势头排序。
+    """外观分析的样本：突然爆火 + 潜力 + 上升中（都排除异常信号和评分偏低），按势头排序。
     只看“当期”数据，每期报告独立成立，不依赖往期积累。"""
     def strength(i: dict) -> float:
         if i.get("surge"):
@@ -209,7 +217,7 @@ def focus_items(items: list[dict]) -> list[dict]:
             return 50 + ((i["potential"] or {}).get("recent_ratio") or 1)
         return (i.get("rising") or {}).get("ratio") or 0
 
-    picked = [i for i in items if i["label"] != "fake"
+    picked = [i for i in items if i["label"] not in UNLISTED
               and (i["label"] in ("surge", "potential") or i.get("rising"))]
     return sorted(picked, key=lambda i: -strength(i))
 

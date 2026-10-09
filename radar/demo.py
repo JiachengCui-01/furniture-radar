@@ -204,7 +204,18 @@ class SyntheticWorld:
         return first, nxt - timedelta(days=1)
 
     def _month_row(self, p: Product, period: str) -> dict:
-        first, last = self._month_bounds(period)
+        return self._row(p, *self._month_bounds(period))
+
+    def _recent_row(self, p: Product) -> dict:
+        """不传 month：截至当天的近 30 天数据，带“近 30 天 vs 之前 30 天”的销量增长率。"""
+        last = self.data_end
+        first = last - timedelta(days=29)
+        row = self._row(p, first, last)
+        prev = sum(p.sales(first - timedelta(days=i + 1), self.today) for i in range(30))
+        row["unitsGr"] = round((row["units"] - prev) / prev * 100, 2) if prev else None
+        return row
+
+    def _row(self, p: Product, first: date, last: date) -> dict:
         days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
         units = sum(p.sales(d, self.today) for d in days)
         prev_first = first - timedelta(days=28)
@@ -240,17 +251,19 @@ class SyntheticWorld:
                                  "totalRevenue": products * 900})
             return self._ok(self._page(rows))
         if tool == "product_research":
-            node, period = req["nodeIdPath"], req["month"]
+            node, period = req["nodeIdPath"], req.get("month")
+            end = self._month_bounds(period)[1] if period else self.data_end
             members = [p for p in self.products
-                       if (p.node == node or p.node.startswith(node + ":"))
-                       and p.available <= self._month_bounds(period)[1]]
-            rows = [self._month_row(p, period) for p in members]
+                       if (p.node == node or p.node.startswith(node + ":")) and p.available <= end]
+            rows = [self._month_row(p, period) if period else self._recent_row(p) for p in members]
             rows = [r for r in rows if r["revenue"] >= req.get("minRevenue", 0) and r["units"] >= req.get("minUnits", 0)]
             order = (req.get("order") or {}).get("field")
             if order == "available_date":
                 rows.sort(key=lambda r: -r["availableDate"])
             elif order == "bsr_rank_cr":
                 rows.sort(key=lambda r: -r["bsrCr"])
+            elif order == "total_units_growth":
+                rows.sort(key=lambda r: -(r["unitsGr"] if r["unitsGr"] is not None else -1e9))
             else:
                 rows.sort(key=lambda r: -r["revenue"])
             return self._ok(self._page(rows[: int(req.get("size", 50))]))
@@ -275,6 +288,12 @@ class SyntheticWorld:
                       "rating": p.rating, "ratings": p.ratings_on(end, self.today), "nodeIdPath": p.node,
                       "nodeLabelPath": p.label, "imageUrl": ""}
             return self._ok({"asinDetail": detail, "dailyItemList": daily, "monthItemList": month_items})
+        if tool == "asin_competitor":  # 同子类目的其他商品，近 30 天数据，按销售额排序
+            seed = self.by_asin[req["asin"]]
+            rows = [self._recent_row(p) for p in self.products
+                    if p.node == seed.node and p.asin != seed.asin and p.available <= self.data_end]
+            rows.sort(key=lambda r: -r["revenue"])
+            return self._ok(rows[: int(req.get("size", 20))])
         if tool == "asin_detail":
             p = self.by_asin[req["asin"]]
             return self._ok({"asin": p.asin, "parent": p.parent, "variations": p.variations,

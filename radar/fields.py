@@ -16,6 +16,13 @@ FIELD_SETS: dict[str, tuple[str, ...]] = {
         "ratings", "ratingsRate", "rating", "ratingsCv", "ratingDelta", "availableDate",
         "fulfillment", "variations", "sellers", "sellerName", "sellerNation", "lqs",
     ),
+    # 返回结构与 product_research 相同（近 30 天数据）
+    "asin_competitor": (
+        "asin", "brand", "title", "imageUrl", "parent", "nodeId", "nodeIdPath", "nodeLabelPath",
+        "bsr", "bsrCv", "bsrCr", "units", "unitsGr", "revenue", "price", "averagePrice",
+        "ratings", "ratingsRate", "rating", "ratingsCv", "ratingDelta", "availableDate",
+        "fulfillment", "variations", "sellers", "sellerName", "sellerNation", "lqs",
+    ),
     "asin_detail": (
         "asin", "title", "brand", "parent", "availableDate", "firstRatingDate", "bsrRank",
         "nodeIdPath", "nodeLabelPath", "price", "coupon", "rating", "ratings", "sellers",
