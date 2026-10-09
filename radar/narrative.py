@@ -85,8 +85,11 @@ def design_facts(tr: dict) -> dict:
 
     out = {
         "样本说明": f"本期突然爆火 + 潜力 + 上升中（近 28 天增长 ≥30%）共 {n} 个，对比本月全部头部商品 {tr.get('n_baseline')} 个",
-        "主材质构成": [f"{m['label']}：爆火/潜力/上升中 {m['count']}/{n}（{m['share']:.0%}），全部商品 {m['baseline_share']:.0%}，"
-                  f"×{m['lift']}" for m in tr.get("materials", [])],
+        "主材质构成（优先用亚马逊 Material 属性）": [
+            f"{m['label']}：爆火/潜力/上升中 {m['count']}/{(tr.get('materials') or {}).get('n_focus')}（{m['share']:.0%}）"
+            + (f"，持续热销 {m['reference']}/{tr['materials']['n_reference']}（{m['reference_share']:.0%}）"
+               if m.get("reference_share") is not None else "")
+            for m in (tr.get("materials") or {}).get("rows", [])],
         "外观与工艺": {dim: lines(rows) for dim, rows in design.items() if dim != "功能卖点"},
         "功能卖点": lines(design.get("功能卖点", [])),
         "其他结构特征": [f"{f['dimension']}={f['value']}：占爆火/潜力的 {f['share']:.0%}，全部家具 {f['baseline_share']:.0%}"

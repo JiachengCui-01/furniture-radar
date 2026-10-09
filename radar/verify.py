@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 
-from . import clock, log
+from . import clock, log, materials
 from .detect.fakehot import ratings_jump
 from .vendor import BudgetExhausted, Vendor
 
@@ -90,6 +90,8 @@ def run_checks(vendor: Vendor, jobs: list[tuple[str, str]], state: dict, cfg: di
                                     purpose="详情核查")
                 if reply.ok and isinstance(reply.data, dict):
                     data = reply.data
+                    if not rec.get("amazon_material"):
+                        materials.remember(rec, data, today)
                     checks["detail"] = {
                         "parent": data.get("parent"),
                         "variations": data.get("variations"),

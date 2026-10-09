@@ -92,7 +92,8 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
         assert f'data-pop="{kind}"' in plain
     assert plain.count('class="pop-src"') == 4 and 'id="pop"' in plain
     assert "爆火产品的外观与工艺特征" in plain and "外观与工艺（来自商品标题）" in plain
-    assert "凹槽竖纹" in plain and "主材质构成" in plain  # 演示数据里爆火商品标题都带 Fluted
+    assert "凹槽竖纹" in plain and "主材质：板材 / 实木 / 铁木" in plain  # 演示数据里爆火商品标题都带 Fluted
+    assert "亚马逊商品详情里的 Material 属性" in plain
 
 
 def test_rerender_keeps_report_id_and_schedule(cfg, master_key, tmp_path):
@@ -112,3 +113,25 @@ def test_rerender_keeps_report_id_and_schedule(cfg, master_key, tmp_path):
     assert after["calls"] == before["calls"]  # 没有调用卖家精灵
     plain = _decrypt_page(path.read_text(encoding="utf-8"), master)
     assert "与上期对比" in plain and "2026-10-05.html#k=" in plain
+
+
+def test_amazon_material_attribute_beats_title():
+    from radar import materials
+
+    assert materials.from_overviews('{"Brand":"X","Material":"Engineered Wood","Frame Material":"Metal"}')         == "Engineered Wood, Metal"
+    assert materials.classify("Engineered Wood, Metal") == "铁木（金属+木）"
+    assert materials.classify("Particle Board") == "板材"
+    assert materials.classify("Solid Pine") == "实木"
+    assert materials.classify("Tempered Glass") == "其他"
+    assert materials.classify("") is None
+    rec = {"title": "Rustic Wood TV Stand", "amazon_material": {"raw": "MDF", "class": "板材"}}
+    assert materials.best(rec) == ("板材", "amazon")
+    assert materials.best({"title": "Solid Wood Nightstand"}) == ("实木", "title")
+
+
+def test_potential_growth_shows_units_when_percentage_is_absurd():
+    from radar.report.render import growth_text
+
+    item = {"potential": {"growth": 93.0}, "monthly": [["2026-08", 13], ["2026-09", 1222]]}
+    assert growth_text(item) == "月销 13 → 1,222 件"
+    assert growth_text({"potential": {"growth": 0.42}, "monthly": []}) == "月环比 +42%"

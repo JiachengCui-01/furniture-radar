@@ -137,24 +137,6 @@ def main_material(title: str) -> str:
     return "未注明"
 
 
-def material_mix(baseline: list[dict], focus: list[dict]) -> list[dict]:
-    """爆火/潜力/上升中商品的主材质构成，和全部商品对比。"""
-    nf, nb = len(focus), len(baseline)
-    if not nf or not nb:
-        return []
-    cf = Counter(main_material(r.get("title", "")) for r in focus)
-    cb = Counter(main_material(r.get("title", "")) for r in baseline)
-    rows = []
-    for label in MATERIAL_CLASSES:
-        count = cf.get(label, 0)
-        if not count and not cb.get(label):
-            continue
-        lift = ((count + 0.5) / (nf + 1)) / ((cb.get(label, 0) + 0.5) / (nb + 1))
-        rows.append({"label": label, "count": count, "share": round(count / nf, 3),
-                     "baseline_share": round(cb.get(label, 0) / nb, 3), "lift": round(lift, 2)})
-    return rows
-
-
 def extract(title: str) -> dict[str, set[str]]:
     title = title or ""
     return {dim: {label for label, rx in rules if rx.search(title)} for dim, rules in _COMPILED.items()}

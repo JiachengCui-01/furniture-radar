@@ -234,7 +234,7 @@ def card(item: dict, kind: str) -> str:
     if kind == "potential" and item.get("potential"):
         p = item["potential"]
         if p.get("growth") is not None:
-            kv.append(f"<span><em>月环比</em> <b>{fmt_pct(p['growth'])}</b></span>")
+            kv.append(f"<span><b>{esc(growth_text(item))}</b></span>")
         kv.append(f"<span><em>近28天日均</em> {fmt_num(p.get('avg28'))} 件</span>")
         if p.get("recent_ratio"):
             kv.append(f"<span><em>较前28天</em> <b>×{p['recent_ratio']:.2f}</b></span>")
@@ -282,6 +282,38 @@ def _design_boxes(design: dict, n_focus: int) -> str:
             f'{_meter(r["share"], r["baseline_share"])}</div>' for r in rows)
         boxes.append(f'<div class="dbox"><h4>{esc(dim)}</h4>{lines}</div>')
     return f'<div class="dgrid">{"".join(boxes)}</div>'
+
+
+def _material_block(m: dict) -> str:
+    if not m.get("rows"):
+        return ""
+    nf, nr = m["n_focus"], m["n_reference"]
+    lines = []
+    for r in m["rows"]:
+        delta = r["share"] - (r["reference_share"] or 0)
+        badge = f'{delta * 100:+.0f} 个百分点' if nr else ""
+        color = "var(--potential)" if delta >= 0.1 else "var(--muted)"
+        ref = f' · 持续热销 {r["reference"]}/{nr}（{r["reference_share"]:.0%}）' if nr else ""
+        lines.append(f'<div class="drow"><span>{esc(r["label"])}</span><span><b style="color:{color}">{badge}</b></span>'
+                     f'<em>爆火/上升中 {r["count"]}/{nf}（{r["share"]:.0%}）{ref}</em><span></span>'
+                     f'{_meter(r["share"], r["reference_share"])}</div>')
+    return ('<h3 class="sub3">主材质：板材 / 实木 / 铁木</h3>'
+            f'<p class="hint">材质优先取亚马逊商品详情里的 Material 属性（本期 {m["from_amazon"]} 个商品有），'
+            '没有的按标题判断。对比对象是持续热销商品；竖线为持续热销中的占比。</p>'
+            f'<div class="dgrid"><div class="dbox">{"".join(lines)}</div></div>')
+
+
+def growth_text(item: dict) -> str:
+    """潜力商品的增长：月环比过大（新品首月很少）时直接写月销量，比百分比直观。"""
+    p = item.get("potential") or {}
+    months = [m for m in item.get("monthly") or [] if m[1]]
+    if p.get("growth") is not None and p["growth"] > 2 and len(months) >= 2:
+        return f"月销 {months[-2][1]:,.0f} → {months[-1][1]:,.0f} 件"
+    if p.get("growth") is not None:
+        return f"月环比 {p['growth']:+.0%}"
+    if p.get("recent_ratio"):
+        return f"近28天 ×{p['recent_ratio']:.1f}"
+    return ""
 
 
 def _vision_block(v: dict) -> str:
@@ -345,10 +377,7 @@ def _traits(tr: dict) -> str:
     parts = [f'<p class="hint">样本：本期突然爆火、潜力和上升中（近 28 天销量增长 ≥30%）的商品共 {tr["n_focus"]} 个，'
              f'对比本月全部头部商品 {tr["n_baseline"]} 个。“×倍数”= 这个特征在爆火/潜力/上升中商品里出现的比例 ÷ '
              f'在全部商品里的比例；进度条竖线为全部商品中的占比。</p>']
-    if tr.get("materials"):
-        rows = [{**m, "asins": []} for m in tr["materials"]]
-        parts.append('<h3 class="sub3">主材质构成（来自商品标题）</h3>'
-                     + _design_boxes({"板材 / 实木 / 铁木": rows}, tr["n_focus"]))
+    parts.append(_material_block(tr.get("materials") or {}))
     if appearance:
         parts.append('<h3 class="sub3">外观与工艺（来自商品标题）</h3>' + _design_boxes(appearance, tr["n_focus"]))
     else:

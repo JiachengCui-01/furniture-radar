@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import analyze, clock, crypto, discovery, log, narrative, store, tracking, verify, vision
+from . import analyze, clock, crypto, discovery, log, materials, narrative, store, tracking, verify, vision
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
 from .notify import dingtalk
@@ -159,7 +159,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     log.info(f"追踪池 {len(pool)} 个 ASIN（其中探索 {explored} 个）")
 
     # 3. 刷新日数据（给核查留出预算）
-    reserve = min(int(bcfg["review_checks"]), vendor.budget.remaining // 4)
+    reserve = min(int(bcfg["review_checks"]) + int(bcfg.get("material_lookups", 0)), vendor.budget.remaining // 4)
     plan = tracking.plan_fetch(pool, state, run_seq, cfg, vendor.budget.remaining - reserve)
     refreshed = 0
     try:
@@ -180,6 +180,13 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     items = result["items"]
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     prev_run = state["runs"][-1] if state.get("runs") else None
+
+    # 主材质：爆火/上升中 + 持续热销对照，查亚马逊商品详情的 Material（查过的永久缓存）
+    focus, reference = analysis_groups(items, cfg)
+    looked = materials.lookup(vendor, focus + reference, state, cfg, today,
+                              int(bcfg.get("material_lookups", 15)))
+    if looked:
+        log.info(f"材质查询 {looked} 个")
 
     # 5. 报告
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
@@ -227,6 +234,14 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     return out
 
 
+def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict]]:
+    """外观/材质分析的两组：爆火/潜力/上升中（按势头）和作对照的持续热销（按月销量）。"""
+    llm = cfg["llm"]
+    focus = analyze.focus_items(items)[: int(llm.get("vision_focus", 20))]
+    reference = analyze.sections(items, 10_000)["hot"][: int(llm.get("vision_reference", 10))]
+    return focus, reference
+
+
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
                  prev_run: dict | None, coverage: dict, today) -> dict:
@@ -234,14 +249,15 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
     trait = analyze.compute_traits(items, disc, state, today)
 
-    # 主图外观识别：爆火 + 潜力，另取几个持续热销作对照
-    llm = cfg["llm"]
-    focus = analyze.focus_items(items)[: int(llm.get("vision_focus", 20))]
-    reference = sec["hot"][: int(llm.get("vision_reference", 8))]
+    # 主图外观识别 + 主材质：爆火/潜力/上升中，另取持续热销作对照
+    focus, reference = analysis_groups(items, cfg)
     tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
     if tagged:
         log.info(f"主图识别 {tagged} 张")
     trait["vision"] = vision.summarize(focus, reference, state)
+    trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
+    for item in items:
+        item["material"], item["material_source"] = materials.best(state["asins"].get(item["asin"]), item["title"])
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of")]

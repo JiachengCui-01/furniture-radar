@@ -21,9 +21,9 @@ scope:
   max_nodes: 30                      # 最多追踪多少个子类目
   # 子类目自己的英文名（最后一级）要匹配“保留”且不匹配“剔除”才会追踪
   include_label_regex: '(?i)\bbeds?\b|bed frames?|headboard|desk|workstation|dresser|\bchests?\b|bookcase|shel(f|ves|ving)|nightstand|night stand|tables?\b|console|\btv\b|media|entertainment|cabinet|storage|pantr|buffet|sideboard|credenza|hutch|vanit|bench|rack|island|armoire|wardrobe|shoe|hall tree|filing|etagere'
-  exclude_label_regex: '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart'
+  exclude_label_regex: '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart|display|laborator|science'
   # 商品标题匹配下面的词直接剔除（软包、布艺抽屉、塑料等）
-  exclude_product_regex: '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\bplastic\b|\bresin\b'
+  exclude_product_regex: '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\bplastic\b|\bresin\b|folding bed|rollaway|mattress set|& mattress|with (?:memory foam |foam |a )?mattress\b'
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
   extra_nodes: []
   #  - path: "1055398:1063306:1063318:3733551"
@@ -47,12 +47,12 @@ discovery:
 
 # ---------------- 追踪池 ----------------
 pool:
-  max_size: 140                      # 核心追踪池上限（另加上升榜和探索位）
+  max_size: 135                      # 核心追踪池上限（另加上升榜 15 + 探索位 5）
   per_node_top: 6                    # 每个子类目按销量取前 N（同一父体只取一个）
-  momentum_top: 25                   # 全局按“上升势头”再取前 N
+  momentum_top: 20                   # 全局按“上升势头”再取前 N
   watch_runs: 3                      # 被标记过的 ASIN 继续追踪的期数
   risers_top: 15                     # 从 BSR 上升榜里取前 N 个加入追踪
-  explore_per_run: 15                # 探索位：每期从基线里轮换抽查 N 个（发现本月才起量的商品）
+  explore_per_run: 5                 # 探索位：每期从基线里轮换抽查 N 个（发现本月才起量的商品）
   explore_cooldown_runs: 6           # 抽查过的 N 期内不重复抽查
 
 # ---------------- 卖家精灵调用预算 ----------------
@@ -61,6 +61,7 @@ budget:
   bootstrap_run: 230                 # 需要重新发现子类目的那一期（首期 / 换范围 / 每月初）
   monthly_cap: 1800                  # 每月总上限
   review_checks: 5                   # 每期对可疑商品做评论核查的个数（每个 1~2 次调用）
+  material_lookups: 15               # 每期最多查多少个商品的亚马逊 Material 属性（查过的永久缓存，之后每期只查新商品）
   stable_refresh_every: 1            # 每期都刷新全部追踪商品，报告完全反映当期最新情况
   min_interval_seconds: 1.0          # 两次调用之间的最小间隔（卖家精灵有每分钟次数上限）
   rate_limit_wait_seconds: 60        # 被限流（“每分钟访问已达上限”）时等待多久再重试，最多重试 3 次

@@ -76,6 +76,11 @@ class Product:
         if kind in ("surge", "potential", "price_surge"):
             material = f"{TREND_WORDS} {material}"
         self.title = rng.choice(TITLES[self.cn]).format(s=style, m=material)
+        # 亚马逊详情页的 Material 属性：有时和标题说法不同（标题写 Rustic Wood，实际是板材）
+        self.material_attr = {"Engineered Wood": "Engineered Wood", "Solid Wood": "Solid Wood",
+                              "Metal Frame and Wood": "Metal, Engineered Wood", "Acacia Wood": "Acacia",
+                              "Rustic Brown Wood": "Engineered Wood", "MDF": "MDF",
+                              }.get(material.replace(f"{TREND_WORDS} ", ""), "")
         if kind == "upholstered":  # 软包床：商品级过滤应剔除
             self.title = "Upholstered " + self.title
         self.price = round(rng.uniform(120, 700) if self.cn in ("电视柜", "床架", "餐边柜", "沙发") else rng.uniform(60, 320), 2)
@@ -273,6 +278,7 @@ class SyntheticWorld:
         if tool == "asin_detail":
             p = self.by_asin[req["asin"]]
             return self._ok({"asin": p.asin, "parent": p.parent, "variations": p.variations,
+                             "overviews": json.dumps({"Brand": p.brand, "Material": p.material_attr}),
                              "ratings": p.ratings_on(self.data_end, self.today), "rating": p.rating})
         if tool == "review":
             p = self.by_asin[req["asin"]]

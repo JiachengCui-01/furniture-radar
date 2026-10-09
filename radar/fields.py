@@ -19,7 +19,7 @@ FIELD_SETS: dict[str, tuple[str, ...]] = {
     "asin_detail": (
         "asin", "title", "brand", "parent", "availableDate", "firstRatingDate", "bsrRank",
         "nodeIdPath", "nodeLabelPath", "price", "coupon", "rating", "ratings", "sellers",
-        "sellerName", "fulfillment", "variations", "imageUrl",
+        "sellerName", "fulfillment", "variations", "imageUrl", "overviews",
     ),
     # 嵌套结构 {asinDetail, dailyItemList[], monthItemList[]}，returnFields 管不到
     "asin_prediction": (),

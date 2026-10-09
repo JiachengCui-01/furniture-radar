@@ -15,6 +15,7 @@ import httpx
 
 from .. import log
 from ..analyze import display_name
+from ..report.render import growth_text
 from ..narrative import top_design_labels
 
 
@@ -110,14 +111,7 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     if sec["potential"]:
         lines.append("**🌱 潜力产品**")
         for item in sec["potential"][:max_items]:
-            p = item["potential"] or {}
-            if p.get("growth") is not None:
-                extra = f" 月环比{p['growth']:+.0%}"
-            elif p.get("recent_ratio"):
-                extra = f" 近28天×{p['recent_ratio']:.1f}"
-            else:
-                extra = ""
-            lines.append(item_line(item, extra))
+            lines.append(item_line(item, " " + growth_text(item)))
         lines.append("")
     high = [i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:
@@ -128,7 +122,8 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("")
     traits = ctx.get("traits") or {}
     looks = top_design_labels(traits)
-    mats = [m for m in traits.get("materials") or [] if m["count"] and "未注明" not in m["label"]]
+    mats = [m for m in (traits.get("materials") or {}).get("rows", [])
+            if m["count"] and m["label"] not in ("未注明", "其他")]
     mats.sort(key=lambda m: -m["share"])
     if mats:
         lines.append("**🪵 爆火/上升商品主材质**：" + "、".join(f"{m['label']} {m['share']:.0%}" for m in mats[:3]))
