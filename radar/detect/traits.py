@@ -1,4 +1,4 @@
-"""爆火/潜力产品的共性特点：与整个家具基线（发现阶段的约 2000 个 ASIN）对比，找出显著偏高的特征。
+"""增长商品（突然爆火 + 潜力 + 上升中）的共性特点：与全部头部商品（发现阶段的约 1600 个 ASIN）对比，找出显著偏高的特征。
 
 重点是外观与工艺（design.py 的设计词库），其次是子类目、价格段、上架时长等结构特征。
 
@@ -118,7 +118,7 @@ def compute(baseline: list[dict], focus: list[dict], today: date) -> dict:
     nf, nb = len(focus), len(baseline)
     result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}, "design": {}}
     if nf < 3 or nb < 20:
-        result["note"] = "本期爆火/潜力样本太少（少于 3 个），暂不总结共性特点"
+        result["note"] = "本期增长商品太少（少于 3 个），暂不总结共性特点"
         return result
 
     result["design"] = design.compare(baseline, focus)
@@ -165,3 +165,35 @@ def compute(baseline: list[dict], focus: list[dict], today: date) -> dict:
         result["numbers"][name] = {"focus": _median([r.get(key) for r in focus]),
                                    "baseline": _median([r.get(key) for r in baseline])}
     return result
+
+
+def merge_appearance(design_rows: dict, vision: dict | None, per_dim: int = 4) -> dict[str, list[dict]]:
+    """外观特征清单（风格 / 造型 / 工艺 / 颜色；材质只看主材质）。两种依据按特征名合并，每个特征只出现一次：
+      title：标题统计，增长商品 vs 全部头部商品（design.compare 已筛过：占比 ≥15%、提升 ≥1.3 倍）
+      image：主图识别，增长商品里势头最强的若干个 vs 持续热销对照组（只取比对照组多 20 个百分点以上的，
+             或者标题统计里也出现的）
+    两种依据都有时必须同向（都比对照组多），方向相反的特征不算趋势、不列出。按“比对照组多出的占比”排序。"""
+    vdims = (vision or {}).get("dimensions") or {}
+    out: dict[str, list[dict]] = {}
+    for dim in design.APPEARANCE_DIMENSIONS:
+        feats: dict[str, dict] = {}
+        for r in (design_rows or {}).get(dim, []):
+            feats.setdefault(r["label"], {"label": r["label"]})["title"] = r
+        for r in vdims.get(dim, []):
+            if r.get("distinct") or r["label"] in feats:
+                feats.setdefault(r["label"], {"label": r["label"]})["image"] = r
+        for label in list(feats):
+            i = feats[label].get("image")
+            if i and i.get("reference_share") is not None and i["focus_share"] < i["reference_share"]:
+                del feats[label]  # 标题统计说更多、主图识别说更少：依据冲突
+
+        def gap(f: dict) -> float:
+            t, i = f.get("title"), f.get("image")
+            a = t["share"] - t["baseline_share"] if t else 0.0
+            b = i["focus_share"] - (i["reference_share"] or 0) if i else 0.0
+            return max(a, b) + (0.05 if t and i else 0.0)  # 两种依据都支持的排前面
+
+        rows = sorted(feats.values(), key=lambda f: -gap(f))
+        if rows:
+            out[dim] = rows[:per_dim]
+    return out

@@ -1,6 +1,8 @@
 """生成报告 HTML（明文）。之后由 shell.py 加密包装再发布。
 
 单文件、无外部脚本/字体，只有商品图片引用亚马逊图床；适配手机和深色模式。
+主体只有：KPI 数字 → 本期要点 → 外观与工艺依据 → 与上期对比 → 数据说明。
+商品清单（各板块、增长商品、全部追踪商品）都放在隐藏的小窗内容里，点 KPI 数字或链接才弹出。
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from ..tracking import REASON_CN
 from .sparkline import bars, sparkline
 
 LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
-               "low": "muted"}
+               "low": "muted", "rising": "accent"}
 
 
 def esc(value) -> str:
@@ -90,10 +92,12 @@ header h1{font-size:22px;margin:4px 0 2px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .chip{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted)}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;border-top:3px solid var(--c)}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;border-top:3px solid var(--c);
+font:inherit;color:inherit;text-align:left;width:100%}
 .kpi b{display:block;font-size:26px;line-height:1.2;color:var(--c)}
 .kpi span{font-size:13px;color:var(--muted)}
 @media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi-hint{margin:-6px 0 0;font-size:12px}
 section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
 section>h2{font-size:18px;margin:0 0 4px;display:flex;align-items:center;gap:8px}
 section>h2 .dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
@@ -110,6 +114,8 @@ padding:10px;border-left:4px solid var(--c)}
 overflow:hidden}
 .card .t a{color:inherit;text-decoration:none}
 .meta{color:var(--muted);font-size:12.5px;margin:2px 0}
+.look{font-size:12.5px;margin:2px 0}.look em{font-style:normal;color:var(--muted);margin-right:6px}
+.grp{font-size:11.5px;border-radius:6px;padding:1px 7px;background:var(--c);color:#fff}
 .kv{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;margin:4px 0}
 .kv em{font-style:normal;color:var(--muted)}
 .tags{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
@@ -137,7 +143,7 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 .kw span{border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:13px}
 .kw span b{color:var(--potential);font-weight:600;margin-left:4px}
 details{margin-top:6px}summary{cursor:pointer;color:var(--accent)}
-.hist a{margin-right:10px}
+.hist a{margin-left:8px}
 a{color:var(--accent)}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:16px 0 28px}
 .kpi{cursor:pointer;-webkit-tap-highlight-color:transparent}
@@ -161,21 +167,12 @@ html.noscroll,html.noscroll body{overflow:hidden}
 .drow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;font-size:13px;margin:7px 0}
 .drow .m{grid-column:1/-1}
 .drow em{font-style:normal;color:var(--muted);font-size:12px}
-.drow b{color:var(--potential)}
-.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin:8px 0}
-.gitem{border:1px solid var(--line);border-radius:10px;padding:8px;font-size:12.5px;border-top:3px solid var(--c)}
-.gitem img{width:100%;height:140px;object-fit:contain;background:#fff;border-radius:8px;display:block}
-.gitem p{margin:6px 0 4px;line-height:1.45}
-.gitem .gt{font-weight:600;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
-.vchips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
-.vchips span{border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:13px}
-.vchips span i{font-style:normal;color:var(--muted);font-size:12px;margin-left:4px}
-.vchips span.hi{border-color:var(--potential);background:rgba(43,138,62,.08)}
-h3.sub3{font-size:15px;margin:16px 0 6px}
+.drow span:nth-child(2){font-variant-numeric:tabular-nums;color:var(--potential);font-weight:600}
 """
 
 
-# 顶部四个数字点开后以小窗展示对应板块，不跳转页面；没有脚本时退回为页内跳转
+
+# 主体只放结论和依据；商品清单都是隐藏的“小窗内容”，点 KPI 数字或链接时弹出，不跳转页面
 POPUP = """<div class="pop" id="pop" hidden><div class="pop-mask" data-close></div>
 <div class="pop-panel" role="dialog" aria-modal="true" aria-labelledby="pop-title">
 <div class="pop-head"><b id="pop-title"></b><button type="button" class="pop-x" data-close aria-label="关闭">×</button></div>
@@ -183,9 +180,9 @@ POPUP = """<div class="pop" id="pop" hidden><div class="pop-mask" data-close></d
 <script>(function(){
 var pop=document.getElementById('pop'),body=document.getElementById('pop-body'),title=document.getElementById('pop-title');
 function closest(el,sel){while(el&&el.nodeType===1){if(el.matches?el.matches(sel):el.msMatchesSelector(sel))return el;el=el.parentNode;}return null;}
-function open(id){var sec=document.getElementById(id);if(!sec)return false;var src=sec.querySelector('.pop-src');if(!src)return false;
-title.textContent=sec.querySelector('h2').textContent;body.innerHTML=src.innerHTML;
-pop.querySelector('.pop-panel').style.setProperty('--c',sec.style.getPropertyValue('--c'));
+function open(key){var src=document.getElementById('pop-'+key);if(!src)return false;
+title.textContent=src.getAttribute('data-title');body.innerHTML=src.innerHTML;
+pop.querySelector('.pop-panel').style.setProperty('--c','var(--'+src.getAttribute('data-c')+')');
 pop.hidden=false;document.documentElement.className+=' noscroll';body.scrollTop=0;return true;}
 function close(){pop.hidden=true;document.documentElement.className=document.documentElement.className.replace(/\\s*noscroll/g,'');}
 document.addEventListener('click',function(e){var t=closest(e.target,'[data-pop]');
@@ -194,12 +191,14 @@ if(closest(e.target,'[data-close]'))close();});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode===27)close();});
 })();</script>"""
 
+GROUP_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
+
 
 def _tags(item: dict) -> str:
     out = []
     for tag in item["tags"]:
         cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定")) else \
-            "good" if tag in ("持续型", "潜力", "爬升型", "新品爆发") else \
+            "good" if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith("上升中") else \
             "info" if any(k in tag for k in ("季节", "大促", "头部", "变体")) else ""
         out.append(f'<span class="tag {cls}">{esc(tag)}</span>')
     return f'<div class="tags">{"".join(out)}</div>' if out else ""
@@ -221,9 +220,10 @@ def _head(item: dict) -> str:
             f'<div class="meta">{meta}</div>')
 
 
-def card(item: dict, kind: str) -> str:
+def card(item: dict, kind: str, group: str = "") -> str:
+    """kind：surge / potential / hot / fake / rising（决定展示哪些数字和走势图）；group：增长商品小窗里的归类。"""
     c = LABEL_COLOR.get(kind, "muted")
-    kv: list[str] = []
+    kv: list[str] = [f'<span class="grp">{esc(group)}</span>'] if group else []
     s = item.get("surge")
     if kind == "surge" or (kind == "fake" and s):
         ratio = f"×{s['sales_ratio']:.1f}" if s.get("sales_ratio") else "从零起量"
@@ -252,59 +252,41 @@ def card(item: dict, kind: str) -> str:
     if kind == "fake":
         level = "高度疑似" if item["fake"]["level"] == "high" else "疑似"
         kv.insert(0, f'<span><span class="score">异常分 {item["fake"]["score"]}</span>{level}</span>')
-    if kind not in ("surge",) and item.get("recent_avg28") is not None and kind != "potential":
+    if kind in ("hot", "fake", "rising") and item.get("recent_avg28") is not None:
         kv.append(f"<span><em>近28天日均</em> {fmt_num(item['recent_avg28'])} 件</span>")
 
     chart = bars(item["monthly"][-12:]) if kind == "hot" else sparkline(item.get("spark") or [])
+    look = f'<div class="look"><em>外观</em>{esc(item["look"])}</div>' if item.get("look") else ""
     signals = ""
-    if item["fake"]["signals"] and kind in ("fake", "surge", "potential"):
+    if item["fake"]["signals"] and kind in ("fake", "surge", "potential", "rising"):
         signals = "<ul class=\"signals\">" + "".join(
             f"<li>{esc(sig['text'])}（+{sig['points']}）</li>" for sig in item["fake"]["signals"]) + "</ul>"
     return (f'<article class="card" style="--c:var(--{c})">{_head(item)}'
-            f'<div class="kv">{"".join(kv)}</div>{_tags(item)}{signals}{chart}</div></article>')
+            f'<div class="kv">{"".join(kv)}</div>{look}{_tags(item)}{signals}{chart}</div></article>')
 
 
-def _section(kind: str, title: str, hint: str, items: list[dict], total: int) -> str:
+def _pop_src(key: str, title: str, color: str, inner: str) -> str:
+    return f'<div class="pop-src" id="pop-{key}" data-title="{esc(title)}" data-c="{color}" hidden>{inner}</div>'
+
+
+def _section_pop(kind: str, title: str, hint: str, items: list[dict], total: int) -> str:
     more = f"（共 {total} 个，展示前 {len(items)} 个）" if total > len(items) else ""
     body = "".join(card(i, kind) for i in items) if items else '<div class="empty">本期没有符合条件的商品。</div>'
-    return (f'<section id="{kind}" style="--c:var(--{LABEL_COLOR[kind]})"><h2><span class="dot"></span>{esc(title)}</h2>'
-            f'<div class="pop-src"><p class="hint">{esc(hint)}{more}</p><div class="cards">{body}</div></div></section>')
+    return _pop_src(kind, title, LABEL_COLOR[kind], f'<p class="hint">{esc(hint)}{more}</p><div class="cards">{body}</div>')
+
+
+def _growth_pop(focus: list[dict], hint: str) -> str:
+    cards = []
+    for i in focus:
+        kind = i["label"] if i["label"] in ("surge", "potential") else "rising"
+        cards.append(card(i, kind, GROUP_CN[kind]))
+    body = "".join(cards) or '<div class="empty">本期没有增长商品。</div>'
+    return _pop_src("growth", "增长商品", "potential", f'<p class="hint">{esc(hint)}</p><div class="cards">{body}</div>')
 
 
 def _meter(share: float, base: float | None) -> str:
     tick = f'<u style="left:{min(100, base * 100):.0f}%"></u>' if base is not None else ""
     return f'<div class="meter m"><i style="width:{min(100, share * 100):.0f}%"></i>{tick}</div>'
-
-
-def _design_boxes(design: dict, n_focus: int) -> str:
-    boxes = []
-    for dim, rows in design.items():
-        lines = "".join(
-            f'<div class="drow"><span>{esc(r["label"])}</span>'
-            f'<span><b{"" if r["lift"] >= 1 else " style=color:var(--muted)"}>×{r["lift"]}</b></span>'
-            f'<em>爆火/上升中 {r["count"]}/{n_focus}（{r["share"]:.0%}）· 全部商品 {r["baseline_share"]:.0%}</em><span></span>'
-            f'{_meter(r["share"], r["baseline_share"])}</div>' for r in rows)
-        boxes.append(f'<div class="dbox"><h4>{esc(dim)}</h4>{lines}</div>')
-    return f'<div class="dgrid">{"".join(boxes)}</div>'
-
-
-def _material_block(m: dict) -> str:
-    if not m.get("rows"):
-        return ""
-    nf, nr = m["n_focus"], m["n_reference"]
-    lines = []
-    for r in m["rows"]:
-        delta = r["share"] - (r["reference_share"] or 0)
-        badge = f'{delta * 100:+.0f} 个百分点' if nr else ""
-        color = "var(--potential)" if delta >= 0.1 else "var(--muted)"
-        ref = f' · 持续热销 {r["reference"]}/{nr}（{r["reference_share"]:.0%}）' if nr else ""
-        lines.append(f'<div class="drow"><span>{esc(r["label"])}</span><span><b style="color:{color}">{badge}</b></span>'
-                     f'<em>爆火/上升中 {r["count"]}/{nf}（{r["share"]:.0%}）{ref}</em><span></span>'
-                     f'{_meter(r["share"], r["reference_share"])}</div>')
-    return ('<h3 class="sub3">主材质：板材 / 实木 / 铁木</h3>'
-            f'<p class="hint">材质优先取亚马逊商品详情里的 Material 属性（本期 {m["from_amazon"]} 个商品有），'
-            '没有的按标题判断。对比对象是持续热销商品；竖线为持续热销中的占比。</p>'
-            f'<div class="dgrid"><div class="dbox">{"".join(lines)}</div></div>')
 
 
 def growth_text(item: dict) -> str:
@@ -320,34 +302,33 @@ def growth_text(item: dict) -> str:
     return ""
 
 
-def _vision_block(v: dict) -> str:
-    if not v or not v.get("n_focus"):
+def _material_box(m: dict) -> str:
+    rows = [r for r in m.get("rows") or [] if r["count"] or r["reference"]]
+    if not rows:
         return ""
-    parts = [f'<h3 class="sub3">主图识别：爆火/上升中的商品长什么样</h3>'
-             f'<p class="hint">AI 看了 {v["n_focus"]} 个爆火/潜力/上升中商品的主图'
-             + (f'，并对照 {v["n_reference"]} 个持续热销商品' if v.get("n_reference") else "")
-             + '。数字为“出现该特征的商品数 / 识别数”；绿框 = 比持续热销明显更常见的外观。</p>']
-    for dim, rows in (v.get("dimensions") or {}).items():
-        chips = "".join(
-            f'<span{" class=hi" if r.get("distinct") else ""}>{esc(r["label"])} <b>{r["focus"]}/{v["n_focus"]}</b>'
-            + (f'<i>热销 {r["reference"]}/{v["n_reference"]}</i>' if v.get("n_reference") else "")
-            + '</span>' for r in rows)
-        parts.append(f'<div class="drow" style="margin:8px 0"><span><b style="color:var(--text)">{esc(dim)}</b></span>'
-                     f'<span></span><div class="vchips m">{chips}</div></div>')
-    gallery = []
-    for g in v.get("gallery") or []:
-        c = "surge" if g["label"] == "surge" else "potential" if g["label"] == "potential" else "hot"
-        tags = [t for dim in ("风格", "材质", "造型", "工艺", "颜色") for t in (g["tags"].get(dim) or [])][:6]
-        img = f'<img src="{esc(g["image"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if g.get("image") else ""
-        gallery.append(
-            f'<a class="gitem" style="--c:var(--{c});color:inherit;text-decoration:none" target="_blank" '
-            f'rel="noopener noreferrer" href="https://www.amazon.com/dp/{esc(g["asin"])}">{img}'
-            f'<p class="gt">{esc(display_name(g.get("brand") or "", g.get("title") or ""))}</p>'
-            f'<p>{esc(g.get("summary") or "")}</p>'
-            f'<div class="tags">{"".join(f"<span class=tag>{esc(t)}</span>" for t in tags)}</div></a>')
-    if gallery:
-        parts.append(f'<div class="gallery">{"".join(gallery)}</div>')
-    return "".join(parts)
+    nf, nr = m["n_focus"], m["n_reference"]
+    lines = []
+    for r in rows:
+        ref = f" · 持续热销对照组 {r['reference']}/{nr}" if nr else ""
+        lines.append(f'<div class="drow"><span>{esc(r["label"])}</span><span>{r["share"]:.0%}</span>'
+                     f'<em>增长商品 {r["count"]}/{nf}{ref}</em>{_meter(r["share"], r["reference_share"])}</div>')
+    return f'<div class="dbox"><h4>主材质</h4>{"".join(lines)}</div>'
+
+
+def _feature_box(dim: str, rows: list[dict], vision: dict) -> str:
+    lines = []
+    for f in rows:
+        t, i = f.get("title"), f.get("image")
+        ev = []
+        if t:
+            ev.append(f"标题：增长商品 {t['share']:.0%} · 全部头部商品 {t['baseline_share']:.0%}")
+        if i:
+            ref = f" · 持续热销对照组 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
+            ev.append(f"主图：增长商品 {i['focus']}/{vision['n_focus']}{ref}")
+        share, base = (t["share"], t["baseline_share"]) if t else (i["focus_share"], i["reference_share"])
+        lines.append(f'<div class="drow"><span>{esc(f["label"])}</span><span>{share:.0%}</span>'
+                     f'<em>{"<br>".join(esc(e) for e in ev)}</em>{_meter(share, base)}</div>')
+    return f'<div class="dbox"><h4>{esc(dim)}</h4>{"".join(lines)}</div>'
 
 
 def _structure(tr: dict) -> str:
@@ -355,42 +336,45 @@ def _structure(tr: dict) -> str:
     for f in tr.get("facts", []):
         rows.append(
             f"<tr><td>{esc(f['dimension'])}</td><td>{esc(f['value'])}</td>"
-            f"<td class=n>{f['share']:.0%}</td><td class=n>{f['baseline_share']:.0%}</td>"
-            f"<td class=n>×{f['lift']}</td></tr>")
-    table = ("<div class=tbl><table><thead><tr><th>维度</th><th>特征</th><th class=n>爆火/潜力中</th>"
-             "<th class=n>全部家具中</th><th class=n>提升</th></tr></thead><tbody>"
-             + "".join(rows) + "</tbody></table></div>") if rows else '<p class="empty">没有显著偏高的结构特征。</p>'
-    kws = "".join(f"<span title=\"爆火/潜力中 {k['share']:.0%}，全部家具中 {k['baseline_share']:.0%}\">"
-                  f"{esc(k['term'])}<b>×{k['lift']}</b></span>" for k in tr.get("keywords", []))
+            f"<td class=n>{f['share']:.0%}</td><td class=n>{f['baseline_share']:.0%}</td></tr>")
+    table = ("<div class=tbl><table><thead><tr><th>维度</th><th>特征</th><th class=n>增长商品</th>"
+             "<th class=n>全部头部商品</th></tr></thead><tbody>"
+             + "".join(rows) + "</tbody></table></div>") if rows else '<p class="empty">没有明显偏多的结构特征。</p>'
+    kws = "".join(f"<span title=\"增长商品 {k['share']:.0%}，全部头部商品 {k['baseline_share']:.0%}\">"
+                  f"{esc(k['term'])}<b>{k['share']:.0%}</b></span>" for k in tr.get("keywords", []))
     numbers = []
     for name, v in (tr.get("numbers") or {}).items():
         if v.get("focus") is not None and v.get("baseline") is not None:
             fmt = fmt_price if "价格" in name else (lambda x: fmt_num(x, 1))
-            numbers.append(f"<span class=chip>{esc(name)}：{fmt(v['focus'])}（全部 {fmt(v['baseline'])}）</span>")
+            numbers.append(f"<span class=chip>{esc(name)}：增长商品 {fmt(v['focus'])} · 全部头部商品 {fmt(v['baseline'])}</span>")
     return (f"<details><summary>其他特征：子类目、价格段、上架时长、标题高频词</summary>{table}"
             + (f"<div class=kw style=\"margin-top:10px\">{kws}</div>" if kws else "")
             + (f"<div class=chips style=\"margin-top:10px\">{''.join(numbers)}</div>" if numbers else "")
             + "</details>")
 
 
-def _traits(tr: dict) -> str:
+def _traits(tr: dict, counts: dict) -> str:
     if tr.get("note"):
         return f'<p class="empty">{esc(tr["note"])}</p>'
-    design = tr.get("design") or {}
-    appearance = {d: rows for d, rows in design.items() if d != "功能卖点"}
-    parts = [f'<p class="hint">样本：本期突然爆火、潜力和上升中（近 28 天销量增长 ≥30% 且没有回落）的商品共 {tr["n_focus"]} 个，'
-             f'对比本月全部头部商品 {tr["n_baseline"]} 个。“×倍数”= 这个特征在爆火/潜力/上升中商品里出现的比例 ÷ '
-             f'在全部商品里的比例；进度条竖线为全部商品中的占比。</p>']
-    parts.append(_material_block(tr.get("materials") or {}))
-    if appearance:
-        parts.append('<h3 class="sub3">外观与工艺（来自商品标题）</h3>' + _design_boxes(appearance, tr["n_focus"]))
-    else:
-        parts.append('<p class="empty">标题里没有明显偏多的外观/工艺特征。</p>')
-    parts.append(_vision_block(tr.get("vision") or {}))
-    if design.get("功能卖点"):
-        parts.append('<h3 class="sub3">功能卖点</h3>' + _design_boxes({"功能卖点": design["功能卖点"]}, tr["n_focus"]))
-    parts.append(_structure(tr))
-    return "".join(parts)
+    vision = tr.get("vision") or {}
+    mats = tr.get("materials") or {}
+    sample = (f'<a href="#" data-pop="growth">增长商品 {tr["n_focus"]} 个</a>（突然爆火 {counts["surge"]} + 潜力 {counts["potential"]}'
+              f' + 上升中 {counts.get("rising", 0)}）。标题统计对比全部头部商品 {tr["n_baseline"]} 个；')
+    if vision.get("n_focus"):
+        sample += f'主图识别看增长商品里势头最强的 {vision["n_focus"]} 个；'
+    sample += (f'主材质看全部增长商品（每个商品一类，依次取亚马逊 Material 属性、标题、主图识别）；'
+               f'后两者都对比持续热销对照组（月销量最高的 {mats.get("n_reference") or 0} 个）。'
+               '两种依据方向相反的特征不列。百分比是增长商品中的占比，进度条竖线是对比对象中的占比。')
+    boxes = [_material_box(mats)]
+    for dim, rows in (tr.get("appearance") or {}).items():
+        boxes.append(_feature_box(dim, rows, vision))
+    selling = (tr.get("design") or {}).get("功能卖点") or []
+    if selling:
+        boxes.append(_feature_box("功能卖点", [{"label": r["label"], "title": r} for r in selling], vision))
+    body = "".join(b for b in boxes if b)
+    if not (tr.get("appearance") or selling):
+        body += '<p class="empty">增长商品没有明显偏多的外观/工艺特征。</p>'
+    return f'<p class="hint">{sample}</p><div class="dgrid">{body}</div>{_structure(tr)}'
 
 
 def _changes(diff: dict, by_asin: dict) -> str:
@@ -404,19 +388,20 @@ def _changes(diff: dict, by_asin: dict) -> str:
         title = (item or {}).get("title", asin)
         name = display_name((item or {}).get("brand", ""), title)
         return f"<a href=\"https://www.amazon.com/dp/{esc(asin)}\" target=_blank rel=\"noopener noreferrer\">" \
-               f"{esc(name[:48])}</a>"
+               f"{esc(name[:40])}</a>"
 
     parts = []
     for label in ("surge", "potential", "fake", "hot"):
         asins = diff["new"].get(label) or []
         if asins:
-            parts.append(f"<li>新进入「{names[label]}」{len(asins)} 个：" + "、".join(name(a) for a in asins[:8])
-                         + ("…" if len(asins) > 8 else "") + "</li>")
+            parts.append(f"<li>新进入「{names[label]}」{len(asins)} 个：" + "、".join(name(a) for a in asins[:5])
+                         + ("…" if len(asins) > 5 else "") + "</li>")
     moves = [t for t in diff.get("transitions", []) if t["from"] != "watch" and t["to"] != "watch"]
-    for t in moves[:12]:
+    for t in moves[:8]:
         parts.append(f"<li>{name(t['asin'])}：{names.get(t['from'], t['from'])} → <b>{names.get(t['to'], t['to'])}</b></li>")
     if diff.get("cooled"):
-        parts.append(f"<li>爆火回落 {len(diff['cooled'])} 个：" + "、".join(name(a) for a in diff["cooled"][:8]) + "</li>")
+        parts.append(f"<li>不再爆火 {len(diff['cooled'])} 个：" + "、".join(name(a) for a in diff["cooled"][:5])
+                     + ("…" if len(diff["cooled"]) > 5 else "") + "</li>")
     if not parts:
         return '<p class="empty">与上期相比没有明显变化。</p>'
     return f'<p class="hint">对比上期 {esc(diff.get("prev_id", ""))}</p><ul>{"".join(parts)}</ul>'
@@ -435,101 +420,114 @@ def _all_table(items: list[dict]) -> str:
             f"<td class=n>{fmt_num(i.get('rating'))}</td><td class=n>{fmt_int(i.get('ratings'))}</td>"
             f"<td class=n>{i['fake']['score']}</td>"
             f"<td>{esc('、'.join(i['tags']))}</td></tr>")
-    return ("<div class=tbl><table><thead><tr><th>ASIN</th><th>品牌</th><th>子类目</th><th>判定</th><th>来源</th>"
+    return ("<div class=tbl><table><thead><tr><th>ASIN</th><th>品牌</th><th>子类目</th><th>板块</th><th>来源</th>"
             "<th class=n>近28天日均</th><th class=n>BSR</th><th class=n>价格</th><th class=n>评分</th><th class=n>评论</th>"
             "<th class=n>异常分</th><th>标签</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
 
 
 def section_hints(cfg: dict) -> dict[str, str]:
-    """每个板块的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。"""
+    """每个小窗顶部的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。共用概念见 _method。"""
     th = cfg["thresholds"]
-    s, h, p, f = th["surge"], th["hot"], th["potential"], th["fake"]
+    s, h, p, f, r = th["surge"], th["hot"], th["potential"], th["fake"], th["rising"]
     windows = " 或 ".join(map(str, s["windows"]))
     return {
         "surge": f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
-                 f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；属于新品爆发 / 脉冲型 / 持续型 / 爬升型之一（定义见页面底部“判定方法”）；没有回落；"
-                 f"异常分 <{f['suspect_score']}（轻微信号会列在卡片上）。按爆发强度排序。",
+                 f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 稳在高位 / 仍在上涨之一；"
+                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。按爆发强度排序。",
         "potential": f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条；近 28 天日均 ≥{p['min_daily_sales']} 件、"
-                     f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍；有两个以上完整月份的，月销量环比 ≥{p['min_monthly_growth']:.0%}；"
-                     f"没有回落；异常分 <{f['suspect_score']}。按增长排序。",
+                     f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
+                     f"没有回落；异常分 <{f['suspect_score']}。按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平；"
                f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
                f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}。按近 6 个月月均销量排序。",
-        "fake": f"异常分 ≥{f['suspect_score']} 的商品（留评率过高、评论增速远超销量、评分短期跳升、评论集中在少数几天等），"
-                f"不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。仅为数据异常提示，需人工核实。",
+        "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
+                f"仅为数据异常提示，需人工核实。按异常分排序。",
+        "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
+                  f"且 ≥{r['min_daily_sales']} 件、没有回落。“外观与工艺依据”就是从这些商品统计的。按势头排序。",
+        "all": "本期追踪的全部商品。“板块”是本期归入的板块（观察 = 不属于任何板块），“来源”是它被选进追踪的原因。",
     }
 
 
 def _method(cfg: dict) -> str:
+    """共用概念的定义。各板块自己的入选条件写在对应小窗顶部，这里不重复。"""
     th = cfg["thresholds"]
-    s, h, p, f, m = th["surge"], th["hot"], th["potential"], th["fake"], th["momentum"]
-    hints = section_hints(cfg)
+    s, f, m = th["surge"], th["fake"], th["momentum"]
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
-<li>数据来自卖家精灵：月度头部商品（product_research，已结束月份）+ 近 30 天榜单 + 每个 ASIN 约 400 天的日销量/BSR/价格（asin_prediction）。
-日销量是卖家精灵根据 BSR 估算的，因此以 BSR 中位数为主信号，销量用于门槛和倍数。每个商品只归入一个板块，优先级：评分不达标 &gt; 异常信号 &gt; 突然爆火 &gt; 潜力 &gt; 持续热销。</li>
-<li><b>候选与新鲜度</b>：所有判定都基于每个商品截至最近一天的日数据。候选来自三处：卖家精灵近 30 天榜单（销量增长、BSR 上升、新品，每期刷新）、
-上期爆款的相似款（近 30 天数据）、月度头部名单。每期的追踪名额依次给：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']} + 全部类目里销量最大的）、
-相似款、机会候选（机会分最高的 {cfg['pool']['opportunity_every_run']} 个每期都看，其余按最久没查轮流查）。
+<li><b>数据</b>：卖家精灵的月度头部名单（product_research，已结束月份）、近 30 天榜单（不传月份，截至当天）、
+每个追踪商品约 400 天的日销量 / BSR / 价格（asin_prediction）。日销量是卖家精灵按 BSR 估算的，所以以 BSR 中位数为主信号。
+所有判定都基于每个商品截至最近一天的日数据；日数据超过 {th['stale_days']} 天没更新的标“数据陈旧”，不做爆火/潜力判断。</li>
+<li><b>追踪名额</b>：依次给必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']} + 全部类目里销量最大的）、
+上期爆款的相似款、机会候选（近 30 天榜单和月度名单里增长快或上架半年内的；机会分最高的 {cfg['pool']['opportunity_every_run']} 个每期都看，其余按最久没查轮流查）。
 机会分综合销量增长率、近 7 天 BSR 改善、子类目内销量位次、是否上架半年内。</li>
-<li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']} 的商品
-（评论少时几条差评就会跌破 {th['min_rating']}，卖家精灵的评分也比亚马逊晚几天），不进入任何板块和外观分析样本，也不占追踪名额；
-各板块按排序取前几名，剔除的由后面的商品依次补位。评分优先取最新日数据，还没有评论的新品不受限。</li>
+<li><b>板块归属</b>：每个商品只归入一个板块，优先级：评分不达标 &gt; 异常信号 &gt; 突然爆火 &gt; 潜力 &gt; 持续热销；都不属于的为“观察”。
+同时也符合潜力 / 持续热销条件的，在卡片上标“潜力”/“长期头部”。各板块的入选条件见点开后小窗顶部。</li>
+<li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']}（评论少时几条差评就会跌破
+{th['min_rating']}，卖家精灵的评分也比亚马逊晚几天）的，不进任何板块和增长商品，也不占追踪名额，由后面的商品依次补位。
+评分优先取最新日数据；还没有评论的新品不受限。</li>
 <li><b>回落</b>：近 7 天日均比最近 4 周里最高的一周低 {1 - m['min_vs_peak_week']:.0%} 以上，或最近 3 天日均比近 7 天低 {1 - m['min_last3_vs_7d']:.0%} 以上。
-突然爆火、潜力、上升中都要求没有回落；有回落的标“最近回落”，不上榜。</li>
-<li><b>突然爆火</b>：{hints['surge']}<br>形态（依次判断，都不符合的标“上涨形态不稳定”、不算爆火）：
-<b>新品爆发</b> = 之前 {s['base_days']} 天几乎没卖（日均 &lt;0.5 件），且日均 ≥{s['new_listing_min_daily']} 件、≥ 所在子类目第 20 名水平的 {s['new_listing_node_share']:.0%}
-（量不够的标“新品起量（未达爆火门槛）”）；<b>脉冲型</b> = 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天；
-<b>持续型</b> = 近 7 天里 ≥{s['sustained_days']} 天达到之前水平的 {s['sustained_mult']} 倍，且最近 3 天日均与近 7 天相差 ≤{s['steady_band']:.0%}（稳在高位）；
-<b>爬升型</b> = 近 7 天日均比前 7 天高 ≥{s['climb_ratio'] - 1:.0%}，且最近 3 天日均高于近 7 天（还在往上走）。
-附加标签：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}；大促 = 上涨期间与大促日期重叠。
-对比期里大部分天没有销量、而更早时卖得和现在差不多的，判为“断货恢复”，不算爆火。</li>
-<li><b>潜力</b>：{hints['potential']}</li>
-<li><b>持续热销</b>：{hints['hot']}归入其他板块但也符合这些条件的，标“长期头部”。</li>
-<li><b>上升中</b>（外观分析样本，不单独成板块）：近 28 天日均 ≥ 之前 28 天的 {th['rising']['min_ratio']} 倍且 ≥{th['rising']['min_daily_sales']} 件，没有回落。</li>
-<li><b>异常信号</b>：{hints['fake']} 信号包括留评率异常、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、短时脉冲、
-评论集中在少数几天、非验证购买占比高等，累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。
-变体多的商品评论为父体共享，不计算评论/销量比；评论暴增且父体/变体变化标记为“变体合并”，不计分。</li>
+突然爆火、潜力、上升中都要求没有回落，有回落的标“最近回落”。</li>
+<li><b>突然爆火的形态</b>（依次判断）：<b>新品爆发</b> = 之前 {s['base_days']} 天几乎没卖（日均 &lt;0.5 件），且日均 ≥{s['new_listing_min_daily']} 件、
+≥ 所在子类目第 20 名水平的 {s['new_listing_node_share']:.0%}（量不够的标“新品起量（未达爆火门槛）”）；
+<b>稳在高位</b> = 近 7 天里 ≥{s['sustained_days']} 天达到之前水平的 {s['sustained_mult']} 倍，且最近 3 天日均与近 7 天相差 ≤{s['steady_band']:.0%}；
+<b>仍在上涨</b> = 近 7 天日均比前 7 天高 ≥{s['climb_ratio'] - 1:.0%}，且最近 3 天日均高于近 7 天。
+近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天的是“短时脉冲”，其余都不符合的是“上涨形态不稳定”，都不算爆火。
+<b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)。</li>
+<li><b>爆火的附加标签</b>：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}；
+大促 = 上涨期间与大促日期重叠。对比期里大部分天没有销量、而更早时卖得和现在差不多的是“断货恢复”，不算爆火。</li>
+<li><b>外观与工艺依据</b>：材质只有“主材质”一种口径，每个商品一类（铁木 / 实木 / 板材 / 金属…），依次取亚马逊商品详情的 Material 属性、
+标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色有两种依据——
+标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组），
+同一特征合并成一行；两种依据方向相反的不算趋势、不列出。</li>
+<li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
+近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
+累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体多的商品评论为父体共享，不算评论/销量比；
+评论暴增且父体/变体变化的标“变体合并”、短时脉冲落在大促里的标“大促脉冲”、抽查评论里 Vine 评论 ≥30% 的标“Vine 评论多”，这三项不计分。</li>
+<li><b>与上期对比</b>：“不再爆火”= 上期爆火、本期留在追踪里但不在爆火 / 潜力 / 异常信号板块。</li>
 <li>阈值都可以在仓库的 config.yaml 中调整。</li></ul></details>"""
 
 
 def render(ctx: dict) -> str:
     sec = ctx["sections"]
     counts = sec["counts"]
+    cfg = ctx["cfg"]
     by_asin = {i["asin"]: i for i in ctx["items"]}
+    hints = section_hints(cfg)
     kpi = "".join(
-        f'<a class="kpi" href="#{k}" data-pop="{k}" role="button" style="--c:var(--{k});text-decoration:none;color:inherit">'
-        f'<b>{counts[k]}</b><span>{label}</span></a>'
+        f'<button type="button" class="kpi" data-pop="{k}" style="--c:var(--{k})"><b>{counts[k]}</b><span>{label}</span></button>'
         for k, label in (("surge", "突然爆火"), ("potential", "潜力产品"), ("hot", "持续热销"), ("fake", "异常信号")))
     cov = ctx["coverage"]
-    chips = "".join(f'<span class="chip">{esc(c)}</span>' for c in (
-        f"数据月份 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
-        f"追踪 {counts['total']} 个 ASIN", f"本期刷新 {cov['refreshed']} 个",
-        f"上升中 {counts.get('rising', 0)} 个",
-        *([f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"] if cov.get("candidates") else []),
-        *([f"评分不达标不上榜 {counts['low']} 个"] if counts.get("low") else []),
-        f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次", f"总结：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"))
+    facts = [f"月度名单 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
+             f"追踪 {counts['total']} 个（本期刷新 {cov['refreshed']} 个）"]
+    if cov.get("candidates"):
+        facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
+    if counts.get("low"):
+        facts.append(f"评分不达标未上榜 {counts['low']} 个")
+    facts += [f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次",
+              f"本期要点：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"]
     history = ""
     if ctx.get("history"):
-        history = '<p class="hist sub">往期报告：' + "".join(
-            f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"]) + "</p>"
-    top_n = ctx["top_n"]
-    th = ctx["cfg"]["thresholds"]
-    hints = section_hints(ctx["cfg"])
+        history = " · 往期 " + " ".join(f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"])
+    pops = "".join([
+        _section_pop("surge", "突然爆火", hints["surge"], sec["surge"], counts["surge"]),
+        _section_pop("potential", "潜力产品", hints["potential"], sec["potential"], counts["potential"]),
+        _section_pop("hot", "持续热销", hints["hot"], sec["hot"], counts["hot"]),
+        _section_pop("fake", "异常信号", hints["fake"], sec["fake"], counts["fake"]),
+        _growth_pop(ctx.get("focus") or [], hints["growth"]),
+        _pop_src("all", f"全部追踪商品（{counts['total']} 个）", "muted",
+                 f'<p class="hint">{esc(hints["all"])}</p>{_all_table(ctx["items"])}'),
+    ])
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer"><title>{esc(ctx['title'])} {esc(ctx['report_id'])}</title>
 <style>{CSS}</style></head><body><div class="wrap">
-<header><div class="sub">{esc(ctx['cfg']['report'].get('subtitle') or '亚马逊美国站 · 家具')}</div><h1>{esc(ctx['title'])}</h1>
-<div class="sub">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期</div><div class="chips">{chips}</div>{history}</header>
-<div class="kpis">{kpi}</div>
-<section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期简报</h2>{markdown(ctx['summary'])}</section>
-{_section('surge', '突然爆火', hints['surge'], sec['surge'], counts['surge'])}
-<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>爆火产品的外观与工艺特征</h2>{_traits(ctx['traits'])}</section>
-{_section('potential', '潜力产品', hints['potential'], sec['potential'], counts['potential'])}
-{_section('hot', '持续热销', hints['hot'], sec['hot'], counts['hot'])}
-{_section('fake', '异常信号', hints['fake'], sec['fake'], counts['fake'])}
+<header><div class="sub">{esc(cfg['report'].get('subtitle') or '亚马逊美国站 · 家具')}</div><h1>{esc(ctx['title'])}</h1>
+<div class="sub hist">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期 · 日数据截至 {esc(ctx['as_of'])}{history}</div></header>
+<div class="kpis">{kpi}</div><p class="sub kpi-hint">点数字查看商品清单</p>
+<section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{markdown(ctx['summary'])}</section>
+<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>外观与工艺依据</h2>{_traits(ctx['traits'], counts)}</section>
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
-<section id="all" style="--c:var(--muted)"><h2><span class="dot"></span>全部追踪商品</h2>
-<details><summary>展开 {counts['total']} 个商品明细</summary>{_all_table(ctx['items'])}</details>{_method(ctx['cfg'])}</section>
-<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 各板块只收评分 ≥{th['min_rating']}（评论不到 {th['few_ratings']} 条的需 ≥{th['few_ratings_min_rating']}）的商品，按排序取前 {top_n} 个 · 报告已加密，仅持有链接的人可查看</footer>
-</div>{POPUP}</body></html>"""
+<section id="about" style="--c:var(--muted)"><h2><span class="dot"></span>数据说明</h2>
+<p class="sub">{' · '.join(esc(x) for x in facts)}</p>
+<p class="sub"><a href="#" data-pop="all">查看全部 {counts['total']} 个追踪商品</a></p>{_method(cfg)}</section>
+<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 报告已加密，仅持有链接的人可查看</footer>
+</div>{pops}{POPUP}</body></html>"""

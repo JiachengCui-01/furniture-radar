@@ -80,12 +80,11 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
             g = item["surge"]
             assert g["recent_avg"] >= s["min_daily_sales"] and (g["from_zero"] or g["sales_ratio"] >= s["sales_ratio"])
             kind = g["kind"]
-            if kind == "持续型":
+            assert kind == "新品爆发" or not g["pulse"]  # 短时脉冲不算爆火
+            if kind == "稳在高位":
                 assert g["days_elevated"] >= s["sustained_days"] and abs(g["last3_ratio"] - 1) <= s["steady_band"]
-            elif kind == "爬升型":
+            elif kind == "仍在上涨":
                 assert g["week_ratio"] >= s["climb_ratio"] and g["last3_ratio"] > 1
-            elif kind == "脉冲型":
-                assert g["top2_share"] >= s["pulse_share"]
             else:
                 assert kind == "新品爆发" and g["from_zero"]
             assert "持续热销" not in item["tags"]  # 同时符合热销条件的写“长期头部”，不和“突然爆火”矛盾

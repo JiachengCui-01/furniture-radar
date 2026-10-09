@@ -28,7 +28,7 @@ def surge_cfg(cfg):
 def test_sustained_surge(cfg):
     d = make([5] * 110 + [18] * 10)
     s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg), [])
-    assert s and s["kind"] == "持续型" and s["sales_ratio"] > 2.5 and not s["price_driven"]
+    assert s and s["kind"] == "稳在高位" and s["sales_ratio"] > 2.5 and not s["price_driven"]
 
 
 def test_short_pulse_is_not_a_surge_but_scores_as_anomaly(cfg):
@@ -135,7 +135,7 @@ def test_potential_past_its_peak_is_dropped(cfg):
     assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
     item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
     assert item["label"] == "watch" and not item["potential"] and not item["rising"]
-    assert item["tags"][0] == "最近回落（近7天日均比近4周最高一周低 64%）"
+    assert item["tags"][0] == "最近回落（近7天日均 6.1 件，近4周最高一周 17.1 件）"
     growing = _rec([round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)], 4.5,
                    available=(END - timedelta(days=114)).isoformat(), ratings=150)
     growing["months"] = _months([90, 200, 420])
@@ -149,23 +149,26 @@ def _surge_item(cfg, sales):
 
 def test_peaked_and_falling_is_not_sustained(cfg):
     """实测形态：峰值周日均 76~94，最近一周每天在掉（76→32）。近 7 天仍有 5 天 ≥ 基线 1.5 倍，
-    旧规则判成“持续型”；现在是回落，不算爆火。"""
+    旧规则判成“持续”；现在是回落，不算爆火。"""
     sales = [26] * 100 + [24, 39, 32, 29, 28, 33, 31, 28, 27, 35, 30, 25, 20, 27, 24, 27, 24, 22, 20, 23, 19,
                           23, 28, 20, 21, 23, 19, 16, 30, 55, 64, 67, 94, 90, 94, 76, 65, 58, 48, 39, 32, 32]
     item = _surge_item(cfg, sales)
     assert item["label"] == "watch" and item["surge"] is None
-    assert item["tags"][0].startswith("最近回落（近7天日均比近4周最高一周低 36%")
+    assert item["tags"][0] == "最近回落（近7天日均 50.0 件，近4周最高一周 78.6 件；最近3天日均 34.3 件，近7天 50.0 件）"
 
 
 def test_surge_shapes_match_their_definitions(cfg):
     climbing = _surge_item(cfg, [14] * 113 + [25, 28, 30, 33, 36, 38, 40])
-    assert climbing["label"] == "surge" and climbing["surge"]["kind"] == "爬升型"
+    assert climbing["label"] == "surge" and climbing["surge"]["kind"] == "仍在上涨"
     assert climbing["surge"]["week_ratio"] >= 1.15 and climbing["surge"]["last3_ratio"] > 1
     steady = _surge_item(cfg, [5] * 106 + [18] * 14)
-    assert steady["surge"]["kind"] == "持续型" and abs(steady["surge"]["last3_ratio"] - 1) <= 0.15
+    assert steady["surge"]["kind"] == "稳在高位" and abs(steady["surge"]["last3_ratio"] - 1) <= 0.15
+    # 增量集中在 2 天：短时脉冲，不算爆火
+    spike = _surge_item(cfg, [5] * 113 + [5, 5, 5, 12, 12, 80, 90])
+    assert spike["label"] == "watch" and spike["tags"] == ["短时脉冲（不算爆火）"]  # 也不算上升中
     # 在高位但最近 3 天比近 7 天低 20% 以上：回落
     dipping = _surge_item(cfg, [5] * 113 + [20, 21, 20, 19, 13, 12, 12])
-    assert dipping["label"] == "watch" and dipping["tags"][0].startswith("最近回落（最近3天比近7天低")
+    assert dipping["label"] == "watch" and dipping["tags"][0] == "最近回落（最近3天日均 12.3 件，近7天 16.7 件）"
 
 
 def test_low_rated_potential_is_dropped(cfg):

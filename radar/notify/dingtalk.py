@@ -126,15 +126,15 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
             if m["count"] and m["label"] not in ("未注明", "其他")]
     mats.sort(key=lambda m: -m["share"])
     if mats:
-        lines.append("**🪵 爆火/上升商品主材质**：" + "、".join(f"{m['label']} {m['share']:.0%}" for m in mats[:3]))
+        lines.append("**🪵 增长商品主材质**：" + "、".join(f"{m['label']} {m['share']:.0%}" for m in mats[:3]))
     if looks:
-        lines.append(f"**🎨 爆火外观特点**：{'、'.join(looks)}")
+        lines.append(f"**🎨 增长商品外观特点**：{'、'.join(looks)}")
     if mats or looks:
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):
         lines.append(f"较上期：新增爆火 {len(diff['new']['surge'])}、新增潜力 {len(diff['new']['potential'])}、"
-                     f"新增异常 {len(diff['new']['fake'])}、爆火回落 {len(diff.get('cooled', []))}")
+                     f"新增异常 {len(diff['new']['fake'])}、不再爆火 {len(diff.get('cooled', []))}")
     return "\n".join(lines)
 
 

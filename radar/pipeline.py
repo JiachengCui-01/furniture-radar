@@ -10,6 +10,7 @@ from typing import Callable
 from . import analyze, clock, crypto, discovery, log, materials, narrative, store, tracking, verify, vision
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
+from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
 from .report import shell
@@ -184,7 +185,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     prev_run = state["runs"][-1] if state.get("runs") else None
 
-    # 主材质：爆火/上升中 + 持续热销对照，查亚马逊商品详情的 Material（查过的永久缓存）
+    # 主材质：增长商品 + 持续热销对照组，查亚马逊商品详情的 Material（查过的永久缓存）
     focus, reference = analysis_groups(items, cfg)
     looked = materials.lookup(vendor, focus + reference, state, cfg, today,
                               int(bcfg.get("material_lookups", 15)))
@@ -266,7 +267,7 @@ def refresh_similar(vendor: Vendor, cfg: dict, state: dict, disc: dict, run_seq:
 
 
 def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict]]:
-    """外观/材质分析的两组：爆火/潜力/上升中（按势头）和作对照的持续热销（按月销量）。"""
+    """外观/材质分析的两组：增长商品（按势头）和持续热销对照组（按月销量）。"""
     llm = cfg["llm"]
     focus = analyze.focus_items(items)[: int(llm.get("vision_focus", 20))]
     reference = analyze.sections(items, 10_000)["hot"][: int(llm.get("vision_reference", 10))]
@@ -280,15 +281,18 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
     trait = analyze.compute_traits(items, disc, state, today)
 
-    # 主图外观识别 + 主材质：爆火/潜力/上升中，另取持续热销作对照
+    # 主图外观识别 + 主材质：增长商品，另取持续热销对照组
     focus, reference = analysis_groups(items, cfg)
     tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
     if tagged:
         log.info(f"主图识别 {tagged} 张")
     trait["vision"] = vision.summarize(focus, reference, state)
     trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
+    trait["appearance"] = merge_appearance(trait.get("design") or {}, trait["vision"])
     for item in items:
-        item["material"], item["material_source"] = materials.best(state["asins"].get(item["asin"]), item["title"])
+        rec = state["asins"].get(item["asin"]) or {}
+        item["material"], item["material_source"] = materials.best(rec, item["title"])
+        item["look"] = (rec.get("vision") or {}).get("summary") or ""
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of")]
@@ -304,6 +308,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "period_text": _period_text((disc or {}).get("period")),
         "as_of": max(as_of_values) if as_of_values else "—",
         "items": items,
+        "focus": analyze.focus_items(items),
         "sections": sec,
         "traits": trait,
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)

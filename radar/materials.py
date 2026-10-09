@@ -1,7 +1,7 @@
-"""主材质：优先用亚马逊商品详情里的 Material 属性（asin_detail 的 overviews），没有再看标题。
+"""主材质：每个商品一个类别，依次取 亚马逊商品详情的 Material 属性 → 标题里写明的 → AI 主图识别 → 标题里笼统的“木质”。
 
 标题里写明材质的商品不到一半（实测 48% 完全没写，“engineered wood”几乎没人写），
-所以对爆火/上升中商品和作对照的持续热销商品查一次商品详情。材质不会变，查过的永久缓存，
+所以对增长商品和持续热销对照组查一次商品详情。材质不会变，查过的永久缓存，
 之后每期只查新出现的商品。
 """
 from __future__ import annotations
@@ -46,12 +46,37 @@ def remember(rec: dict, detail: dict, today: date) -> None:
     rec["amazon_material"] = {"raw": raw[:120], "class": classify(raw), "checked": today.isoformat()}
 
 
+_SPECIFIC = ("铁木（金属+木）", "实木", "板材", "金属")
+
+
+def from_vision(rec: dict | None) -> str | None:
+    """主图识别的材质标签 → 主材质类别（标签用的是 design.LEXICON 的说法）。"""
+    tags = set((((rec or {}).get("vision") or {}).get("tags") or {}).get("材质") or [])
+    solid = bool(tags & {"实木", "相思木/橡胶木/松木", "竹"})
+    panel, metal = "人造板" in tags, "金属" in tags
+    if metal and (solid or panel):
+        return "铁木（金属+木）"
+    if solid:
+        return "实木"
+    if panel:
+        return "板材"
+    if metal:
+        return "金属"
+    return None
+
+
 def best(rec: dict | None, title: str = "") -> tuple[str, str]:
-    """(材质类别, 来源)；来源为 "amazon" 或 "title"。"""
+    """(材质类别, 来源)；来源为 "amazon" / "title" / "image"。"""
     amazon = (rec or {}).get("amazon_material") or {}
     if amazon.get("class"):
         return amazon["class"], "amazon"
-    return main_material(title or (rec or {}).get("title") or ""), "title"
+    from_title = main_material(title or (rec or {}).get("title") or "")
+    if from_title in _SPECIFIC:
+        return from_title, "title"
+    image = from_vision(rec)
+    if image:
+        return image, "image"
+    return from_title, "title"
 
 
 def lookup(vendor: Vendor, items: list[dict], state: dict, cfg: dict, today: date, limit: int) -> int:
@@ -79,7 +104,7 @@ def lookup(vendor: Vendor, items: list[dict], state: dict, cfg: dict, today: dat
 
 
 def compare(focus: list[dict], reference: list[dict], state: dict) -> dict:
-    """爆火/上升中 vs 持续热销 的主材质构成。"""
+    """增长商品 vs 持续热销对照组 的主材质构成。"""
     def classes(items):
         out = []
         for item in items:
@@ -99,4 +124,5 @@ def compare(focus: list[dict], reference: list[dict], state: dict) -> dict:
                      "reference": cr.get(label, 0), "reference_share": None if ref_share is None else round(ref_share, 3)})
     rows.sort(key=lambda row: (row["label"] in ("未注明", "其他", "木质（未注明）"), -row["share"]))
     return {"n_focus": len(f), "n_reference": len(r), "rows": rows,
-            "from_amazon": sum(1 for _, s in f + r if s == "amazon")}
+            "from_amazon": sum(1 for _, s in f + r if s == "amazon"),
+            "from_image": sum(1 for _, s in f + r if s == "image")}

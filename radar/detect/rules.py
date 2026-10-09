@@ -41,14 +41,14 @@ def momentum(d: Daily, as_of_idx: int, cfg: dict) -> dict:
     def ratio(a, b):
         return round(a / b, 3) if a is not None and b else None
 
-    avg7 = mean(d.window("sales", as_of_idx, 7))
+    avg7, avg3 = mean(d.window("sales", as_of_idx, 7)), mean(d.window("sales", as_of_idx, 3))
     weeks = [mean(d.window("sales", as_of_idx - k, 7)) for k in range(22)]  # 窗口都落在近 28 天内
     peak = max((w for w in weeks if w is not None), default=None)
-    vs_peak = ratio(avg7, peak)
-    last3 = ratio(mean(d.window("sales", as_of_idx, 3)), avg7)
-    fading = ((vs_peak is not None and vs_peak < cfg.get("min_vs_peak_week", 0))
-              or (last3 is not None and last3 < cfg.get("min_last3_vs_7d", 0)))
-    return {"vs_peak": vs_peak, "last3": last3, "fading": fading}
+    vs_peak, last3 = ratio(avg7, peak), ratio(avg3, avg7)
+    from_peak = vs_peak is not None and vs_peak < cfg.get("min_vs_peak_week", 0)
+    recent_dip = last3 is not None and last3 < cfg.get("min_last3_vs_7d", 0)
+    return {"vs_peak": vs_peak, "last3": last3, "avg7": avg7, "avg3": avg3, "peak": peak,
+            "from_peak": from_peak, "recent_dip": recent_dip, "fading": from_peak or recent_dip}
 
 
 def deal_overlap(start: date, end: date, deal_windows: list[dict]) -> str | None:
@@ -105,18 +105,20 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, deal_windows: list[dict]
                 "last_year_ratio": None, "deal": None, "price_driven": False,
                 "days_elevated": 0, "top2_share": 0.0}
 
-    # 形态：依次判断，每种都有自己的条件；都不符合的 kind=None，不算爆火（“是否回落”在 analyze 里统一判断）
+    # 形态：依次判断，每种都有自己的条件。增量集中在 ≤2 天的是“短时脉冲”，不算爆火；
+    # 其余都不符合的 kind=None，也不算爆火（“是否回落”在 analyze 里统一判断）
     shape = surge_shape(d, as_of_idx, best["base_avg"], cfg["sustained_mult"])
     last3, week = shape["last3_ratio"], shape["week_ratio"]
+    pulse = shape["top2_share"] >= cfg["pulse_share"]
     if best["from_zero"]:
         kind = "新品爆发"   # 之前 28 天几乎没卖
-    elif shape["top2_share"] >= cfg["pulse_share"]:
-        kind = "脉冲型"     # 增量集中在 ≤2 天
+    elif pulse:
+        kind = None
     elif shape["days_elevated"] >= cfg["sustained_days"] and last3 is not None \
             and abs(last3 - 1) <= cfg["steady_band"]:
-        kind = "持续型"     # 近 7 天大多数天在高位，且最近 3 天走平
+        kind = "稳在高位"   # 近 7 天大多数天在高位，且最近 3 天走平
     elif week is not None and week >= cfg["climb_ratio"] and last3 is not None and last3 > 1:
-        kind = "爬升型"     # 比前一周高，且最近 3 天还在往上走
+        kind = "仍在上涨"   # 比前一周高，且最近 3 天还在往上走
     else:
         kind = None
 
@@ -130,6 +132,7 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, deal_windows: list[dict]
         "kind": kind,
         "days_elevated": shape["days_elevated"],
         "top2_share": round(shape["top2_share"], 3),
+        "pulse": pulse and not best["from_zero"],
         "last3_ratio": None if last3 is None else round(last3, 3),
         "week_ratio": None if week is None else round(week, 3),
         "base_days": cfg["base_days"],

@@ -107,7 +107,10 @@ LEXICON: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
-DESIGN_DIMENSIONS = ("风格", "材质", "造型", "工艺", "颜色")  # 外观和工艺
+DESIGN_DIMENSIONS = ("风格", "材质", "造型", "工艺", "颜色")  # 主图识别要读的维度
+# 报告里对比的外观维度。材质只看“主材质”（亚马逊 Material 属性，见 materials.py），
+# 不再用标题词库 / 主图标签另算一套，免得同一件事出现三种口径
+APPEARANCE_DIMENSIONS = ("风格", "造型", "工艺", "颜色")
 _COMPILED = {dim: [(label, re.compile(pattern, re.I)) for label, pattern in rules]
              for dim, rules in LEXICON.items()}
 

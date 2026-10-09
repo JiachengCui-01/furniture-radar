@@ -89,12 +89,17 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     _secrets, second = _two_runs(cfg, master_key, tmp_path)
     page = (tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
-    for kind in ("surge", "potential", "hot", "fake"):
-        assert f'data-pop="{kind}"' in plain
-    assert plain.count('class="pop-src"') == 4 and 'id="pop"' in plain
-    assert "爆火产品的外观与工艺特征" in plain and "外观与工艺（来自商品标题）" in plain
-    assert "凹槽竖纹" in plain and "主材质：板材 / 实木 / 铁木" in plain  # 演示数据里爆火商品标题都带 Fluted
-    assert "亚马逊商品详情里的 Material 属性" in plain
+    for kind in ("surge", "potential", "hot", "fake", "growth", "all"):
+        assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
+    assert plain.count('class="pop-src"') == 6 and 'id="pop"' in plain
+    # 主体里不放商品卡片：所有卡片都在隐藏的小窗内容里
+    body = plain.split('<div class="pop-src"')[0]
+    assert '<article class="card"' not in body and '<article class="card"' in plain
+    assert "外观与工艺依据" in body and "增长商品" in body and "本期要点" in body
+    assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
+    assert "Material 属性" in plain
+    for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
+        assert gone not in plain, gone  # 同一个概念只有一种叫法
 
 
 def test_rerender_keeps_report_id_and_schedule(cfg, master_key, tmp_path):

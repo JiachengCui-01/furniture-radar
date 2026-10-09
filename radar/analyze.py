@@ -91,6 +91,9 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
+    # 短时脉冲把近 28 天日均撑高了，不是持续的增长：也不算潜力 / 上升中
+    if unshaped and unshaped.get("pulse"):
+        potential = rising = None
     # 有过上涨、但最近在回落的，不算爆火 / 潜力 / 上升中
     mom = momentum(d, idx, th.get("momentum") or {}) if idx is not None else None
     faded = bool(mom and mom["fading"] and (surge or potential or rising))
@@ -126,16 +129,16 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         if surge["price_driven"]:
             tags.append("降价驱动")
     if rising and label in ("watch", "hot"):
-        tags.append(f"上升中 ×{rising['ratio']:.1f}")
+        tags.append(f"上升中（近28天 ×{rising['ratio']:.1f}）")
     if faded:
         why = []
-        if mom["vs_peak"] is not None and mom["vs_peak"] < th["momentum"]["min_vs_peak_week"]:
-            why.append(f"近7天日均比近4周最高一周低 {1 - mom['vs_peak']:.0%}")
-        if mom["last3"] is not None and mom["last3"] < th["momentum"]["min_last3_vs_7d"]:
-            why.append(f"最近3天比近7天低 {1 - mom['last3']:.0%}")
-        tags.append(f"最近回落（{'，'.join(why)}）")
+        if mom["from_peak"]:
+            why.append(f"近7天日均 {mom['avg7']:.1f} 件，近4周最高一周 {mom['peak']:.1f} 件")
+        if mom["recent_dip"]:
+            why.append(f"最近3天日均 {mom['avg3']:.1f} 件，近7天 {mom['avg7']:.1f} 件")
+        tags.append(f"最近回落（{'；'.join(why)}）")
     if unshaped and not faded:
-        tags.append("上涨形态不稳定（不算爆火）")
+        tags.append("短时脉冲（不算爆火）" if unshaped.get("pulse") else "上涨形态不稳定（不算爆火）")
     if restock:
         tags.append("断货恢复")
     if new_ramp:
@@ -225,12 +228,13 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
     return {"surge": surge[:top_n], "fake": fake[:top_n], "potential": potential[:top_n], "hot": hot[:top_n],
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
-                       "rising": sum(1 for i in items if i.get("rising") and i["label"] not in UNLISTED),
+                       # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
+                       "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
                        "low": sum(1 for i in items if i["label"] == "low"), "total": len(items)}}
 
 
 def focus_items(items: list[dict]) -> list[dict]:
-    """外观分析的样本：突然爆火 + 潜力 + 上升中（都排除异常信号和评分偏低），按势头排序。
+    """增长商品（外观分析的样本）：突然爆火 + 潜力 + 上升中（都排除异常信号和评分偏低），按势头排序。
     只看“当期”数据，每期报告独立成立，不依赖往期积累。"""
     def strength(i: dict) -> float:
         if i.get("surge"):
@@ -245,7 +249,7 @@ def focus_items(items: list[dict]) -> list[dict]:
 
 
 def trait_rows(items: list[dict], disc: dict | None, state: dict) -> tuple[list[dict], list[dict]]:
-    """返回 (基线行, 关注行)：关注 = 突然爆火 + 潜力 + 上升中。"""
+    """返回 (全部头部商品, 增长商品)。"""
     products = (disc or {}).get("products") or {}
     baseline = list(products.values())
     focus = []
