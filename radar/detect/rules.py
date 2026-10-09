@@ -1,4 +1,5 @@
-"""三类“正向”判定：突然爆火、真正持续热销、潜力，以及共用的评分门槛和“最近有没有回落”。阈值全部来自 config.yaml。"""
+"""三类“正向”判定：突然爆火、持续热销、潜力，以及共用的评分门槛和“回落”。阈值全部来自 config.yaml。
+报告里每个板块的文字说明（report/render.py 的 section_hints）与这里的条件一一对应，改条件时一起改。"""
 from __future__ import annotations
 
 import math
@@ -33,17 +34,21 @@ def low_rating(rating: float | None, ratings: float | None, th: dict) -> bool:
 
 
 def momentum(d: Daily, as_of_idx: int, cfg: dict) -> dict:
-    """最近有没有回落：近 7 天 vs 近 28 天日均，近 14 天 vs 之前 14 天日均。
-    只比“近 28 天 vs 之前 28 天”或月环比，会被刚开卖时的从零起量撑高，看不出最近一两周已经在掉
-    （实测：9 月初开卖、9 月中旬到峰值、10 月第一周跌到峰值三分之一的商品，28 天对比仍是 ×5）。"""
+    """回落 = 近 7 天日均比最近 4 周里最高的一周（滚动 7 天）低 20% 以上，或最近 3 天日均比近 7 天低 20% 以上。
+    爆火、潜力、上升中都要求没有回落。只比“近 28 天 vs 之前 28 天”或月环比，会被刚开卖时的从零起量撑高
+    （实测：9 月初开卖、9 月中旬到峰值、10 月第一周跌到峰值三分之一的商品，28 天对比仍是 ×5）；
+    只看“近 7 天有几天达标”，冲高后正在往下掉的也会被当成持续（实测：峰值周日均 76~94，最近一周 76→32）。"""
     def ratio(a, b):
         return round(a / b, 3) if a is not None and b else None
 
-    r7 = ratio(mean(d.window("sales", as_of_idx, 7)), mean(d.window("sales", as_of_idx, 28)))
-    r14 = ratio(mean(d.window("sales", as_of_idx, 14)), mean(d.window("sales", as_of_idx - 14, 14)))
-    fading = ((r7 is not None and r7 < cfg.get("min_7d_vs_28d", 0))
-              or (r14 is not None and r14 < cfg.get("min_14d_vs_prev14", 0)))
-    return {"r7_28": r7, "r14": r14, "fading": fading}
+    avg7 = mean(d.window("sales", as_of_idx, 7))
+    weeks = [mean(d.window("sales", as_of_idx - k, 7)) for k in range(22)]  # 窗口都落在近 28 天内
+    peak = max((w for w in weeks if w is not None), default=None)
+    vs_peak = ratio(avg7, peak)
+    last3 = ratio(mean(d.window("sales", as_of_idx, 3)), avg7)
+    fading = ((vs_peak is not None and vs_peak < cfg.get("min_vs_peak_week", 0))
+              or (last3 is not None and last3 < cfg.get("min_last3_vs_7d", 0)))
+    return {"vs_peak": vs_peak, "last3": last3, "fading": fading}
 
 
 def deal_overlap(start: date, end: date, deal_windows: list[dict]) -> str | None:
@@ -100,15 +105,20 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, deal_windows: list[dict]
                 "last_year_ratio": None, "deal": None, "price_driven": False,
                 "days_elevated": 0, "top2_share": 0.0}
 
+    # 形态：依次判断，每种都有自己的条件；都不符合的 kind=None，不算爆火（“是否回落”在 analyze 里统一判断）
     shape = surge_shape(d, as_of_idx, best["base_avg"], cfg["sustained_mult"])
+    last3, week = shape["last3_ratio"], shape["week_ratio"]
     if best["from_zero"]:
-        kind = "新品起量"
-    elif shape["days_elevated"] >= cfg["sustained_days"]:
-        kind = "持续型"
+        kind = "新品爆发"   # 之前 28 天几乎没卖
     elif shape["top2_share"] >= cfg["pulse_share"]:
-        kind = "脉冲型"
+        kind = "脉冲型"     # 增量集中在 ≤2 天
+    elif shape["days_elevated"] >= cfg["sustained_days"] and last3 is not None \
+            and abs(last3 - 1) <= cfg["steady_band"]:
+        kind = "持续型"     # 近 7 天大多数天在高位，且最近 3 天走平
+    elif week is not None and week >= cfg["climb_ratio"] and last3 is not None and last3 > 1:
+        kind = "爬升型"     # 比前一周高，且最近 3 天还在往上走
     else:
-        kind = "爬升型"
+        kind = None
 
     seasonal_ratio = same_window_last_year(d, as_of_idx, best["window"], cfg["base_days"])
     start = d.day(as_of_idx - best["window"] + 1)
@@ -120,6 +130,9 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, deal_windows: list[dict]
         "kind": kind,
         "days_elevated": shape["days_elevated"],
         "top2_share": round(shape["top2_share"], 3),
+        "last3_ratio": None if last3 is None else round(last3, 3),
+        "week_ratio": None if week is None else round(week, 3),
+        "base_days": cfg["base_days"],
         "seasonal": seasonal_ratio is not None and seasonal_ratio >= cfg["seasonal_ratio"],
         "last_year_ratio": seasonal_ratio,
         "deal": deal,

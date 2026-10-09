@@ -75,6 +75,9 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         need = max(sc["new_listing_min_daily"], sc["new_listing_node_share"] * node_daily)
         if surge["recent_avg"] < need:
             new_ramp, surge = surge, None
+    unshaped = None
+    if surge and not surge["kind"]:  # 不符合任何一种爆火形态
+        unshaped, surge = surge, None
     hot = evaluate_hot(rec.get("months") or [], d, as_of, st.get("threshold"), th["hot"])
     potential = evaluate_potential(rec, d, as_of, th["potential"]) if idx is not None else None
     if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断
@@ -88,7 +91,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
-    # 有过上涨、但最近一两周在回落的，不算爆火 / 潜力 / 上升中
+    # 有过上涨、但最近在回落的，不算爆火 / 潜力 / 上升中
     mom = momentum(d, idx, th.get("momentum") or {}) if idx is not None else None
     faded = bool(mom and mom["fading"] and (surge or potential or rising))
     if faded:
@@ -125,14 +128,20 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if rising and label in ("watch", "hot"):
         tags.append(f"上升中 ×{rising['ratio']:.1f}")
     if faded:
-        pct = lambda v: "—" if v is None else f"{v:.0%}"
-        tags.append(f"最近回落（近7天日均为近28天的 {pct(mom['r7_28'])}，近14天为前14天的 {pct(mom['r14'])}）")
+        why = []
+        if mom["vs_peak"] is not None and mom["vs_peak"] < th["momentum"]["min_vs_peak_week"]:
+            why.append(f"近7天日均比近4周最高一周低 {1 - mom['vs_peak']:.0%}")
+        if mom["last3"] is not None and mom["last3"] < th["momentum"]["min_last3_vs_7d"]:
+            why.append(f"最近3天比近7天低 {1 - mom['last3']:.0%}")
+        tags.append(f"最近回落（{'，'.join(why)}）")
+    if unshaped and not faded:
+        tags.append("上涨形态不稳定（不算爆火）")
     if restock:
         tags.append("断货恢复")
     if new_ramp:
-        tags.append("新品起量")
+        tags.append("新品起量（未达爆火门槛）")
     if hot and label != "hot":
-        tags.append("持续热销")
+        tags.append("长期头部")  # 符合持续热销条件，但本期归入了别的板块
     if potential and label not in ("potential",):
         tags.append("潜力")
     if label == "fake" and surge:

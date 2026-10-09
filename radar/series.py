@@ -183,7 +183,9 @@ def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int) -> dict
 
 
 def surge_shape(d: Daily, as_of_idx: int, base_avg: float, mult: float) -> dict:
-    """近 7 天的形态：达标天数，以及增量是否集中在 ≤2 天（脉冲）。"""
+    """近 7 天的形态：
+    days_elevated 达到基线 mult 倍的天数；top2_share 增量里最大两天的占比（脉冲）；
+    last3_ratio 最近 3 天日均 ÷ 近 7 天日均（走平≈1，还在涨 >1，在掉 <1）；week_ratio 近 7 天 ÷ 前 7 天日均。"""
     recent = [v for v in d.raw_window("sales", as_of_idx, 7)]
     values = [v or 0 for v in recent]
     days_elevated = sum(1 for v in values if base_avg > 0 and v >= mult * base_avg) if base_avg > 0 \
@@ -191,7 +193,11 @@ def surge_shape(d: Daily, as_of_idx: int, base_avg: float, mult: float) -> dict:
     excess = sorted((max(0.0, v - base_avg) for v in values), reverse=True)
     total = sum(excess)
     top2_share = (sum(excess[:2]) / total) if total > 0 else 0.0
-    return {"days_elevated": days_elevated, "top2_share": top2_share}
+    avg7, avg3 = mean(d.window("sales", as_of_idx, 7)), mean(d.window("sales", as_of_idx, 3))
+    prev7 = mean(d.window("sales", as_of_idx - 7, 7))
+    return {"days_elevated": days_elevated, "top2_share": top2_share,
+            "last3_ratio": (avg3 / avg7) if avg3 is not None and avg7 else None,
+            "week_ratio": (avg7 / prev7) if avg7 is not None and prev7 else None}
 
 
 def same_window_last_year(d: Daily, as_of_idx: int, window: int, base_days: int) -> float | None:

@@ -67,7 +67,8 @@ DEFAULTS: dict = {
         "few_ratings_min_rating": 4.2,
         "surge": {
             "windows": [7, 14], "base_days": 28, "bsr_ratio": 0.5, "sales_ratio": 2.0,
-            "min_daily_sales": 3, "sustained_mult": 1.5, "sustained_days": 5,
+            "min_daily_sales": 3, "sustained_mult": 1.5, "sustained_days": 5, "steady_band": 0.15,
+            "climb_ratio": 1.15,
             "pulse_share": 0.6, "seasonal_ratio": 1.5, "price_drop": 0.15, "restock_ratio": 0.5,
             "new_listing_min_daily": 30, "new_listing_node_share": 0.25,
         },
@@ -76,7 +77,7 @@ DEFAULTS: dict = {
             "max_cv": 0.35, "min_trend": -0.15, "min_recent_ratio": 0.7,
         },
         "rising": {"min_ratio": 1.3, "min_daily_sales": 3},
-        "momentum": {"min_7d_vs_28d": 0.8, "min_14d_vs_prev14": 0.9},
+        "momentum": {"min_vs_peak_week": 0.8, "min_last3_vs_7d": 0.8},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,

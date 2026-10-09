@@ -198,9 +198,9 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode==
 def _tags(item: dict) -> str:
     out = []
     for tag in item["tags"]:
-        cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分")) else \
-            "good" if tag in ("持续型", "潜力", "爬升型", "新品起量") else \
-            "info" if any(k in tag for k in ("季节", "大促", "热销", "变体")) else ""
+        cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定")) else \
+            "good" if tag in ("持续型", "潜力", "爬升型", "新品爆发") else \
+            "info" if any(k in tag for k in ("季节", "大促", "头部", "变体")) else ""
         out.append(f'<span class="tag {cls}">{esc(tag)}</span>')
     return f'<div class="tags">{"".join(out)}</div>' if out else ""
 
@@ -227,10 +227,11 @@ def card(item: dict, kind: str) -> str:
     s = item.get("surge")
     if kind == "surge" or (kind == "fake" and s):
         ratio = f"×{s['sales_ratio']:.1f}" if s.get("sales_ratio") else "从零起量"
-        kv.append(f"<span><em>近{s['window']}天日均</em> {fmt_num(s['base_avg'])} → <b>{fmt_num(s['recent_avg'])}</b> 件"
+        span = f"之前{s.get('base_days', 28)}天 → 近{s['window']}天"
+        kv.append(f"<span><em>日均（{span}）</em> {fmt_num(s['base_avg'])} → <b>{fmt_num(s['recent_avg'])}</b> 件"
                   f"（{ratio}）</span>")
         if s.get("base_bsr") and s.get("recent_bsr"):
-            kv.append(f"<span><em>BSR</em> {fmt_int(s['base_bsr'])} → <b>{fmt_int(s['recent_bsr'])}</b></span>")
+            kv.append(f"<span><em>BSR 中位数</em> {fmt_int(s['base_bsr'])} → <b>{fmt_int(s['recent_bsr'])}</b></span>")
         if s.get("last_year_ratio"):
             kv.append(f"<span><em>去年同期</em> ×{s['last_year_ratio']:.1f}</span>")
     if kind == "potential" and item.get("potential"):
@@ -377,7 +378,7 @@ def _traits(tr: dict) -> str:
         return f'<p class="empty">{esc(tr["note"])}</p>'
     design = tr.get("design") or {}
     appearance = {d: rows for d, rows in design.items() if d != "功能卖点"}
-    parts = [f'<p class="hint">样本：本期突然爆火、潜力和上升中（近 28 天销量增长 ≥30% 且最近没有回落）的商品共 {tr["n_focus"]} 个，'
+    parts = [f'<p class="hint">样本：本期突然爆火、潜力和上升中（近 28 天销量增长 ≥30% 且没有回落）的商品共 {tr["n_focus"]} 个，'
              f'对比本月全部头部商品 {tr["n_baseline"]} 个。“×倍数”= 这个特征在爆火/潜力/上升中商品里出现的比例 ÷ '
              f'在全部商品里的比例；进度条竖线为全部商品中的占比。</p>']
     parts.append(_material_block(tr.get("materials") or {}))
@@ -439,33 +440,55 @@ def _all_table(items: list[dict]) -> str:
             "<th class=n>异常分</th><th>标签</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
 
 
+def section_hints(cfg: dict) -> dict[str, str]:
+    """每个板块的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。"""
+    th = cfg["thresholds"]
+    s, h, p, f = th["surge"], th["hot"], th["potential"], th["fake"]
+    windows = " 或 ".join(map(str, s["windows"]))
+    return {
+        "surge": f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
+                 f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；属于新品爆发 / 脉冲型 / 持续型 / 爬升型之一（定义见页面底部“判定方法”）；没有回落；"
+                 f"异常分 <{f['suspect_score']}（轻微信号会列在卡片上）。按爆发强度排序。",
+        "potential": f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条；近 28 天日均 ≥{p['min_daily_sales']} 件、"
+                     f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍；有两个以上完整月份的，月销量环比 ≥{p['min_monthly_growth']:.0%}；"
+                     f"没有回落；异常分 <{f['suspect_score']}。按增长排序。",
+        "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平；"
+               f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
+               f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}。按近 6 个月月均销量排序。",
+        "fake": f"异常分 ≥{f['suspect_score']} 的商品（留评率过高、评论增速远超销量、评分短期跳升、评论集中在少数几天等），"
+                f"不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。仅为数据异常提示，需人工核实。",
+    }
+
+
 def _method(cfg: dict) -> str:
     th = cfg["thresholds"]
     s, h, p, f, m = th["surge"], th["hot"], th["potential"], th["fake"], th["momentum"]
+    hints = section_hints(cfg)
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
-<li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']} 的商品
-（评论少时几条差评就会跌破 {th['min_rating']}，卖家精灵的评分也比亚马逊晚几天），不进入任何板块和外观分析样本，也不占追踪名额；
-各板块按排序取前几名，剔除的由后面的商品依次补位。评分优先取最新日数据（月度榜单的评分是月末快照，可能过时），还没有评论的新品不受限。</li>
-<li>数据来自卖家精灵：月度头部商品（product_research，已结束月份）+ 每个 ASIN 约 400 天的日销量/BSR/价格（asin_prediction）。
-日销量是卖家精灵根据 BSR 估算的，因此以 BSR 中位数为主信号，销量用于门槛和倍数。</li>
+<li>数据来自卖家精灵：月度头部商品（product_research，已结束月份）+ 近 30 天榜单 + 每个 ASIN 约 400 天的日销量/BSR/价格（asin_prediction）。
+日销量是卖家精灵根据 BSR 估算的，因此以 BSR 中位数为主信号，销量用于门槛和倍数。每个商品只归入一个板块，优先级：评分不达标 &gt; 异常信号 &gt; 突然爆火 &gt; 潜力 &gt; 持续热销。</li>
 <li><b>候选与新鲜度</b>：所有判定都基于每个商品截至最近一天的日数据。候选来自三处：卖家精灵近 30 天榜单（销量增长、BSR 上升、新品，每期刷新）、
 上期爆款的相似款（近 30 天数据）、月度头部名单。每期的追踪名额依次给：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']} + 全部类目里销量最大的）、
 相似款、机会候选（机会分最高的 {cfg['pool']['opportunity_every_run']} 个每期都看，其余按最久没查轮流查）。
 机会分综合销量增长率、近 7 天 BSR 改善、子类目内销量位次、是否上架半年内。</li>
-<li><b>突然爆火</b>：近 {'/'.join(map(str, s['windows']))} 天 BSR 中位数 ≤ 之前 {s['base_days']} 天的 {s['bsr_ratio']} 倍，
-且日均销量 ≥ 之前的 {s['sales_ratio']} 倍、≥ {s['min_daily_sales']} 件。持续型 = 近 7 天 ≥{s['sustained_days']} 天达到基线 {s['sustained_mult']} 倍；
-脉冲型 = ≤2 天贡献 ≥{s['pulse_share']:.0%} 增量；季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格下降 ≥{s['price_drop']:.0%}。
-对比窗口里大部分天没有销量、而更早时卖得和现在差不多的，判为“断货恢复”，不计入爆火。</li>
-<li><b>持续热销</b>：近 {h['lookback_months']} 个月中 ≥{h['months_required']} 个月月销量达到所在子类目 Top{h['rank_in_node']} 水平，
-近 6 个月波动系数 ≤{h['max_cv']}，近 3 个月趋势不低于 {h['min_trend']:.0%}/月，且近 28 天没有明显下滑。</li>
-<li><b>潜力</b>：上架 {p['min_age_days']}~{p['max_age_days']} 天，月销量增长 ≥{p['min_monthly_growth']:.0%}/月，
-近 28 天日均 ≥ 再之前 28 天的 {p['min_recent_ratio']} 倍，评论 &lt;{p['max_ratings']}，且无异常信号。</li>
-<li><b>最近没有回落</b>：突然爆火、潜力、上升中还要求近 7 天日均 ≥ 近 28 天日均的 {m['min_7d_vs_28d']} 倍、
-近 14 天日均 ≥ 之前 14 天的 {m['min_14d_vs_prev14']} 倍。只看 28 天或月环比会被刚开卖时的从零起量撑高，
-已经过了峰值、正在下滑的商品标为“最近回落”，不上榜。</li>
-<li><b>异常信号（假爆火）</b>：留评率异常、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、短时脉冲、
+<li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']} 的商品
+（评论少时几条差评就会跌破 {th['min_rating']}，卖家精灵的评分也比亚马逊晚几天），不进入任何板块和外观分析样本，也不占追踪名额；
+各板块按排序取前几名，剔除的由后面的商品依次补位。评分优先取最新日数据，还没有评论的新品不受限。</li>
+<li><b>回落</b>：近 7 天日均比最近 4 周里最高的一周低 {1 - m['min_vs_peak_week']:.0%} 以上，或最近 3 天日均比近 7 天低 {1 - m['min_last3_vs_7d']:.0%} 以上。
+突然爆火、潜力、上升中都要求没有回落；有回落的标“最近回落”，不上榜。</li>
+<li><b>突然爆火</b>：{hints['surge']}<br>形态（依次判断，都不符合的标“上涨形态不稳定”、不算爆火）：
+<b>新品爆发</b> = 之前 {s['base_days']} 天几乎没卖（日均 &lt;0.5 件），且日均 ≥{s['new_listing_min_daily']} 件、≥ 所在子类目第 20 名水平的 {s['new_listing_node_share']:.0%}
+（量不够的标“新品起量（未达爆火门槛）”）；<b>脉冲型</b> = 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天；
+<b>持续型</b> = 近 7 天里 ≥{s['sustained_days']} 天达到之前水平的 {s['sustained_mult']} 倍，且最近 3 天日均与近 7 天相差 ≤{s['steady_band']:.0%}（稳在高位）；
+<b>爬升型</b> = 近 7 天日均比前 7 天高 ≥{s['climb_ratio'] - 1:.0%}，且最近 3 天日均高于近 7 天（还在往上走）。
+附加标签：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}；大促 = 上涨期间与大促日期重叠。
+对比期里大部分天没有销量、而更早时卖得和现在差不多的，判为“断货恢复”，不算爆火。</li>
+<li><b>潜力</b>：{hints['potential']}</li>
+<li><b>持续热销</b>：{hints['hot']}归入其他板块但也符合这些条件的，标“长期头部”。</li>
+<li><b>上升中</b>（外观分析样本，不单独成板块）：近 28 天日均 ≥ 之前 28 天的 {th['rising']['min_ratio']} 倍且 ≥{th['rising']['min_daily_sales']} 件，没有回落。</li>
+<li><b>异常信号</b>：{hints['fake']} 信号包括留评率异常、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、短时脉冲、
 评论集中在少数几天、非验证购买占比高等，累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。
-变体多的商品评论为父体共享，不计算评论/销量比；评论暴增且父体/变体变化标记为“变体合并”，不计分。异常信号仅供人工核实参考。</li>
+变体多的商品评论为父体共享，不计算评论/销量比；评论暴增且父体/变体变化标记为“变体合并”，不计分。</li>
 <li>阈值都可以在仓库的 config.yaml 中调整。</li></ul></details>"""
 
 
@@ -491,6 +514,7 @@ def render(ctx: dict) -> str:
             f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"]) + "</p>"
     top_n = ctx["top_n"]
     th = ctx["cfg"]["thresholds"]
+    hints = section_hints(ctx["cfg"])
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer"><title>{esc(ctx['title'])} {esc(ctx['report_id'])}</title>
@@ -499,11 +523,11 @@ def render(ctx: dict) -> str:
 <div class="sub">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期</div><div class="chips">{chips}</div>{history}</header>
 <div class="kpis">{kpi}</div>
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期简报</h2>{markdown(ctx['summary'])}</section>
-{_section('surge', '突然爆火', '近期销量/排名明显跃升且没有异常信号的商品，按爆发强度排序。', sec['surge'], counts['surge'])}
+{_section('surge', '突然爆火', hints['surge'], sec['surge'], counts['surge'])}
 <section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>爆火产品的外观与工艺特征</h2>{_traits(ctx['traits'])}</section>
-{_section('potential', '潜力产品', '上架半年内、销量持续增长且最近没有回落、评论还不多的商品，适合重点研究。', sec['potential'], counts['potential'])}
-{_section('hot', '真正持续热销', '连续多个月保持子类目头部销量、波动小、没有异常信号的商品。', sec['hot'], counts['hot'])}
-{_section('fake', '假爆火 / 异常信号', '增长伴随刷评、评论异常等信号的商品。仅为数据异常提示，需人工核实。', sec['fake'], counts['fake'])}
+{_section('potential', '潜力产品', hints['potential'], sec['potential'], counts['potential'])}
+{_section('hot', '持续热销', hints['hot'], sec['hot'], counts['hot'])}
+{_section('fake', '异常信号', hints['fake'], sec['fake'], counts['fake'])}
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="all" style="--c:var(--muted)"><h2><span class="dot"></span>全部追踪商品</h2>
 <details><summary>展开 {counts['total']} 个商品明细</summary>{_all_table(ctx['items'])}</details>{_method(ctx['cfg'])}</section>

@@ -115,7 +115,7 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("")
     high = [i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:
-        lines.append("**⚠️ 假爆火 / 异常提醒**")
+        lines.append("**⚠️ 异常信号**")
         for item in high[:max_items]:
             signal = item["fake"]["signals"][0]["text"] if item["fake"]["signals"] else ""
             lines.append(item_line(item, f" 异常分{item['fake']['score']}：{_short(signal, 34)}"))

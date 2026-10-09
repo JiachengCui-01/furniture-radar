@@ -53,6 +53,52 @@ def test_two_runs_classify_each_archetype(world_run, master_key):
     assert merge["checks"]["detail"]["parent"] == "B0MERGED01"
 
 
+def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
+    """每个上榜商品都必须符合报告里写的定义，概念之间不能互相矛盾。"""
+    from radar import analyze, clock, tracking
+    from radar.detect.rules import low_rating, momentum
+    from radar.series import Daily
+
+    _world, _secrets, site, _first, _second = world_run
+    state = store.load(site, crypto.parse_master_key(master_key))
+    last = state["runs"][-1]
+    items = analyze.analyze(state, state["discovery"], list(last["labels"]), cfg, clock.parse_day(last["date"]),
+                            tracking.fresh_rows(state))["items"]
+    th, s = cfg["thresholds"], cfg["thresholds"]["surge"]
+    checked = set()
+    for item in items:
+        if item["label"] not in ("surge", "potential", "hot"):
+            continue
+        checked.add(item["label"])
+        assert item["fake"]["score"] < th["fake"]["suspect_score"]
+        assert not low_rating(item["rating"], item["ratings"], th)
+        d = Daily.from_record(state["asins"][item["asin"]]["series"])
+        mom = momentum(d, d.index_of(d.as_of()), th["momentum"])
+        if item["label"] in ("surge", "potential"):
+            assert not mom["fading"], item["asin"]
+        if item["label"] == "surge":
+            g = item["surge"]
+            assert g["recent_avg"] >= s["min_daily_sales"] and (g["from_zero"] or g["sales_ratio"] >= s["sales_ratio"])
+            kind = g["kind"]
+            if kind == "持续型":
+                assert g["days_elevated"] >= s["sustained_days"] and abs(g["last3_ratio"] - 1) <= s["steady_band"]
+            elif kind == "爬升型":
+                assert g["week_ratio"] >= s["climb_ratio"] and g["last3_ratio"] > 1
+            elif kind == "脉冲型":
+                assert g["top2_share"] >= s["pulse_share"]
+            else:
+                assert kind == "新品爆发" and g["from_zero"]
+            assert "持续热销" not in item["tags"]  # 同时符合热销条件的写“长期头部”，不和“突然爆火”矛盾
+        if item["label"] == "potential":
+            p = item["potential"]
+            assert th["potential"]["min_age_days"] <= p["age_days"] <= th["potential"]["max_age_days"]
+            assert p["recent_ratio"] >= th["potential"]["min_recent_ratio"]
+        if item["label"] == "hot":
+            h = item["hot"]
+            assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]
+    assert checked == {"surge", "potential", "hot"}
+
+
 def test_report_is_encrypted_and_decryptable(world_run, master_key):
     _world, _secrets, site, _first, second = world_run
     page = (site / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
