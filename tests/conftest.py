@@ -11,7 +11,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "sellersprite"
 
 # 测试永远不能花积分，也不能往真实钉钉群发消息
 for name in ("SELLERSPRITE_SECRET_KEY", "DINGTALK_WEBHOOK", "DINGTALK_SECRET", "DEEPSEEK_API_KEY",
-             "REPORT_BASE_URL", "GITHUB_REPOSITORY", "GITHUB_ACTIONS", "CI", "RADAR_SECRETS_JSON",
+             "REPORT_BASE_URL", "GITHUB_REPOSITORY", "GITHUB_ACTIONS", "CI",
              *[k for k in os.environ if k.startswith("DINGTALK_ROBOT_")]):
     os.environ.pop(name, None)
 

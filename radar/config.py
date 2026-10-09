@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -176,21 +175,14 @@ def dingtalk_robots(env) -> tuple[list[str], list[str]]:
 
     两种写法可以同时用：
     * DINGTALK_WEBHOOK / DINGTALK_SECRET：最早的写法，多个群用英文逗号按顺序对应；
-    * DINGTALK_ROBOT_<任意名字>：每个群单独一个，值是“webhook,SEC密钥”。新增群只要新建一个，
-      不用改原来的。GitHub Actions 里通过 RADAR_SECRETS_JSON（= toJSON(secrets)）读取全部仓库密钥。
+    * DINGTALK_ROBOT_<名字>：每个群单独一个，值是“webhook,SEC密钥”。新增群只要新建一个，不用改原来的。
+      GitHub Actions 里工作流逐个传入 DINGTALK_ROBOT_1 ~ 5（不能用 toJSON(secrets)，会被 GitHub 判为可疑）。
     """
     webhooks = _split(env.get("DINGTALK_WEBHOOK"))
     secrets = _split(env.get("DINGTALK_SECRET"))
     secrets = (secrets + [""] * len(webhooks))[: len(webhooks)]
 
-    named: dict[str, str] = {k: v for k, v in env.items() if k.startswith("DINGTALK_ROBOT_")}
-    try:
-        all_secrets = json.loads(env.get("RADAR_SECRETS_JSON") or "{}")
-    except ValueError:
-        all_secrets = {}
-    if isinstance(all_secrets, dict):
-        named.update({k: v for k, v in all_secrets.items()
-                      if str(k).upper().startswith("DINGTALK_ROBOT_") and isinstance(v, str)})
+    named: dict[str, str] = {k: v for k, v in env.items() if k.startswith("DINGTALK_ROBOT_") and v}
     for name in sorted(named):
         robot = parse_robot(named[name])
         if robot and robot[0] not in webhooks:

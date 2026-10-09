@@ -145,8 +145,13 @@ jobs:
           REPORT_KEY: ${{ secrets.REPORT_KEY }}
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-          # 所有 DINGTALK_ROBOT_xxx（每个群一个，新增群只要新建一个 Secret）
-          RADAR_SECRETS_JSON: ${{ toJSON(secrets) }}
+          # 每个钉钉群一个 Secret：DINGTALK_ROBOT_1 ~ 5（没建的就是空的）。密钥必须逐个写出来，
+          # 一次性传入全部密钥的写法会被 GitHub 判为可疑工作流，需要人工批准才能运行。
+          DINGTALK_ROBOT_1: ${{ secrets.DINGTALK_ROBOT_1 }}
+          DINGTALK_ROBOT_2: ${{ secrets.DINGTALK_ROBOT_2 }}
+          DINGTALK_ROBOT_3: ${{ secrets.DINGTALK_ROBOT_3 }}
+          DINGTALK_ROBOT_4: ${{ secrets.DINGTALK_ROBOT_4 }}
+          DINGTALK_ROBOT_5: ${{ secrets.DINGTALK_ROBOT_5 }}
           REPORT_BASE_URL: ${{ vars.REPORT_BASE_URL || needs.deploy.outputs.page_url }}
         run: python -m radar notify --site-dir site
 
@@ -165,7 +170,13 @@ jobs:
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-          RADAR_SECRETS_JSON: ${{ toJSON(secrets) }}
+          # 每个钉钉群一个 Secret：DINGTALK_ROBOT_1 ~ 5（没建的就是空的）。密钥必须逐个写出来，
+          # 一次性传入全部密钥的写法会被 GitHub 判为可疑工作流，需要人工批准才能运行。
+          DINGTALK_ROBOT_1: ${{ secrets.DINGTALK_ROBOT_1 }}
+          DINGTALK_ROBOT_2: ${{ secrets.DINGTALK_ROBOT_2 }}
+          DINGTALK_ROBOT_3: ${{ secrets.DINGTALK_ROBOT_3 }}
+          DINGTALK_ROBOT_4: ${{ secrets.DINGTALK_ROBOT_4 }}
+          DINGTALK_ROBOT_5: ${{ secrets.DINGTALK_ROBOT_5 }}
         run: |
           python -m radar alert --stage "${{ needs.radar.result != 'success' && '数据采集/分析' || needs.deploy.result != 'success' && '网站部署' || '钉钉推送' }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

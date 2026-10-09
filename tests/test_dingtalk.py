@@ -50,15 +50,13 @@ def test_each_group_can_be_its_own_secret():
 
     env = {
         "DINGTALK_WEBHOOK": "https://x/a", "DINGTALK_SECRET": "SECa",
-        "RADAR_SECRETS_JSON": json.dumps({
-            "DINGTALK_ROBOT_TEAM": "https://x/b,SECb",
-            "DINGTALK_ROBOT_KEYWORD_ONLY": "https://x/c",
-            "DINGTALK_ROBOT_DUP": "https://x/a SECa",
-            "SELLERSPRITE_SECRET_KEY": "not-a-robot",
-        }),
-        "DINGTALK_ROBOT_LOCAL": "https://x/d\nSECd",
+        "DINGTALK_ROBOT_1": "https://x/b,SECb",
+        "DINGTALK_ROBOT_2": "https://x/c",           # 关键词方式的机器人，只有 webhook
+        "DINGTALK_ROBOT_3": "https://x/a SECa",      # 与 DINGTALK_WEBHOOK 重复，只推一次
+        "DINGTALK_ROBOT_4": "",                      # 工作流里没建的 Secret 是空字符串
+        "DINGTALK_ROBOT_LOCAL": "https://x/d\nSECd",  # 本地 .env 可以用任意名字
     }
-    assert dingtalk_robots(env) == (["https://x/a", "https://x/c", "https://x/d", "https://x/b"],
-                                    ["SECa", "", "SECd", "SECb"])
+    assert dingtalk_robots(env) == (["https://x/a", "https://x/b", "https://x/c", "https://x/d"],
+                                    ["SECa", "SECb", "", "SECd"])
     legacy = {"DINGTALK_WEBHOOK": "https://x/a,https://x/b", "DINGTALK_SECRET": "SECa"}
     assert dingtalk_robots(legacy) == (["https://x/a", "https://x/b"], ["SECa", ""])
