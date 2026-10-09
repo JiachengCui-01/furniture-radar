@@ -76,6 +76,7 @@ DEFAULTS: dict = {
             "max_cv": 0.35, "min_trend": -0.15, "min_recent_ratio": 0.7,
         },
         "rising": {"min_ratio": 1.3, "min_daily_sales": 3},
+        "momentum": {"min_7d_vs_28d": 0.8, "min_14d_vs_prev14": 0.9},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,

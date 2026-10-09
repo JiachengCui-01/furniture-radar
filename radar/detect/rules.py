@@ -1,4 +1,4 @@
-"""三类“正向”判定：突然爆火、真正持续热销、潜力。阈值全部来自 config.yaml。"""
+"""三类“正向”判定：突然爆火、真正持续热销、潜力，以及共用的评分门槛和“最近有没有回落”。阈值全部来自 config.yaml。"""
 from __future__ import annotations
 
 import math
@@ -30,6 +30,20 @@ def low_rating(rating: float | None, ratings: float | None, th: dict) -> bool:
     """评分不达标的商品不进入任何榜单。还没有评分（没有评论）的不算低分。"""
     floor = rating_floor(ratings, th)
     return bool(floor) and bool(rating) and rating < floor
+
+
+def momentum(d: Daily, as_of_idx: int, cfg: dict) -> dict:
+    """最近有没有回落：近 7 天 vs 近 28 天日均，近 14 天 vs 之前 14 天日均。
+    只比“近 28 天 vs 之前 28 天”或月环比，会被刚开卖时的从零起量撑高，看不出最近一两周已经在掉
+    （实测：9 月初开卖、9 月中旬到峰值、10 月第一周跌到峰值三分之一的商品，28 天对比仍是 ×5）。"""
+    def ratio(a, b):
+        return round(a / b, 3) if a is not None and b else None
+
+    r7 = ratio(mean(d.window("sales", as_of_idx, 7)), mean(d.window("sales", as_of_idx, 28)))
+    r14 = ratio(mean(d.window("sales", as_of_idx, 14)), mean(d.window("sales", as_of_idx - 14, 14)))
+    fading = ((r7 is not None and r7 < cfg.get("min_7d_vs_28d", 0))
+              or (r14 is not None and r14 < cfg.get("min_14d_vs_prev14", 0)))
+    return {"r7_28": r7, "r14": r14, "fading": fading}
 
 
 def deal_overlap(start: date, end: date, deal_windows: list[dict]) -> str | None:

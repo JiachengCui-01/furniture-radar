@@ -125,6 +125,23 @@ def test_low_rating_is_dropped_and_next_one_fills_in(cfg):
     assert "B1" not in {i["asin"] for i in analyze.focus_items(items)}
 
 
+def test_potential_past_its_peak_is_dropped(cfg):
+    """实测形态：9 月初才开卖、9 月中旬到峰值、最近一周跌到峰值的三分之一。28 天对比仍是 ×5、月环比 3→379，
+    但最近在回落，不应算潜力。"""
+    sales = [0] * 85 + [1, 2, 5, 11, 13, 19, 21, 19, 20, 13, 12, 13, 17, 16, 17, 21, 15, 16, 14, 15, 18,
+                        19, 21, 17, 13, 11, 9, 9, 9, 7, 7, 5, 6, 5, 4]
+    rec = _rec(sales, 4.3, available=(END - timedelta(days=115)).isoformat(), ratings=52)
+    rec["months"] = _months([3, 379])
+    assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
+    item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["label"] == "watch" and not item["potential"] and not item["rising"]
+    assert item["tags"][0].startswith("最近回落（近7天日均为近28天的 47%")
+    growing = _rec([round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)], 4.5,
+                   available=(END - timedelta(days=114)).isoformat(), ratings=150)
+    growing["months"] = _months([90, 200, 420])
+    assert analyze.analyze({"asins": {"B2": growing}}, None, ["B2"], cfg, END)["items"][0]["label"] == "potential"
+
+
 def test_low_rated_potential_is_dropped(cfg):
     potential = [round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)]
     rec = _rec(potential, 3.6, available=(END - timedelta(days=114)).isoformat(), ratings=30)

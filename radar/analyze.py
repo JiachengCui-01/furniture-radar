@@ -8,7 +8,7 @@ from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
 from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
-                           rating_floor)
+                           momentum, rating_floor)
 from .series import Daily, closed_months, median
 
 def display_name(brand: str, title: str) -> str:
@@ -88,6 +88,11 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
+    # 有过上涨、但最近一两周在回落的，不算爆火 / 潜力 / 上升中
+    mom = momentum(d, idx, th.get("momentum") or {}) if idx is not None else None
+    faded = bool(mom and mom["fading"] and (surge or potential or rising))
+    if faded:
+        surge = potential = rising = None
 
     rating, n_ratings = current_rating(rec, disc_row)
     low = low_rating(rating, n_ratings, th)
@@ -119,6 +124,9 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
             tags.append("降价驱动")
     if rising and label in ("watch", "hot"):
         tags.append(f"上升中 ×{rising['ratio']:.1f}")
+    if faded:
+        pct = lambda v: "—" if v is None else f"{v:.0%}"
+        tags.append(f"最近回落（近7天日均为近28天的 {pct(mom['r7_28'])}，近14天为前14天的 {pct(mom['r14'])}）")
     if restock:
         tags.append("断货恢复")
     if new_ramp:
