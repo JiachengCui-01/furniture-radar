@@ -138,7 +138,59 @@ details{margin-top:6px}summary{cursor:pointer;color:var(--accent)}
 .hist a{margin-right:10px}
 a{color:var(--accent)}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:16px 0 28px}
+.kpi{cursor:pointer;-webkit-tap-highlight-color:transparent}
+.kpi:hover{box-shadow:0 2px 10px rgba(0,0,0,.08)}
+.pop{position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
+.pop[hidden]{display:none}
+.pop-mask{position:absolute;top:0;right:0;bottom:0;left:0;background:rgba(15,18,24,.55)}
+.pop-panel{position:relative;background:var(--bg);border-radius:14px;width:100%;max-width:820px;max-height:86vh;
+display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);border-top:4px solid var(--c);overflow:hidden}
+.pop-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;
+border-bottom:1px solid var(--line);background:var(--card)}
+.pop-head b{font-size:17px}
+.pop-x{border:0;background:var(--chip);border-radius:8px;width:34px;height:34px;font-size:22px;line-height:1;
+cursor:pointer;color:var(--text);flex:none}
+.pop-body{overflow-y:auto;padding:12px 16px 18px;-webkit-overflow-scrolling:touch}
+html.noscroll,html.noscroll body{overflow:hidden}
+@media (max-width:560px){.pop{padding:0;align-items:flex-end}.pop-panel{max-height:92vh;border-radius:16px 16px 0 0}}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:8px 0 4px}
+.dbox{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.dbox h4{margin:0 0 4px;font-size:14px}
+.drow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;font-size:13px;margin:7px 0}
+.drow .m{grid-column:1/-1}
+.drow em{font-style:normal;color:var(--muted);font-size:12px}
+.drow b{color:var(--potential)}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin:8px 0}
+.gitem{border:1px solid var(--line);border-radius:10px;padding:8px;font-size:12.5px;border-top:3px solid var(--c)}
+.gitem img{width:100%;height:140px;object-fit:contain;background:#fff;border-radius:8px;display:block}
+.gitem p{margin:6px 0 4px;line-height:1.45}
+.gitem .gt{font-weight:600;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+.vchips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
+.vchips span{border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:13px}
+.vchips span i{font-style:normal;color:var(--muted);font-size:12px;margin-left:4px}
+.vchips span.hi{border-color:var(--potential);background:rgba(43,138,62,.08)}
+h3.sub3{font-size:15px;margin:16px 0 6px}
 """
+
+
+# 顶部四个数字点开后以小窗展示对应板块，不跳转页面；没有脚本时退回为页内跳转
+POPUP = """<div class="pop" id="pop" hidden><div class="pop-mask" data-close></div>
+<div class="pop-panel" role="dialog" aria-modal="true" aria-labelledby="pop-title">
+<div class="pop-head"><b id="pop-title"></b><button type="button" class="pop-x" data-close aria-label="关闭">×</button></div>
+<div class="pop-body" id="pop-body"></div></div></div>
+<script>(function(){
+var pop=document.getElementById('pop'),body=document.getElementById('pop-body'),title=document.getElementById('pop-title');
+function closest(el,sel){while(el&&el.nodeType===1){if(el.matches?el.matches(sel):el.msMatchesSelector(sel))return el;el=el.parentNode;}return null;}
+function open(id){var sec=document.getElementById(id);if(!sec)return false;var src=sec.querySelector('.pop-src');if(!src)return false;
+title.textContent=sec.querySelector('h2').textContent;body.innerHTML=src.innerHTML;
+pop.querySelector('.pop-panel').style.setProperty('--c',sec.style.getPropertyValue('--c'));
+pop.hidden=false;document.documentElement.className+=' noscroll';body.scrollTop=0;return true;}
+function close(){pop.hidden=true;document.documentElement.className=document.documentElement.className.replace(/\\s*noscroll/g,'');}
+document.addEventListener('click',function(e){var t=closest(e.target,'[data-pop]');
+if(t){if(open(t.getAttribute('data-pop')))e.preventDefault();return;}
+if(closest(e.target,'[data-close]'))close();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode===27)close();});
+})();</script>"""
 
 
 def _tags(item: dict) -> str:
@@ -211,23 +263,65 @@ def _section(kind: str, title: str, hint: str, items: list[dict], total: int) ->
     more = f"（共 {total} 个，展示前 {len(items)} 个）" if total > len(items) else ""
     body = "".join(card(i, kind) for i in items) if items else '<div class="empty">本期没有符合条件的商品。</div>'
     return (f'<section id="{kind}" style="--c:var(--{LABEL_COLOR[kind]})"><h2><span class="dot"></span>{esc(title)}</h2>'
-            f'<p class="hint">{esc(hint)}{more}</p><div class="cards">{body}</div></section>')
+            f'<div class="pop-src"><p class="hint">{esc(hint)}{more}</p><div class="cards">{body}</div></div></section>')
 
 
-def _traits(tr: dict) -> str:
-    if tr.get("note"):
-        return f'<p class="empty">{esc(tr["note"])}</p>'
+def _meter(share: float, base: float | None) -> str:
+    tick = f'<u style="left:{min(100, base * 100):.0f}%"></u>' if base is not None else ""
+    return f'<div class="meter m"><i style="width:{min(100, share * 100):.0f}%"></i>{tick}</div>'
+
+
+def _design_boxes(design: dict, n_focus: int) -> str:
+    boxes = []
+    for dim, rows in design.items():
+        lines = "".join(
+            f'<div class="drow"><span>{esc(r["label"])}</span><span><b>×{r["lift"]}</b></span>'
+            f'<em>爆火/潜力 {r["count"]}/{n_focus}（{r["share"]:.0%}）· 全部家具 {r["baseline_share"]:.0%}</em><span></span>'
+            f'{_meter(r["share"], r["baseline_share"])}</div>' for r in rows)
+        boxes.append(f'<div class="dbox"><h4>{esc(dim)}</h4>{lines}</div>')
+    return f'<div class="dgrid">{"".join(boxes)}</div>'
+
+
+def _vision_block(v: dict) -> str:
+    if not v or not v.get("n_focus"):
+        return ""
+    parts = [f'<h3 class="sub3">主图识别：爆火/潜力商品长什么样</h3>'
+             f'<p class="hint">AI 看了 {v["n_focus"]} 个爆火/潜力商品的主图'
+             + (f'，并对照 {v["n_reference"]} 个持续热销商品' if v.get("n_reference") else "")
+             + '。数字为“出现该特征的商品数 / 识别数”；绿框 = 在爆火/潜力里明显比持续热销更常见的外观。</p>']
+    for dim, rows in (v.get("dimensions") or {}).items():
+        chips = "".join(
+            f'<span{" class=hi" if r.get("distinct") else ""}>{esc(r["label"])} <b>{r["focus"]}/{v["n_focus"]}</b>'
+            + (f'<i>热销 {r["reference"]}/{v["n_reference"]}</i>' if v.get("n_reference") else "")
+            + '</span>' for r in rows)
+        parts.append(f'<div class="drow" style="margin:8px 0"><span><b style="color:var(--text)">{esc(dim)}</b></span>'
+                     f'<span></span><div class="vchips m">{chips}</div></div>')
+    gallery = []
+    for g in v.get("gallery") or []:
+        c = "surge" if g["label"] == "surge" else "potential" if g["label"] == "potential" else "hot"
+        tags = [t for dim in ("风格", "材质", "造型", "工艺", "颜色") for t in (g["tags"].get(dim) or [])][:6]
+        img = f'<img src="{esc(g["image"])}" alt="" loading="lazy" referrerpolicy="no-referrer">' if g.get("image") else ""
+        gallery.append(
+            f'<a class="gitem" style="--c:var(--{c});color:inherit;text-decoration:none" target="_blank" '
+            f'rel="noopener noreferrer" href="https://www.amazon.com/dp/{esc(g["asin"])}">{img}'
+            f'<p class="gt">{esc(display_name(g.get("brand") or "", g.get("title") or ""))}</p>'
+            f'<p>{esc(g.get("summary") or "")}</p>'
+            f'<div class="tags">{"".join(f"<span class=tag>{esc(t)}</span>" for t in tags)}</div></a>')
+    if gallery:
+        parts.append(f'<div class="gallery">{"".join(gallery)}</div>')
+    return "".join(parts)
+
+
+def _structure(tr: dict) -> str:
     rows = []
     for f in tr.get("facts", []):
         rows.append(
             f"<tr><td>{esc(f['dimension'])}</td><td>{esc(f['value'])}</td>"
             f"<td class=n>{f['share']:.0%}</td><td class=n>{f['baseline_share']:.0%}</td>"
-            f"<td><div class=meter><i style=\"width:{min(100, f['share'] * 100):.0f}%\"></i>"
-            f"<u style=\"left:{min(100, f['baseline_share'] * 100):.0f}%\"></u></div></td>"
             f"<td class=n>×{f['lift']}</td></tr>")
     table = ("<div class=tbl><table><thead><tr><th>维度</th><th>特征</th><th class=n>爆火/潜力中</th>"
-             "<th class=n>全部家具中</th><th>对比</th><th class=n>提升</th></tr></thead><tbody>"
-             + "".join(rows) + "</tbody></table></div>") if rows else '<p class="empty">没有显著偏高的结构性特征。</p>'
+             "<th class=n>全部家具中</th><th class=n>提升</th></tr></thead><tbody>"
+             + "".join(rows) + "</tbody></table></div>") if rows else '<p class="empty">没有显著偏高的结构特征。</p>'
     kws = "".join(f"<span title=\"爆火/潜力中 {k['share']:.0%}，全部家具中 {k['baseline_share']:.0%}\">"
                   f"{esc(k['term'])}<b>×{k['lift']}</b></span>" for k in tr.get("keywords", []))
     numbers = []
@@ -235,11 +329,28 @@ def _traits(tr: dict) -> str:
         if v.get("focus") is not None and v.get("baseline") is not None:
             fmt = fmt_price if "价格" in name else (lambda x: fmt_num(x, 1))
             numbers.append(f"<span class=chip>{esc(name)}：{fmt(v['focus'])}（全部 {fmt(v['baseline'])}）</span>")
-    return (f"<p class=hint>样本：本期真爆火 + 潜力 {tr['n_focus']} 个，对比全部家具头部商品 {tr['n_baseline']} 个。"
-            f"竖线为全部家具中的占比。</p>{table}"
-            + (f"<h3 style=\"font-size:15px;margin:14px 0 6px\">标题高频词（相对全部家具的提升倍数）</h3>"
-               f"<div class=kw>{kws}</div>" if kws else "")
-            + (f"<div class=chips style=\"margin-top:12px\">{''.join(numbers)}</div>" if numbers else ""))
+    return (f"<details><summary>其他特征：子类目、价格段、上架时长、标题高频词</summary>{table}"
+            + (f"<div class=kw style=\"margin-top:10px\">{kws}</div>" if kws else "")
+            + (f"<div class=chips style=\"margin-top:10px\">{''.join(numbers)}</div>" if numbers else "")
+            + "</details>")
+
+
+def _traits(tr: dict) -> str:
+    if tr.get("note"):
+        return f'<p class="empty">{esc(tr["note"])}</p>'
+    design = tr.get("design") or {}
+    appearance = {d: rows for d, rows in design.items() if d != "功能卖点"}
+    parts = [f'<p class="hint">本期真爆火 + 潜力 {tr["n_focus"]} 个，对比全部家具头部商品 {tr["n_baseline"]} 个。'
+             f'“×倍数”= 这个特征在爆火/潜力商品里出现的比例 ÷ 在全部家具里的比例；进度条竖线为全部家具中的占比。</p>']
+    if appearance:
+        parts.append('<h3 class="sub3">外观与工艺（来自商品标题）</h3>' + _design_boxes(appearance, tr["n_focus"]))
+    else:
+        parts.append('<p class="empty">标题里没有明显偏多的外观/工艺特征。</p>')
+    parts.append(_vision_block(tr.get("vision") or {}))
+    if design.get("功能卖点"):
+        parts.append('<h3 class="sub3">功能卖点</h3>' + _design_boxes({"功能卖点": design["功能卖点"]}, tr["n_focus"]))
+    parts.append(_structure(tr))
+    return "".join(parts)
 
 
 def _changes(diff: dict, by_asin: dict) -> str:
@@ -311,7 +422,7 @@ def render(ctx: dict) -> str:
     counts = sec["counts"]
     by_asin = {i["asin"]: i for i in ctx["items"]}
     kpi = "".join(
-        f'<a class="kpi" href="#{k}" style="--c:var(--{k});text-decoration:none;color:inherit">'
+        f'<a class="kpi" href="#{k}" data-pop="{k}" role="button" style="--c:var(--{k});text-decoration:none;color:inherit">'
         f'<b>{counts[k]}</b><span>{label}</span></a>'
         for k, label in (("surge", "突然爆火"), ("potential", "潜力产品"), ("hot", "持续热销"), ("fake", "异常信号")))
     cov = ctx["coverage"]
@@ -333,7 +444,7 @@ def render(ctx: dict) -> str:
 <div class="kpis">{kpi}</div>
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期简报</h2>{markdown(ctx['summary'])}</section>
 {_section('surge', '突然爆火', '近期销量/排名明显跃升且没有异常信号的商品，按爆发强度排序。', sec['surge'], counts['surge'])}
-<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>爆火产品的共性特点</h2>{_traits(ctx['traits'])}</section>
+<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>爆火产品的外观与工艺特征</h2>{_traits(ctx['traits'])}</section>
 {_section('potential', '潜力产品', '上架半年内、销量持续增长、评论还不多的商品，适合重点研究。', sec['potential'], counts['potential'])}
 {_section('hot', '真正持续热销', '连续多个月保持子类目头部销量、波动小、没有异常信号的商品。', sec['hot'], counts['hot'])}
 {_section('fake', '假爆火 / 异常信号', '增长伴随刷评、评论异常等信号的商品。仅为数据异常提示，需人工核实。', sec['fake'], counts['fake'])}
@@ -341,4 +452,4 @@ def render(ctx: dict) -> str:
 <section id="all" style="--c:var(--muted)"><h2><span class="dot"></span>全部追踪商品</h2>
 <details><summary>展开 {counts['total']} 个商品明细</summary>{_all_table(ctx['items'])}</details>{_method(ctx['cfg'])}</section>
 <footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 每个板块最多展示 {top_n} 个 · 报告已加密，仅持有链接的人可查看</footer>
-</div></body></html>"""
+</div>{POPUP}</body></html>"""

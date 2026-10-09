@@ -15,6 +15,7 @@ import httpx
 
 from .. import log
 from ..analyze import display_name
+from ..narrative import top_design_labels
 
 
 def signed_url(webhook: str, secret: str, timestamp_ms: int | None = None) -> str:
@@ -124,6 +125,10 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         for item in high[:max_items]:
             signal = item["fake"]["signals"][0]["text"] if item["fake"]["signals"] else ""
             lines.append(item_line(item, f" 异常分{item['fake']['score']}：{_short(signal, 34)}"))
+        lines.append("")
+    looks = top_design_labels(ctx.get("traits") or {})
+    if looks:
+        lines.append(f"**🎨 爆火外观特点**：{'、'.join(looks)}")
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):

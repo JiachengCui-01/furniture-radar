@@ -91,6 +91,10 @@ DEFAULTS: dict = {
         "api_key_env": "DEEPSEEK_API_KEY",
         "timeout_seconds": 120,
         "extra_body": {"thinking": {"type": "disabled"}},
+        "vision": "auto",
+        "vision_model": "deepseek-v4-flash-vision-exp",
+        "vision_focus": 12,
+        "vision_reference": 8,
     },
 }
 

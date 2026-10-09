@@ -20,14 +20,23 @@ def _utf8_stdout() -> None:
             pass
 
 
-def cmd_run(args, cfg, secrets) -> int:
-    result = pipeline.run(cfg, secrets, args.site_dir, force=args.force, budget=args.budget,
-                          notify=args.notify)
+def _github_output(args, result) -> None:
     if args.github_output and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
             fh.write(f"published={'true' if result.published else 'false'}\n")
             if result.report_id:
                 fh.write(f"report_id={result.report_id}\n")
+
+
+def cmd_run(args, cfg, secrets) -> int:
+    result = pipeline.run(cfg, secrets, args.site_dir, force=args.force, budget=args.budget,
+                          notify=args.notify)
+    _github_output(args, result)
+    return 0
+
+
+def cmd_rerender(args, cfg, secrets) -> int:
+    _github_output(args, pipeline.rerender(cfg, secrets, args.site_dir))
     return 0
 
 
@@ -210,6 +219,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--notify", action="store_true", help="完成后立即推送钉钉")
     p.add_argument("--github-output", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("rerender", help="用已保存的数据重新生成最近一期报告（不调用卖家精灵，链接不变）")
+    p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))
+    p.add_argument("--github-output", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_rerender)
 
     p = sub.add_parser("notify", help="把最近一期报告推送到钉钉")
     p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))

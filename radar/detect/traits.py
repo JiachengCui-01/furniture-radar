@@ -1,5 +1,7 @@
 """爆火/潜力产品的共性特点：与整个家具基线（发现阶段的约 2000 个 ASIN）对比，找出显著偏高的特征。
 
+重点是外观与工艺（design.py 的设计词库），其次是子类目、价格段、上架时长等结构特征。
+
 所有结论都是计算出来的“占比 + 提升度”，大模型只负责把它们写成文字，不允许编造数字。
 """
 from __future__ import annotations
@@ -10,6 +12,7 @@ from collections import Counter
 from datetime import date
 
 from .. import clock
+from . import design
 
 STOPWORDS = set("""
 a an the and or for with of to in on by from at as is are be this that it its your you our
@@ -113,11 +116,12 @@ def _median(values: list) -> float | None:
 
 def compute(baseline: list[dict], focus: list[dict], today: date) -> dict:
     nf, nb = len(focus), len(baseline)
-    result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}}
+    result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}, "design": {}}
     if nf < 3 or nb < 20:
         result["note"] = "本期爆火/潜力样本太少（少于 3 个），暂不总结共性特点"
         return result
 
+    result["design"] = design.compare(baseline, focus)
     ctx = {"bands": _price_bands(baseline), "today": today}
     for dim, fn in DIMENSIONS.items():
         cf = Counter(v for v in (fn(r, ctx) for r in focus) if v)

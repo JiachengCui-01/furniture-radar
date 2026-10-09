@@ -145,3 +145,8 @@ llm:
   timeout_seconds: 120
   extra_body:                        # 非 DeepSeek 接口可删除此项
     thinking: {type: disabled}
+  # 主图外观识别：用视觉模型读爆火/潜力商品的主图（风格、材质、造型、工艺、颜色），约 300 tokens/张，结果会缓存
+  vision: auto                       # auto = 有 key 才启用；false = 关闭
+  vision_model: deepseek-v4-flash-vision-exp
+  vision_focus: 12                   # 识别多少个爆火/潜力商品
+  vision_reference: 8                # 再识别多少个持续热销商品作对照

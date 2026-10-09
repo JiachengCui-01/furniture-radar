@@ -5,12 +5,12 @@
 | 板块 | 含义 |
 |---|---|
 | 🚀 **突然爆火** | 近 1~2 周销量和排名明显跃升，且没有异常信号。细分为持续型、脉冲型、爬升型、新品起量；另外标注季节性、大促、降价驱动 |
-| 🧬 **爆火产品共性特点** | 爆火和潜力商品与全部家具相比明显偏多的特征：子类目、价格段、配送方式、卖家、变体、上架时长、标题高频词 |
+| 🎨 **爆火产品外观与工艺特征** | 爆火和潜力商品在风格、材质、造型、工艺、颜色、功能卖点上，比全部家具明显多见的特征。来源有两个：标题里的设计词（与约 1800 个家具商品对比），以及 AI 识别商品主图（与持续热销商品对照），附主图墙和一句话外观要点 |
 | 🌱 **潜力产品** | 上架半年内、销量持续增长、评论还不多、没有异常信号 |
 | 🔥 **真正持续热销** | 连续多个月保持子类目头部销量、波动小、没有下滑、没有异常信号 |
 | ⚠️ **假爆火 / 异常信号** | 留评率异常、评论增速远超销量、评分短期跳升、短时脉冲、评论集中在少数几天、非验证购买多等。按分值提醒，仅供人工核实 |
 
-报告是单个网页，手机和电脑都能看，支持深色模式。报告和历史数据都经过加密：钉钉消息里的链接自带密钥，点开就能看；没有链接的人即使找到网址也只能看到乱码。
+报告是单个网页，手机和电脑都能看，支持深色模式。点顶部的四个数字，会以小窗弹出对应板块，页面不会跳动。报告和历史数据都经过加密：钉钉消息里的链接自带密钥，点开就能看；没有链接的人即使找到网址也只能看到乱码。
 
 > 不想花积分先看效果？运行 `python -m radar demo`，会用模拟数据生成一份完整报告（见下文“本地预览”）。
 
@@ -26,8 +26,8 @@ GitHub Actions：每天 08:17（北京时间）检查一次，距上次成功运
   2. 追踪池（本地计算）：往期被标记的 + 势头最强的 + 每个子类目头部 + 探索位轮换抽查，同一父体只取一个
   3. 刷新日数据（每个 ASIN 1 次调用，返回约 400 天的日销量 / BSR / 价格 / 当前评论数）
      被标记的商品每期刷新，稳定商品轮换刷新（每期约 1/3）
-  4. 判定 → 对可疑商品额外核查评论和变体（每期最多 5 个）→ 共性特点 → 与上期对比
-  5. 可选：用 DeepSeek 把计算结果写成中文简报（只措辞，不判定，没有 key 就用模板）
+  4. 判定 → 对可疑商品额外核查评论和变体（每期最多 5 个）→ 外观与工艺特征 → 与上期对比
+  5. 可选：用 DeepSeek 识别爆火/潜力商品的主图（风格、材质、造型、工艺、颜色），并把计算结果写成中文简报（只措辞，不判定，没有 key 就用模板）
   6. 生成报告 → AES-256-GCM 加密 → 发布到 GitHub Pages → 推送钉钉卡片
 ```
 
@@ -52,7 +52,7 @@ GitHub Actions：每天 08:17（北京时间）检查一次，距上次成功运
 | `SELLERSPRITE_SECRET_KEY` | https://open.sellersprite.com → 获取密钥 | ✅ |
 | `REPORT_KEY` | 运行 `python -m radar keygen` 生成。**务必备份**，丢失后历史数据无法解密 | ✅ |
 | `DINGTALK_WEBHOOK` + `DINGTALK_SECRET` | 钉钉群 → 群设置 → 机器人 → 添加机器人 → 自定义。安全设置勾选 **加签**，复制 SEC 开头的密钥和 webhook 地址。多个群用英文逗号分隔，按顺序一一对应 | 推荐 |
-| `DEEPSEEK_API_KEY` | https://platform.deepseek.com ，用于生成文字总结 | 可选 |
+| `DEEPSEEK_API_KEY` | https://platform.deepseek.com ，用于生成文字总结和识别商品主图（每期约 20 张图，每张约 300 tokens） | 可选 |
 
 ### 3. 写入 GitHub Secrets
 **方式 A（推荐，Windows）**：安装 [GitHub CLI](https://cli.github.com) 并执行 `gh auth login`，然后在仓库目录运行：
@@ -67,7 +67,8 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_secrets.ps1
 仓库 → Settings → Pages → Build and deployment → Source 选 **GitHub Actions**。
 
 ### 5. 运行第一期
-仓库 → Actions → **家具爆品雷达** → Run workflow。首次运行大约 5~10 分钟，完成后钉钉群会收到卡片消息。之后每 3 天自动运行。
+仓库 → Actions → **家具爆品雷达** → Run workflow（mode 选 `run`）。
+如果只是想让最近一期报告用上新的样式或分析方法，mode 选 `rerender`：不调用卖家精灵，钉钉里原来的链接打开就是新版本。首次运行大约 5~10 分钟，完成后钉钉群会收到卡片消息。之后每 3 天自动运行。
 
 > 注意：公开仓库的 Actions 日志任何人都能看到。程序在 CI 里只打印数量统计，不打印 ASIN、标题或链接，报告密钥也会被打码。请不要在工作流里加 `--verbose` 一类会输出商品数据的调试命令。
 
@@ -91,6 +92,7 @@ copy .env.example .env          # 然后编辑 .env 填入密钥
 | `python -m radar probe` | 列出卖家精灵 MCP 全部工具及参数（不计费）。加 `--tool X --args '{…}'` 可调用一次并保存原始响应 |
 | `python -m radar decrypt site\reports\2026-10-08.html` | 本地解密报告（`data\state.enc` 也可以） |
 | `python -m radar status` | 查看历史数据概况 |
+| `python -m radar rerender` | 用已保存的数据重新生成最近一期报告，不调用卖家精灵，报告链接不变。改了报告样式或分析方法后用它刷新 |
 | `python -m radar keygen` | 生成新的 `REPORT_KEY` |
 | `python -m pytest` | 运行测试（不会调用卖家精灵或钉钉） |
 
@@ -108,6 +110,8 @@ copy .env.example .env          # 然后编辑 .env 填入密钥
 - `schedule.min_days_between_runs`：运行间隔（默认 3 天）
 - `thresholds.*`：各类判定阈值
 - `deal_windows`：大促日期。Prime Day 等每年日期不同，公布后补充进去，避免把大促销量误判为爆火
+- `llm.vision` / `llm.vision_focus` / `llm.vision_reference`：主图识别开关，以及识别多少个爆火/潜力商品和对照用的持续热销商品
+- 设计词库在 `radar/detect/design.py` 的 `LEXICON` 里，可以按需补充风格、材质、工艺等词条
 
 ### 调用量估算（默认配置）
 | 项目 | 调用次数 |
@@ -166,7 +170,8 @@ radar/
   discovery.py      子类目展开 + 头部/新品发现
   tracking.py       追踪池、日数据刷新、轮换与探索
   series.py         时间序列计算
-  detect/           爆火 / 热销 / 潜力 / 假爆火 / 共性特点 / 与上期对比
+  detect/           爆火 / 热销 / 潜力 / 假爆火 / 外观与工艺（design.py 设计词库）/ 与上期对比
+  vision.py         商品主图外观识别（可选）
   verify.py         评论与变体核查
   narrative.py      文字简报（DeepSeek 或模板）
   report/           报告 HTML、加密外壳、迷你图

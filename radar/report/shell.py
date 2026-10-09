@@ -37,7 +37,10 @@ BOOT_JS = r"""
   const msg=document.getElementById('msg'), form=document.getElementById('form');
   function show(h){
     const doc=new DOMParser().parseFromString(h,'text/html');
-    document.replaceChild(document.importNode(doc.documentElement,true),document.documentElement);}
+    document.replaceChild(document.importNode(doc.documentElement,true),document.documentElement);
+    // DOMParser 解析出来的脚本不会执行，重新创建一遍报告里的脚本（小窗等交互）
+    Array.prototype.forEach.call(document.querySelectorAll('script'),function(old){
+      var s=document.createElement('script');s.text=old.text;old.parentNode.replaceChild(s,old);});}
   async function attempt(k){
     const r=await openReport(k,p);
     try{sessionStorage.setItem('radar:'+p.id,r.key);}catch(e){}

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import analyze, clock, crypto, discovery, log, narrative, store, tracking, verify
+from . import analyze, clock, crypto, discovery, log, narrative, store, tracking, verify, vision
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
 from .notify import dingtalk
@@ -163,51 +163,22 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         if checked:
             result = analyze.analyze(state, disc, pool, cfg, today, extra_rows)
     items = result["items"]
-    sec = analyze.sections(items, int(cfg["report"]["top_n"]))
-    trait = analyze.compute_traits(items, disc, state, today)
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     prev_run = state["runs"][-1] if state.get("runs") else None
-    changes = diffing.compare(prev_run, {a: v[0] for a, v in labels.items()})
 
     # 5. 报告
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
     report_id = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
-    key_text = crypto.report_key_text(master, report_id)
-    log.mask(key_text)
-    as_of_values = [i["as_of"] for i in items if i.get("as_of")]
-    ctx = {
-        "title": cfg["report"]["title"],
-        "report_id": report_id,
-        "run_seq": run_seq,
-        "generated_at": display_now.strftime("%Y-%m-%d %H:%M"),
-        "period": (disc or {}).get("period"),
-        "period_text": _period_text((disc or {}).get("period")),
-        "as_of": max(as_of_values) if as_of_values else "—",
-        "items": items,
-        "sections": sec,
-        "traits": trait,
-        "diff": changes,
-        "coverage": {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit,
-                     "stale": sum(1 for i in items if i["stale"])},
-        "cfg": cfg,
-        "top_n": int(cfg["report"]["top_n"]),
-    }
-    ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
-    history = []
-    for old_id in list(reversed(state.get("reports") or []))[:6]:
-        history.append({"id": old_id, "href": f"{old_id}.html#k={crypto.report_key_text(master, old_id)}"})
-    ctx["history"] = history
-
-    page = report_render.render(ctx)
-    envelope = crypto.encrypt(crypto.report_key(master, report_id), page.encode("utf-8"),
-                              crypto.report_aad(report_id))
-    reports_dir = site / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / f"{report_id}.html").write_text(
-        shell.encrypted_page(f"{cfg['report']['title']} {report_id}", envelope, report_id), encoding="utf-8")
+    coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit}
+    ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
+                       generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
+                       coverage=coverage, today=today)
+    key_text = ctx["key_text"]
+    sec = ctx["sections"]
 
     state.setdefault("reports", []).append(report_id)
     keep = int(cfg["report"]["keep_reports"])
+    reports_dir = site / "reports"
     for old_id in state["reports"][:-keep]:
         old = reports_dir / f"{old_id}.html"
         if old.exists():
@@ -217,11 +188,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     (site / ".nojekyll").write_text("", encoding="utf-8")
 
     # 6. 状态
-    text = dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))
-    state.setdefault("runs", []).append({
-        "id": report_id, "seq": run_seq, "date": today.isoformat(), "labels": labels,
-        "counts": sec["counts"], "notify": {"title": f"{cfg['report']['title']} {report_id}", "text": text},
-    })
+    state.setdefault("runs", []).append(_run_record(cfg, ctx, today.isoformat(), labels))
     state["runs"] = state["runs"][-20:]
     state["run_seq"] = run_seq
     state["last_success"] = now_utc.isoformat(timespec="seconds")
@@ -243,6 +210,102 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     if notify:
         out.notified = send_last(cfg, secrets, site)
     return out
+
+
+def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
+                 items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
+                 prev_run: dict | None, coverage: dict, today) -> dict:
+    """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。"""
+    sec = analyze.sections(items, int(cfg["report"]["top_n"]))
+    trait = analyze.compute_traits(items, disc, state, today)
+
+    # 主图外观识别：爆火 + 潜力，另取几个持续热销作对照
+    llm = cfg["llm"]
+    focus = (sec["surge"] + sec["potential"])[: int(llm.get("vision_focus", 12))]
+    reference = sec["hot"][: int(llm.get("vision_reference", 8))]
+    tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
+    if tagged:
+        log.info(f"主图识别 {tagged} 张")
+    trait["vision"] = vision.summarize(focus, reference, state)
+
+    labels = {i["asin"]: i["label"] for i in items}
+    as_of_values = [i["as_of"] for i in items if i.get("as_of")]
+    key_text = crypto.report_key_text(master, report_id)
+    log.mask(key_text)
+    ctx = {
+        "title": cfg["report"]["title"],
+        "report_id": report_id,
+        "key_text": key_text,
+        "run_seq": run_seq,
+        "generated_at": generated_at,
+        "period": (disc or {}).get("period"),
+        "period_text": _period_text((disc or {}).get("period")),
+        "as_of": max(as_of_values) if as_of_values else "—",
+        "items": items,
+        "sections": sec,
+        "traits": trait,
+        "diff": diffing.compare(prev_run, labels),
+        "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
+        "cfg": cfg,
+        "top_n": int(cfg["report"]["top_n"]),
+    }
+    ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
+    ctx["history"] = [{"id": old_id, "href": f"{old_id}.html#k={crypto.report_key_text(master, old_id)}"}
+                      for old_id in list(reversed(state.get("reports") or [])) if old_id != report_id][:6]
+
+    page = report_render.render(ctx)
+    envelope = crypto.encrypt(crypto.report_key(master, report_id), page.encode("utf-8"),
+                              crypto.report_aad(report_id))
+    reports_dir = site / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / f"{report_id}.html").write_text(
+        shell.encrypted_page(f"{cfg['report']['title']} {report_id}", envelope, report_id), encoding="utf-8")
+    return ctx
+
+
+def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
+    return {
+        "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels,
+        "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
+        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget")},
+        "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
+                   "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
+    }
+
+
+def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunResult:
+    """用已保存的数据重新生成最近一期报告（不调用卖家精灵）。报告 ID 和链接不变，
+    钉钉里已经发出的链接打开就是新版本。用于改进报告样式或分析方法后刷新。"""
+    master = crypto.parse_master_key(secrets.report_key)
+    site = Path(site_dir)
+    state = store.load(site, master)
+    if not state.get("runs"):
+        log.warn("还没有任何报告，无法重新生成")
+        return RunResult(skipped_reason="还没有报告")
+    last = state["runs"][-1]
+    disc = state.get("discovery")
+    today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()
+    extra_rows = {p["asin"]: p for p in (state.get("risers") or {}).get("items") or []}
+    items = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows)["items"]
+    coverage = last.get("coverage") or {}
+    if not coverage:
+        month = (last.get("date") or "")[:7]
+        same_month = [r for r in state["runs"] if (r.get("date") or "")[:7] == month]
+        coverage = {"refreshed": sum(1 for r in state["asins"].values() if r.get("fetched_run") == last["seq"]),
+                    "calls": state["calls"].get(month) if len(same_month) == 1 else None, "budget": None}
+    ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=last["id"], run_seq=last["seq"],
+                       generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),
+                                                                            cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
+                       prev_run=state["runs"][-2] if len(state["runs"]) >= 2 else None, coverage=coverage,
+                       today=today)
+    labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
+    state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)
+    store.save(site, master, state)
+    sec = ctx["sections"]
+    log.info(f"已重新生成第 {last['seq']} 期报告 {last['id']}（未调用卖家精灵）；爆火 {sec['counts']['surge']} / "
+             f"潜力 {sec['counts']['potential']} / 热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']}")
+    return RunResult(published=True, report_id=last["id"], url=build_url(cfg, secrets, last["id"], ctx["key_text"]),
+                     counts=sec["counts"])
 
 
 def send_last(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *, client=None) -> list[bool]:

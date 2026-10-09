@@ -11,18 +11,22 @@ import httpx
 from . import log
 from .analyze import display_name
 
-SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师。下面是自动化系统已经计算好的本期监控结果（JSON）。
-请用简体中文写一份给选品团队看的简报，严格遵守：
+SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
+请用简体中文写一份给选品/开发团队看的简报，严格遵守：
 1. 只能使用 JSON 里出现的数字和事实，不得编造或推算新数字；没有的数据就不提。
 2. 结构固定为四个小节，每节 2~5 条要点，用 "- " 开头：
    ### 本期结论
-   ### 爆火产品的共性特点
-   ### 选品建议
+   ### 爆火产品的外观与工艺特点
+   ### 选品与开发建议
    ### 风险提醒
-3. “异常信号”只能表述为“疑似/需人工核实”，不要断言对方刷单。
-4. 季节性、大促、降价带来的增长要单独指出，提醒不要误判为长期需求。
-5. 提到具体商品时用“品牌 + 简短品名”，不要贴长标题，不要输出链接。
-总长度控制在 600 字以内。"""
+3. “爆火产品的外观与工艺特点”是重点：依据“外观与工艺”（标题统计）和“主图识别”，围绕风格、材质、造型、
+   工艺细节、颜色来写，说清楚爆火/潜力商品相比全部家具（或持续热销）哪些外观/工艺特征明显更多，并引用对应的
+   占比或倍数；可以引用“外观要点”里的具体描述。功能卖点放在最后一条；子类目、价格段等结构特征最多一句带过。
+4. “选品与开发建议”要具体到设计方向：建议开发或跟进什么风格、材质、造型、工艺、配色的产品，
+   可以点名 1~2 个参考商品（品牌 + 简短品名）。
+5. “异常信号”只能表述为“疑似/需人工核实”，不要断言对方刷单。季节性、大促、降价、断货恢复带来的增长要提醒
+   不要误判为长期需求。
+6. 不要输出链接和长标题。总长度控制在 700 字以内。"""
 
 
 def build_facts(ctx: dict) -> dict:
@@ -56,12 +60,7 @@ def build_facts(ctx: dict) -> dict:
         "潜力": [brief(i) for i in sec["potential"][:8]],
         "持续热销": [brief(i) for i in sec["hot"][:5]],
         "异常信号": [brief(i) for i in sec["fake"][:8]],
-        "共性特点": {
-            "特征": [f"{f['dimension']}={f['value']}：占爆火/潜力的 {f['share']:.0%}，基线仅 {f['baseline_share']:.0%}"
-                   for f in ctx["traits"].get("facts", [])],
-            "标题高频词": [f"{k['term']}（{k['count']} 个，提升 {k['lift']} 倍）" for k in ctx["traits"].get("keywords", [])[:10]],
-            "备注": ctx["traits"].get("note"),
-        },
+        "共性特点": design_facts(ctx["traits"]),
         "与上期对比": {
             "首期": ctx["diff"].get("first", False),
             "新增爆火": len(ctx["diff"]["new"]["surge"]),
@@ -70,6 +69,42 @@ def build_facts(ctx: dict) -> dict:
             "爆火回落": len(ctx["diff"].get("cooled", [])),
         },
     }
+
+
+def design_facts(tr: dict) -> dict:
+    """外观与工艺优先，结构特征其次。"""
+    n = tr.get("n_focus") or 0
+    design = tr.get("design") or {}
+
+    def lines(rows):
+        return [f"{r['label']}：爆火/潜力中 {r['count']}/{n}（{r['share']:.0%}），全部家具中 {r['baseline_share']:.0%}，"
+                f"×{r['lift']}" for r in rows]
+
+    out = {
+        "外观与工艺": {dim: lines(rows) for dim, rows in design.items() if dim != "功能卖点"},
+        "功能卖点": lines(design.get("功能卖点", [])),
+        "其他结构特征": [f"{f['dimension']}={f['value']}：占爆火/潜力的 {f['share']:.0%}，全部家具 {f['baseline_share']:.0%}"
+                   for f in tr.get("facts", [])[:4]],
+        "备注": tr.get("note"),
+    }
+    v = tr.get("vision") or {}
+    if v.get("n_focus"):
+        ref = f"（持续热销对照 {v['n_reference']} 个）" if v.get("n_reference") else ""
+        out[f"主图识别：爆火/潜力 {v['n_focus']} 个{ref}"] = {
+            dim: [f"{r['label']} {r['focus']}/{v['n_focus']}"
+                  + (f"，持续热销 {r['reference']}/{v['n_reference']}" if v.get("n_reference") else "")
+                  + ("（明显多于持续热销）" if r.get("distinct") else "") for r in rows]
+            for dim, rows in (v.get("dimensions") or {}).items()}
+        out["外观要点"] = [f"{display_name(g.get('brand') or '', g.get('title') or '')[:30]}：{g['summary']}"
+                       for g in v.get("gallery", [])[:10] if g.get("summary")]
+    return out
+
+
+def top_design_labels(tr: dict, k: int = 4) -> list[str]:
+    """外观/工艺里提升最明显的几个特征名（钉钉卡片和模板总结用）。"""
+    rows = [(dim, r) for dim, rs in (tr.get("design") or {}).items() if dim != "功能卖点" for r in rs]
+    rows.sort(key=lambda x: -(x[1]["lift"] * x[1]["share"]))
+    return [r["label"] for _, r in rows[:k]]
 
 
 def llm_summary(facts: dict, cfg: dict, api_key: str) -> str | None:
@@ -113,14 +148,20 @@ def template_summary(facts: dict) -> str:
         ratio = f"×{s['倍数']}" if s.get("倍数") else "从零起量"
         lines.append(f"- 爆火：{item['品名'][:36]}（{item['子类目']}），日均 {s.get('之前日均')} → "
                      f"{s.get('近期日均')} 件（{ratio}，{s.get('形态')}）。")
-    lines.append("### 爆火产品的共性特点")
+    lines.append("### 爆火产品的外观与工艺特点")
     trait = facts["共性特点"]
     if trait.get("备注"):
         lines.append(f"- {trait['备注']}")
-    lines.extend(f"- {t}" for t in trait["特征"][:4])
-    if trait["标题高频词"]:
-        lines.append(f"- 标题高频词：{'、'.join(trait['标题高频词'][:6])}")
-    lines.append("### 选品建议")
+    for dim, rows in trait["外观与工艺"].items():
+        if rows:
+            lines.append(f"- {dim}：{rows[0]}")
+    for text in (trait.get("外观要点") or [])[:2]:
+        lines.append(f"- 主图：{text}")
+    if trait["功能卖点"]:
+        lines.append(f"- 功能卖点：{trait['功能卖点'][0]}")
+    if not trait["外观与工艺"] and not trait.get("备注"):
+        lines.append("- 标题里没有明显偏多的外观/工艺特征。")
+    lines.append("### 选品与开发建议")
     if facts["潜力"]:
         names = "、".join(i["品名"][:28] for i in facts["潜力"][:3])
         lines.append(f"- 优先研究潜力商品：{names}。")
