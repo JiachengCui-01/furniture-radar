@@ -7,7 +7,8 @@ from . import clock
 from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
-from .detect.rules import current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating
+from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
+                           rating_floor)
 from .series import Daily, closed_months, median
 
 def display_name(brand: str, title: str) -> str:
@@ -88,8 +89,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
 
-    rating = current_rating(rec, disc_row)
-    low = low_rating(rating, th.get("min_rating"))
+    rating, n_ratings = current_rating(rec, disc_row)
+    low = low_rating(rating, n_ratings, th)
     if low:  # 评分不达标：不进任何榜单，由排在后面的商品依次补位
         label = "low"
     elif fake["level"]:
@@ -103,7 +104,11 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     else:
         label = "watch"
 
-    tags: list[str] = [f"评分 {rating} 低于 {th['min_rating']}"] if low else []
+    tags: list[str] = []
+    if low:
+        floor = rating_floor(n_ratings, th)
+        few = f"评论仅 {int(n_ratings)} 条，" if floor > th["min_rating"] else ""
+        tags.append(f"{few}评分 {rating} 低于 {floor}")
     if surge:
         tags.append(surge["kind"])
         if surge["seasonal"]:
@@ -142,7 +147,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "price": (_last(d.price) if d else None) or rec.get("price"),
         "bsr": _last(d.bsr) if d else None,
         "rating": rating,
-        "ratings": obs.get("ratings"),
+        "ratings": n_ratings,
         "variations": rec.get("variations"),
         "age_days": age,
         "as_of": as_of.isoformat() if as_of else None,

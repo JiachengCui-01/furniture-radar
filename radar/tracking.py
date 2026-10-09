@@ -9,7 +9,7 @@
   2. 相似款（≤ similar_max）：上期爆款的同类竞品（近 30 天数据）
   3. 机会候选（剩余名额）：近 30 天上升榜 / 新品榜 / 相似款，以及月度名单里增长快或上架半年内的商品，
      按机会分排序；分数最高的 opportunity_every_run 个每期都看，其余按“最久没查”轮流查。
-同一父体只取一个；评分低于 min_rating 的不占名额，各类都由排在后面的商品依次补位。
+同一父体只取一个；评分不达标的（见 rules.rating_floor）不占名额，各类都由排在后面的商品依次补位。
 
 刷新（每个 ASIN 1 次 asin_prediction 调用，返回约 400 天日数据）：
   A 档：新进池、上期被标记的 → 每期刷新
@@ -90,7 +90,7 @@ def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> 
     """机会候选（按机会分排序）：近 30 天榜单和相似款全部纳入；月度名单里只取增长快或上架半年内的。
     同一 ASIN 用最新的一行；评分不达标、销量太小、标题不在范围内的剔除；同一父体只留销量最大的。"""
     pcfg = cfg["pool"]
-    floor = cfg["thresholds"].get("min_rating")
+    th = cfg["thresholds"]
     min_units = float(pcfg.get("opportunity_min_units", 0))
     min_growth = float(pcfg.get("opportunity_min_growth", 0))
     max_age = int(pcfg.get("opportunity_max_age_days", 180))
@@ -102,7 +102,7 @@ def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> 
             continue
         if (p.get("units") or 0) < min_units:
             continue
-        if low_rating(current_rating(state["asins"].get(p["asin"]), p), floor):
+        if low_rating(*current_rating(state["asins"].get(p["asin"]), p), th):
             continue
         if p["sources"][0] not in FRESH_SOURCES:
             age = clock.days_between(clock.parse_day(p.get("available")), today)
@@ -123,7 +123,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
     products = list(((disc or {}).get("products") or {}).values())
     fresh = fresh_rows(state)
     by_asin = {**fresh, **{p["asin"]: p for p in products}}
-    floor = cfg["thresholds"].get("min_rating")
+    th = cfg["thresholds"]
 
     order: list[str] = []
     reason: dict[str, str] = {}
@@ -135,7 +135,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
         key = (row or {}).get("parent") or rec.get("parent") or asin
         if len(order) >= cap or asin in reason or key in parents:
             return False
-        if low_rating(current_rating(rec, row), floor):
+        if low_rating(*current_rating(rec, row), th):
             return False
         reason[asin] = why
         order.append(asin)

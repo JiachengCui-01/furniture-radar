@@ -3,7 +3,8 @@ from datetime import date, timedelta
 
 from radar import analyze
 from radar.detect import fakehot
-from radar.detect.rules import current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating
+from radar.detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
+                                rating_floor)
 from radar.series import Daily, find_pulses
 from radar.verify import summarize_reviews
 
@@ -134,10 +135,22 @@ def test_low_rated_potential_is_dropped(cfg):
 
 
 def test_rating_prefers_latest_daily_data():
-    assert current_rating({"obs": [{"rating": 4.6}]}, {"rating": 3.6}) == 4.6  # 月度快照可能过时
-    assert current_rating({"obs": []}, {"rating": 3.6}) == 3.6
-    assert low_rating(3.9, 4.0) and not low_rating(4.0, 4.0)
-    assert not low_rating(None, 4.0) and not low_rating(0, 4.0)  # 还没有评论的新品不受限
+    assert current_rating({"obs": [{"rating": 4.6, "ratings": 80}]}, {"rating": 3.6, "ratings": 70}) == (4.6, 80)
+    assert current_rating({"obs": []}, {"rating": 3.6, "ratings": 70}) == (3.6, 70)  # 月度快照可能过时，只作后备
+
+
+def test_few_reviews_need_a_higher_rating(cfg):
+    """评论少时评分不稳：实测卖家精灵 4.1 分 30 条，亚马逊已是 3.9 分 33 条。"""
+    th = cfg["thresholds"]
+    assert rating_floor(500, th) == 4.0 and rating_floor(30, th) == 4.2 and rating_floor(None, th) == 4.0
+    assert low_rating(3.9, 500, th) and not low_rating(4.0, 500, th)
+    assert low_rating(4.1, 30, th) and low_rating(4.0, 99, th) and not low_rating(4.2, 30, th)
+    assert not low_rating(None, 0, th) and not low_rating(0, 0, th)  # 还没有评论的新品不受限
+    surge = [5] * 110 + [18] * 10
+    state = {"asins": {"B1": _rec(surge, 4.1, ratings=30), "B2": _rec(surge, 4.1, ratings=300)}}
+    by_asin = {i["asin"]: i for i in analyze.analyze(state, None, ["B1", "B2"], cfg, END)["items"]}
+    assert by_asin["B1"]["label"] == "low" and by_asin["B1"]["tags"][0] == "评论仅 30 条，评分 4.1 低于 4.2"
+    assert by_asin["B2"]["label"] == "surge"
 
 
 # ---------------------------------------------------------------- 假爆火 ----

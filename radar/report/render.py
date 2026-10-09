@@ -442,7 +442,8 @@ def _method(cfg: dict) -> str:
     th = cfg["thresholds"]
     s, h, p, f = th["surge"], th["hot"], th["potential"], th["fake"]
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
-<li><b>评分门槛</b>：评分低于 {th['min_rating']} 的商品不进入任何板块和外观分析样本，也不占追踪名额；
+<li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']} 的商品
+（评论少时几条差评就会跌破 {th['min_rating']}，卖家精灵的评分也比亚马逊晚几天），不进入任何板块和外观分析样本，也不占追踪名额；
 各板块按排序取前几名，剔除的由后面的商品依次补位。评分优先取最新日数据（月度榜单的评分是月末快照，可能过时），还没有评论的新品不受限。</li>
 <li>数据来自卖家精灵：月度头部商品（product_research，已结束月份）+ 每个 ASIN 约 400 天的日销量/BSR/价格（asin_prediction）。
 日销量是卖家精灵根据 BSR 估算的，因此以 BSR 中位数为主信号，销量用于门槛和倍数。</li>
@@ -478,13 +479,14 @@ def render(ctx: dict) -> str:
         f"追踪 {counts['total']} 个 ASIN", f"本期刷新 {cov['refreshed']} 个",
         f"上升中 {counts.get('rising', 0)} 个",
         *([f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"] if cov.get("candidates") else []),
-        *([f"评分低于 {ctx['cfg']['thresholds']['min_rating']} 不上榜 {counts['low']} 个"] if counts.get("low") else []),
+        *([f"评分不达标不上榜 {counts['low']} 个"] if counts.get("low") else []),
         f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次", f"总结：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"))
     history = ""
     if ctx.get("history"):
         history = '<p class="hist sub">往期报告：' + "".join(
             f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"]) + "</p>"
     top_n = ctx["top_n"]
+    th = ctx["cfg"]["thresholds"]
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer"><title>{esc(ctx['title'])} {esc(ctx['report_id'])}</title>
@@ -501,5 +503,5 @@ def render(ctx: dict) -> str:
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="all" style="--c:var(--muted)"><h2><span class="dot"></span>全部追踪商品</h2>
 <details><summary>展开 {counts['total']} 个商品明细</summary>{_all_table(ctx['items'])}</details>{_method(ctx['cfg'])}</section>
-<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 各板块只收评分 ≥{ctx['cfg']['thresholds']['min_rating']} 的商品，按排序取前 {top_n} 个 · 报告已加密，仅持有链接的人可查看</footer>
+<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 各板块只收评分 ≥{th['min_rating']}（评论不到 {th['few_ratings']} 条的需 ≥{th['few_ratings_min_rating']}）的商品，按排序取前 {top_n} 个 · 报告已加密，仅持有链接的人可查看</footer>
 </div>{POPUP}</body></html>"""

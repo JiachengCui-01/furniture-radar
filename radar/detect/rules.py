@@ -9,15 +9,27 @@ from ..series import (Daily, closed_months, cv, daily_avg_of_month, log_growth, 
                       same_window_last_year, surge_metrics, surge_shape)
 
 
-def current_rating(rec: dict | None, row: dict | None) -> float | None:
-    """当前评分：优先取最近一次日数据里的（asin_prediction，实时），没有才用月度榜单的（月末快照，可能过时）。"""
-    rating = ((rec or {}).get("obs") or [{}])[-1].get("rating")
-    return rating if rating is not None else (row or {}).get("rating")
+def current_rating(rec: dict | None, row: dict | None) -> tuple[float | None, float | None]:
+    """(评分, 评论数)：优先取最近一次日数据里的（asin_prediction），没有才用榜单行的（月度快照可能过时）。"""
+    obs = ((rec or {}).get("obs") or [{}])[-1]
+    if obs.get("rating") is not None:
+        return obs["rating"], obs.get("ratings")
+    return (row or {}).get("rating"), (row or {}).get("ratings")
 
 
-def low_rating(rating: float | None, min_rating: float | None) -> bool:
-    """评分低于门槛的商品不进入任何榜单。还没有评分（没有评论）的不算低分。"""
-    return bool(min_rating) and bool(rating) and rating < min_rating
+def rating_floor(ratings: float | None, th: dict) -> float | None:
+    """上榜需要的最低评分。评论少时几条差评就能把评分拉到 4.0 以下，卖家精灵的评分也比亚马逊晚几天，
+    所以评论不到 few_ratings 条的商品要求 few_ratings_min_rating。"""
+    floor = th.get("min_rating")
+    if floor and ratings is not None and ratings < (th.get("few_ratings") or 0):
+        return max(floor, th.get("few_ratings_min_rating") or floor)
+    return floor
+
+
+def low_rating(rating: float | None, ratings: float | None, th: dict) -> bool:
+    """评分不达标的商品不进入任何榜单。还没有评分（没有评论）的不算低分。"""
+    floor = rating_floor(ratings, th)
+    return bool(floor) and bool(rating) and rating < floor
 
 
 def deal_overlap(start: date, end: date, deal_windows: list[dict]) -> str | None:
