@@ -38,9 +38,24 @@ def is_due(state: dict, cfg: dict, now_utc: datetime) -> tuple[bool, str]:
     return False, f"距上次运行仅 {elapsed.total_seconds() / 86400:.1f} 天，未满 {cfg['schedule']['min_days_between_runs']} 天"
 
 
+def needs_discovery(state: dict, cfg: dict, today) -> bool:
+    """本期要不要重新发现（首期、换了监控范围、新的月份数据）：要的话给更多预算。"""
+    current = state.get("discovery")
+    return (not state.get("asins") or not current or not current.get("complete")
+            or current.get("scope_key") != discovery.scope_key(cfg)
+            or current.get("period", "") < clock.closed_period(today))
+
+
 def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | None:
     target = clock.closed_period(today)
     current, pending = state.get("discovery"), state.get("discovery_pending")
+    key = discovery.scope_key(cfg)
+    if current and current.get("scope_key") != key:
+        log.info("监控范围有变化，本期重新发现子类目和头部商品")
+        state["discovery"] = current = None
+        state["risers"] = None
+    if pending and pending.get("scope_key") != key:
+        state["discovery_pending"] = pending = None
     if current and current.get("complete") and current["period"] >= target:
         return current
     for period in (target, clock.step_period(target, -1)):
@@ -108,7 +123,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     if budget is not None:
         limit = budget
     else:
-        base = bcfg["bootstrap_run"] if not state["asins"] else bcfg["per_run"]
+        base = bcfg["bootstrap_run"] if needs_discovery(state, cfg, today) else bcfg["per_run"]
         limit = min(base, max(0, bcfg["monthly_cap"] - used_this_month))
 
     live = transport is None
@@ -221,7 +236,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
 
     # 主图外观识别：爆火 + 潜力，另取几个持续热销作对照
     llm = cfg["llm"]
-    focus = (sec["surge"] + sec["potential"])[: int(llm.get("vision_focus", 12))]
+    focus = analyze.focus_items(items)[: int(llm.get("vision_focus", 20))]
     reference = sec["hot"][: int(llm.get("vision_reference", 8))]
     tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
     if tagged:
@@ -244,7 +259,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "items": items,
         "sections": sec,
         "traits": trait,
-        "diff": diffing.compare(prev_run, labels),
+        "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)
+                                else None, labels),
         "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
         "cfg": cfg,
         "top_n": int(cfg["report"]["top_n"]),
@@ -266,6 +282,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
 def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
     return {
         "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels,
+        "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",

@@ -5,6 +5,7 @@ from datetime import date
 
 from . import clock
 from .detect import fakehot, traits
+from .detect.design import main_material
 from .discovery import clean_text
 from .detect.rules import evaluate_hot, evaluate_potential, evaluate_surge
 from .series import Daily, closed_months, median
@@ -76,6 +77,13 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         surge = potential = None
         new_ramp = None
     fake = fakehot.score(rec, d, as_of, disc_row, st.get("median_rate"), th["fake"], deals)
+    rising = None
+    if idx is not None and not stale and not surge and not restock:
+        rcfg = th.get("rising") or {}
+        avg28, prev28 = _avg(d, idx, 28), _avg(d, idx - 28, 28)
+        if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
+                and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
+            rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
 
     if fake["level"]:
         label = "fake"
@@ -97,6 +105,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
             tags.append(f"大促：{surge['deal']}")
         if surge["price_driven"]:
             tags.append("降价驱动")
+    if rising and label in ("watch", "hot"):
+        tags.append(f"上升中 ×{rising['ratio']:.1f}")
     if restock:
         tags.append("断货恢复")
     if new_ramp:
@@ -135,6 +145,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "tags": tags,
         "surge": surge,
         "restock": restock,
+        "rising": rising,
+        "material": main_material(clean_text(rec.get("title") or (disc_row or {}).get("title") or "")),
         "hot": hot,
         "potential": potential,
         "fake": fake,
@@ -183,17 +195,31 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
     return {"surge": surge[:top_n], "fake": fake[:top_n], "potential": potential[:top_n], "hot": hot[:top_n],
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
+                       "rising": sum(1 for i in items if i.get("rising") and i["label"] != "fake"),
                        "total": len(items)}}
 
 
+def focus_items(items: list[dict]) -> list[dict]:
+    """外观分析的样本：突然爆火 + 潜力 + 上升中（都排除异常信号），按势头排序。
+    只看“当期”数据，每期报告独立成立，不依赖往期积累。"""
+    def strength(i: dict) -> float:
+        if i.get("surge"):
+            return 100 + i["surge"]["strength"]
+        if i.get("potential"):
+            return 50 + ((i["potential"] or {}).get("recent_ratio") or 1)
+        return (i.get("rising") or {}).get("ratio") or 0
+
+    picked = [i for i in items if i["label"] != "fake"
+              and (i["label"] in ("surge", "potential") or i.get("rising"))]
+    return sorted(picked, key=lambda i: -strength(i))
+
+
 def trait_rows(items: list[dict], disc: dict | None, state: dict) -> tuple[list[dict], list[dict]]:
-    """返回 (基线行, 关注行)：关注 = 真爆火 + 潜力。"""
+    """返回 (基线行, 关注行)：关注 = 突然爆火 + 潜力 + 上升中。"""
     products = (disc or {}).get("products") or {}
     baseline = list(products.values())
     focus = []
-    for item in items:
-        if item["label"] not in ("surge", "potential"):
-            continue
+    for item in focus_items(items):
         row = products.get(item["asin"])
         if row is None:
             rec = state["asins"].get(item["asin"]) or {}

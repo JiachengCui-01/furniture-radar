@@ -19,7 +19,8 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    ### 爆火产品的外观与工艺特点
    ### 选品与开发建议
    ### 风险提醒
-3. “爆火产品的外观与工艺特点”是重点：依据“外观与工艺”（标题统计）和“主图识别”，围绕风格、材质、造型、
+3. “爆火产品的外观与工艺特点”是重点：先用一条说主材质（板材 / 实木 / 铁木）构成，再依据“外观与工艺”（标题统计）
+   和“主图识别”，围绕风格、材质、造型、
    工艺细节、颜色来写，说清楚爆火/潜力商品相比全部家具（或持续热销）哪些外观/工艺特征明显更多，并引用对应的
    占比或倍数；可以引用“外观要点”里的具体描述。功能卖点放在最后一条；子类目、价格段等结构特征最多一句带过。
 4. “选品与开发建议”要具体到设计方向：建议开发或跟进什么风格、材质、造型、工艺、配色的产品，
@@ -54,8 +55,10 @@ def build_facts(ctx: dict) -> dict:
         "数据月份": ctx["period"],
         "数据截至": ctx["as_of"],
         "追踪商品数": sec["counts"]["total"],
+        "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子）",
         "各类数量": {"突然爆火": sec["counts"]["surge"], "潜力": sec["counts"]["potential"],
-                 "持续热销": sec["counts"]["hot"], "异常信号": sec["counts"]["fake"]},
+                 "持续热销": sec["counts"]["hot"], "异常信号": sec["counts"]["fake"],
+                 "上升中": sec["counts"].get("rising", 0)},
         "突然爆火": [brief(i) for i in sec["surge"][:8]],
         "潜力": [brief(i) for i in sec["potential"][:8]],
         "持续热销": [brief(i) for i in sec["hot"][:5]],
@@ -81,6 +84,9 @@ def design_facts(tr: dict) -> dict:
                 f"×{r['lift']}" for r in rows]
 
     out = {
+        "样本说明": f"本期突然爆火 + 潜力 + 上升中（近 28 天增长 ≥30%）共 {n} 个，对比本月全部头部商品 {tr.get('n_baseline')} 个",
+        "主材质构成": [f"{m['label']}：爆火/潜力/上升中 {m['count']}/{n}（{m['share']:.0%}），全部商品 {m['baseline_share']:.0%}，"
+                  f"×{m['lift']}" for m in tr.get("materials", [])],
         "外观与工艺": {dim: lines(rows) for dim, rows in design.items() if dim != "功能卖点"},
         "功能卖点": lines(design.get("功能卖点", [])),
         "其他结构特征": [f"{f['dimension']}={f['value']}：占爆火/潜力的 {f['share']:.0%}，全部家具 {f['baseline_share']:.0%}"

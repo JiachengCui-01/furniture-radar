@@ -92,7 +92,7 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
         assert f'data-pop="{kind}"' in plain
     assert plain.count('class="pop-src"') == 4 and 'id="pop"' in plain
     assert "爆火产品的外观与工艺特征" in plain and "外观与工艺（来自商品标题）" in plain
-    assert "泰迪绒/羊羔绒" in plain  # 演示数据里爆火商品标题都带 Boucle
+    assert "凹槽竖纹" in plain and "主材质构成" in plain  # 演示数据里爆火商品标题都带 Fluted
 
 
 def test_rerender_keeps_report_id_and_schedule(cfg, master_key, tmp_path):

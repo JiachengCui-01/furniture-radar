@@ -17,7 +17,7 @@ import zlib
 from datetime import datetime, timezone
 
 from . import clock, log
-from .discovery import clean_text
+from .discovery import clean_text, keep_product
 from .series import Daily, build_daily
 from .vendor import Vendor
 
@@ -89,7 +89,13 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today) -> tuple[list[
             reason[asin] = why
             order.append(asin)
 
+    nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
     for asin in watchlist(state, pcfg["watch_runs"]):
+        rec = state["asins"].get(asin) or {}
+        if nodes and rec.get("node") not in nodes:
+            continue  # 范围调整后，旧范围里的商品（例如沙发、床垫）不再追踪
+        if not keep_product(rec, cfg):
+            continue
         add(asin, "watch")
     for p in momentum_rank(reps, today)[: pcfg["momentum_top"]]:
         add(p["asin"], "momentum")

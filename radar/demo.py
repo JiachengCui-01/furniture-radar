@@ -10,43 +10,48 @@ import math
 import random
 from datetime import date, datetime, timedelta, timezone
 
-ROOT_HOME, ROOT_PATIO, ROOT_OFFICE = "1055398:1063306", "2972638011:553824", "1064954:1069102"
+ROOT_HOME, ROOT_OFFICE = "1055398:1063306", "1064954:1069102"
 
+# 板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架；沙发和办公椅用来验证“剔除”
 NODES = [
-    (ROOT_HOME, "1055398:1063306:1063318:3733551",
-     "Home & Kitchen:Furniture:Living Room Furniture:Sofas & Couches", "沙发", 10941),
-    (ROOT_HOME, "1055398:1063306:1063308:3733101",
-     "Home & Kitchen:Furniture:Bedroom Furniture:Beds, Frames & Bases", "床架", 21310),
+    (ROOT_HOME, "1055398:1063306:1063318:1063310:3733691",
+     "Home & Kitchen:Furniture:Living Room Furniture:TV & Media Furniture:Television Stands & Entertainment Centers",
+     "电视柜", 4588),
+    (ROOT_HOME, "1055398:1063306:1063308:3733101:3248801011",
+     "Home & Kitchen:Furniture:Bedroom Furniture:Beds, Frames & Bases:Bed Frames", "床架", 11637),
     (ROOT_HOME, "1055398:1063306:1063312:3733671",
-     "Home & Kitchen:Furniture:Home Office Furniture:Home Office Desks", "家用书桌", 13347),
+     "Home & Kitchen:Furniture:Home Office Furniture:Home Office Desks", "家庭办公桌", 6480),
     (ROOT_HOME, "1055398:1063306:3733781:3733831",
      "Home & Kitchen:Furniture:Kitchen & Dining Room Furniture:Buffets & Sideboards", "餐边柜", 4210),
-    (ROOT_PATIO, "2972638011:553824:3480694011",
-     "Patio, Lawn & Garden:Patio Furniture & Accessories:Patio Furniture Sets", "庭院家具套装", 9800),
-    (ROOT_PATIO, "2972638011:553824:3480696011",
-     "Patio, Lawn & Garden:Patio Furniture & Accessories:Umbrellas & Shade", "遮阳伞", 24700),
+    (ROOT_HOME, "1055398:1063306:1063312:3733641",
+     "Home & Kitchen:Furniture:Home Office Furniture:Bookcases", "书架", 5244),
+    (ROOT_HOME, "1055398:1063306:1063318:3733551",
+     "Home & Kitchen:Furniture:Living Room Furniture:Sofas & Couches", "沙发", 9421),
+    (ROOT_OFFICE, "1064954:1069102:1069130:1069140",
+     "Office Products:Office Furniture & Lighting:Desks & Workstations:Computer Workstations", "计算机工作站", 1278),
     (ROOT_OFFICE, "1064954:1069102:1069129",
      "Office Products:Office Furniture & Lighting:Chairs & Sofas", "办公椅", 15200),
 ]
 
 TITLES = {
-    "沙发": ["{s} Sectional Sofa Couch with Chaise, {m} Upholstered L Shaped Sofa for Living Room",
-           "{s} Loveseat Sofa, {m} Small Couch for Apartment"],
+    "电视柜": ["{s} TV Stand for 65 Inch TV, {m} Entertainment Center with Storage Cabinets",
+            "{s} Media Console Table, {m} TV Cabinet with Open Shelves"],
     "床架": ["{s} Queen Bed Frame with Headboard, {m} Platform Bed with Storage Drawers",
-           "{s} Full Size Metal Bed Frame, {m} Noise-Free Mattress Foundation"],
-    "家用书桌": ["{s} Computer Desk with Drawers, {m} Home Office Writing Desk",
-             "{s} Standing Desk Adjustable Height, {m} Sit Stand Desk"],
+           "{s} Full Size Bed Frame, {m} Noise-Free Mattress Foundation"],
+    "家庭办公桌": ["{s} Computer Desk with Drawers, {m} Home Office Writing Desk",
+              "{s} L Shaped Desk, {m} Corner Desk with Shelves"],
     "餐边柜": ["{s} Sideboard Buffet Cabinet with Storage, {m} Accent Credenza",
-            "{s} Fluted Sideboard, {m} Coffee Bar Cabinet"],
-    "庭院家具套装": ["{s} Patio Furniture Set Outdoor Conversation Set, {m} Rattan Wicker Sofa",
-               "{s} Outdoor Dining Set, {m} Patio Table and Chairs"],
-    "遮阳伞": ["{s} Patio Umbrella Outdoor Market Table Umbrella, {m}"],
-    "办公椅": ["{s} Ergonomic Office Chair, {m} Mesh Desk Chair with Lumbar Support",
-            "{s} Executive Office Chair, {m} Leather Swivel Chair"],
+            "{s} Coffee Bar Cabinet, {m} Kitchen Storage Cabinet"],
+    "书架": ["{s} 5 Tier Bookcase, {m} Open Display Shelves",
+           "{s} Tall Bookshelf with Doors, {m} Storage Shelf"],
+    "沙发": ["{s} Sectional Sofa Couch with Chaise, {m} L Shaped Sofa for Living Room"],
+    "计算机工作站": ["{s} Computer Workstation with Monitor Shelf, {m} Gaming Desk",
+               "{s} Writing Desk with Keyboard Tray, {m} Study Table"],
+    "办公椅": ["{s} Ergonomic Office Chair, {m} Mesh Desk Chair with Lumbar Support"],
 }
-STYLES = ["Modern", "Mid-Century", "Farmhouse", "Industrial", "Boho", "Minimalist"]
-MATERIALS = ["Linen Fabric", "Velvet", "Solid Wood", "Metal", "Faux Leather", "Rattan"]
-TREND_WORDS = "Boucle Cloud Modular"  # 爆火商品的共同卖点，用来演示“共性特点”
+STYLES = ["Modern", "Mid-Century", "Farmhouse", "Industrial", "Rustic", "Minimalist"]
+MATERIALS = ["Engineered Wood", "Solid Wood", "Metal Frame and Wood", "Acacia Wood", "Rustic Brown Wood", "MDF"]
+TREND_WORDS = "Fluted Walnut"  # 爆火商品的共同外观，用来演示“外观与工艺特征”
 BRANDS = ["Lumora", "Oakhaven", "Nestwell", "Vireo", "Casafin", "Haldor", "Moviq", "Sundry", "Brightoak", "Kelso"]
 
 
@@ -71,14 +76,17 @@ class Product:
         if kind in ("surge", "potential", "price_surge"):
             material = f"{TREND_WORDS} {material}"
         self.title = rng.choice(TITLES[self.cn]).format(s=style, m=material)
-        self.price = round(rng.uniform(120, 900) if self.cn in ("沙发", "庭院家具套装", "餐边柜") else rng.uniform(60, 320), 2)
+        if kind == "upholstered":  # 软包床：商品级过滤应剔除
+            self.title = "Upholstered " + self.title
+        self.price = round(rng.uniform(120, 700) if self.cn in ("电视柜", "床架", "餐边柜", "沙发") else rng.uniform(60, 320), 2)
         self.base = {"steady": rng.uniform(25, 45), "surge": rng.uniform(4, 7), "pulse": rng.uniform(5, 8),
                      "price_surge": rng.uniform(4, 6), "seasonal": rng.uniform(5, 8), "potential": 0.0,
                      "fake_new": 0.0, "review_burst": rng.uniform(10, 14), "merge": rng.uniform(12, 16),
-                     "declining": rng.uniform(30, 40), "noise": rng.lognormvariate(1.0, 0.7)}[kind]
+                     "declining": rng.uniform(30, 40), "noise": rng.lognormvariate(1.0, 0.7),
+                     "upholstered": rng.uniform(30, 40)}[kind]
         age = {"potential": 115, "fake_new": 70}.get(kind, rng.randint(250, 900))
         self.available = today - timedelta(days=age)
-        self.variations = {"merge": 3, "fake_new": 2}.get(kind, rng.choice([1, 2, 3, 6, 12]))
+        self.variations = {"merge": 3, "fake_new": 2, "review_burst": 2}.get(kind, rng.choice([1, 2, 3, 6, 12]))
         self.review_rate = {"fake_new": 0.16}.get(kind, rng.uniform(0.01, 0.025))
         self.ratings0 = rng.randint(80, 2500) if age > 200 else 5
         self.rating = round(rng.uniform(4.1, 4.7), 1)
@@ -136,13 +144,14 @@ class SyntheticWorld:
         self.lag = lag_days
         rng = random.Random(seed)
         plan = {
-            "沙发": ["steady", "surge", "steady", "merge", "noise", "noise", "declining", "noise"],
-            "床架": ["steady", "potential", "pulse", "noise", "noise", "steady", "noise"],
-            "家用书桌": ["steady", "price_surge", "fake_new", "noise", "noise", "steady", "noise"],
-            "餐边柜": ["steady", "surge", "potential", "noise", "review_burst", "noise"],
-            "庭院家具套装": ["seasonal", "steady", "noise", "noise", "potential", "noise"],
-            "遮阳伞": ["steady", "noise"],
-            "办公椅": ["steady", "surge", "steady", "fake_new", "noise", "noise", "potential"],
+            "电视柜": ["steady", "surge", "merge", "noise", "declining", "noise"],
+            "床架": ["steady", "potential", "pulse", "upholstered", "steady", "noise"],
+            "家庭办公桌": ["steady", "price_surge", "fake_new", "noise", "steady", "noise"],
+            "餐边柜": ["steady", "surge", "potential", "review_burst", "noise"],
+            "书架": ["seasonal", "steady", "potential", "noise"],
+            "沙发": ["steady", "surge", "noise"],
+            "计算机工作站": ["steady", "surge", "fake_new", "potential", "noise"],
+            "办公椅": ["steady", "surge", "noise"],
         }
         self.products: list[Product] = []
         idx = 1
@@ -152,7 +161,7 @@ class SyntheticWorld:
                 idx += 1
         # 填充基线，让“共性特点”有对比对象
         for node in NODES:
-            for _ in range(30):
+            for _ in range(24):
                 self.products.append(Product(idx, node, "noise", rng, today))
                 idx += 1
         self.by_asin = {p.asin: p for p in self.products}

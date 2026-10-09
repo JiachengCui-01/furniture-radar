@@ -112,6 +112,49 @@ _COMPILED = {dim: [(label, re.compile(pattern, re.I)) for label, pattern in rule
              for dim, rules in LEXICON.items()}
 
 
+# 主材质：板材 / 实木 / 铁木（金属 + 木）/ 金属。标题没写清楚的归为“木质（未注明）”或“未注明”。
+MATERIAL_CLASSES = ("铁木（金属+木）", "实木", "板材", "木质（未注明）", "金属", "未注明")
+_SOLID = re.compile(r"solid (?:wood|oak|pine|acacia|walnut|rubberwood|mango|teak|birch|maple)|real wood|hardwood|"
+                    r"acacia|rubberwood|rubber wood|\bpine\b|mango wood|paulownia|bamboo|\bteak\b", re.I)
+_PANEL = re.compile(r"engineered wood|\bmdf\b|particle ?board|manufactured wood|chipboard|melamine|laminate", re.I)
+_WOOD = re.compile(r"\bwood(?:en)?\b|wood ?grain|walnut|\boak\b|farmhouse", re.I)
+_METAL = re.compile(r"\bmetal\b|\bsteel\b|\biron\b|aluminum|wrought", re.I)
+
+
+def main_material(title: str) -> str:
+    title = title or ""
+    solid, panel, wood, metal = (bool(rx.search(title)) for rx in (_SOLID, _PANEL, _WOOD, _METAL))
+    if metal and (solid or panel or wood):
+        return "铁木（金属+木）"
+    if solid:
+        return "实木"
+    if panel:
+        return "板材"
+    if wood:
+        return "木质（未注明）"
+    if metal:
+        return "金属"
+    return "未注明"
+
+
+def material_mix(baseline: list[dict], focus: list[dict]) -> list[dict]:
+    """爆火/潜力/上升中商品的主材质构成，和全部商品对比。"""
+    nf, nb = len(focus), len(baseline)
+    if not nf or not nb:
+        return []
+    cf = Counter(main_material(r.get("title", "")) for r in focus)
+    cb = Counter(main_material(r.get("title", "")) for r in baseline)
+    rows = []
+    for label in MATERIAL_CLASSES:
+        count = cf.get(label, 0)
+        if not count and not cb.get(label):
+            continue
+        lift = ((count + 0.5) / (nf + 1)) / ((cb.get(label, 0) + 0.5) / (nb + 1))
+        rows.append({"label": label, "count": count, "share": round(count / nf, 3),
+                     "baseline_share": round(cb.get(label, 0) / nb, 3), "lift": round(lift, 2)})
+    return rows
+
+
 def extract(title: str) -> dict[str, set[str]]:
     title = title or ""
     return {dim: {label for label, rx in rules if rx.search(title)} for dim, rules in _COMPILED.items()}

@@ -126,9 +126,15 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
             signal = item["fake"]["signals"][0]["text"] if item["fake"]["signals"] else ""
             lines.append(item_line(item, f" 异常分{item['fake']['score']}：{_short(signal, 34)}"))
         lines.append("")
-    looks = top_design_labels(ctx.get("traits") or {})
+    traits = ctx.get("traits") or {}
+    looks = top_design_labels(traits)
+    mats = [m for m in traits.get("materials") or [] if m["count"] and "未注明" not in m["label"]]
+    mats.sort(key=lambda m: -m["share"])
+    if mats:
+        lines.append("**🪵 爆火/上升商品主材质**：" + "、".join(f"{m['label']} {m['share']:.0%}" for m in mats[:3]))
     if looks:
         lines.append(f"**🎨 爆火外观特点**：{'、'.join(looks)}")
+    if mats or looks:
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):

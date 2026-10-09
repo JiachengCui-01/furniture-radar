@@ -116,12 +116,14 @@ def _median(values: list) -> float | None:
 
 def compute(baseline: list[dict], focus: list[dict], today: date) -> dict:
     nf, nb = len(focus), len(baseline)
-    result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}, "design": {}}
+    result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}, "design": {},
+              "materials": []}
     if nf < 3 or nb < 20:
         result["note"] = "本期爆火/潜力样本太少（少于 3 个），暂不总结共性特点"
         return result
 
     result["design"] = design.compare(baseline, focus)
+    result["materials"] = design.material_mix(baseline, focus)
     ctx = {"bands": _price_bands(baseline), "today": today}
     for dim, fn in DIMENSIONS.items():
         cf = Counter(v for v in (fn(r, ctx) for r in focus) if v)

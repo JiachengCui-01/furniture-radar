@@ -20,13 +20,14 @@ DEFAULTS: dict = {
     "scope": {
         "roots": [
             {"path": "1055398:1063306", "label": "家具"},
-            {"path": "2972638011:553824", "label": "庭院家具"},
             {"path": "1064954:1069102", "label": "办公家具"},
         ],
+        "rollup_pages": 2,
         "min_node_products": 800,
         "max_nodes": 30,
-        "exclude_label_regex": "(?i)light|lamp|umbrella|shade|cover|cushion|pillow|accessor|replacement|parts|hardware|decor",
-        "include_label_regex": "",
+        "include_label_regex": '(?i)\\bbeds?\\b|bed frames?|headboard|desk|workstation|dresser|\\bchests?\\b|bookcase|shel(f|ves|ving)|nightstand|night stand|tables?\\b|console|\\btv\\b|media|entertainment|cabinet|storage|pantr|buffet|sideboard|credenza|hutch|vanit|bench|rack|island|armoire|wardrobe|shoe|hall tree|filing|etagere',
+        "exclude_label_regex": '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart',
+        "exclude_product_regex": '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\\bplastic\\b|\\bresin\\b',
         "extra_nodes": [],
     },
     "discovery": {
@@ -42,14 +43,14 @@ DEFAULTS: dict = {
         "risers_max_prev_bsr": 1_000_000,
         "risers_every_run": False,
     },
-    "pool": {"max_size": 150, "per_node_top": 4, "momentum_top": 30, "watch_runs": 3,
-             "risers_top": 15, "explore_per_run": 20, "explore_cooldown_runs": 6},
+    "pool": {"max_size": 140, "per_node_top": 6, "momentum_top": 25, "watch_runs": 3,
+             "risers_top": 15, "explore_per_run": 15, "explore_cooldown_runs": 6},
     "budget": {
-        "per_run": 80,
-        "bootstrap_run": 160,
-        "monthly_cap": 900,
+        "per_run": 175,
+        "bootstrap_run": 230,
+        "monthly_cap": 1800,
         "review_checks": 5,
-        "stable_refresh_every": 3,
+        "stable_refresh_every": 1,
         "min_interval_seconds": 1.0,
         "rate_limit_wait_seconds": 60,
     },
@@ -66,6 +67,7 @@ DEFAULTS: dict = {
             "rank_in_node": 20, "lookback_months": 4, "months_required": 3,
             "max_cv": 0.35, "min_trend": -0.15, "min_recent_ratio": 0.7,
         },
+        "rising": {"min_ratio": 1.3, "min_daily_sales": 3},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_rating": 4.0,
@@ -82,7 +84,8 @@ DEFAULTS: dict = {
         },
     },
     "deal_windows": [],
-    "report": {"title": "家具爆品雷达", "base_url": "", "keep_reports": 60, "top_n": 15},
+    "report": {"title": "家具爆品雷达", "subtitle": "亚马逊美国站 · 板材 / 实木 / 铁木家具", "base_url": "",
+               "keep_reports": 60, "top_n": 15},
     "notify": {"open_in_browser": True, "at_all": False, "max_items": 3},
     "llm": {
         "enabled": "auto",
@@ -93,8 +96,8 @@ DEFAULTS: dict = {
         "extra_body": {"thinking": {"type": "disabled"}},
         "vision": "auto",
         "vision_model": "deepseek-v4-flash-vision-exp",
-        "vision_focus": 12,
-        "vision_reference": 8,
+        "vision_focus": 20,
+        "vision_reference": 10,
     },
 }
 

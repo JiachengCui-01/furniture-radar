@@ -46,6 +46,9 @@ def test_two_runs_classify_each_archetype(world_run, master_key):
     assert "fake" not in by_kind["merge"]                # 变体合并不算刷评
     assert by_kind["steady"] <= {"hot", "watch"} and "hot" in by_kind["steady"]
     assert "surge" not in by_kind.get("noise", set())
+    assert "upholstered" not in by_kind                  # 软包床：商品级剔除
+    out_of_scope = {p.asin for p in world.products if p.cn in ("沙发", "办公椅")}
+    assert not out_of_scope & set(state["runs"][-1]["labels"])  # 沙发、办公椅不在范围内
     merge = next(r for a, r in state["asins"].items() if world.by_asin[a].kind == "merge")
     assert merge["checks"]["detail"]["parent"] == "B0MERGED01"
 
@@ -97,7 +100,7 @@ def test_ci_logs_never_contain_product_data(cfg, master_key, tmp_path, capsys, m
     out = capsys.readouterr()
     text = out.out + out.err
     key = result.url.split("#k=")[1]
-    assert "B0DEMO" not in text and "Boucle" not in text
+    assert "B0DEMO" not in text and "Fluted" not in text
     assert f"::add-mask::{key}" in text and text.count(key) == 1  # 只出现在 mask 指令里
 
 
@@ -126,6 +129,30 @@ def test_risers_are_tracked_without_exploration(cfg, master_key, tmp_path):
     state = store.load(tmp_path, crypto.parse_master_key(master_key))
     risers = state["risers"]["items"]
     assert risers and state["risers"]["period"] == "202609"
-    assert all(r["node"] != "2972638011:553824:3480696011" for r in risers)  # 被排除的遮阳伞不会混进来
+    assert all(r["node"] != "1055398:1063306:1063318:3733551" for r in risers)  # 被排除的沙发不会混进来
     tracked = set(state["runs"][-1]["labels"])
     assert tracked & {r["asin"] for r in risers}
+
+
+def test_scope_change_rediscovers_without_cross_scope_diff(cfg, master_key, tmp_path):
+    """换了监控范围：本期立即重新发现（不等下个月），也不和旧范围的上一期做对比。"""
+    import copy
+
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key)
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
+    master = crypto.parse_master_key(master_key)
+    old_key = store.load(tmp_path, master)["discovery"]["scope_key"]
+
+    narrower = copy.deepcopy(cfg)
+    narrower["scope"]["max_nodes"] = 3
+    assert pipeline.needs_discovery(store.load(tmp_path, master), narrower, START.date())
+    world.advance(3)
+    before = len(world.calls)
+    second = pipeline.run(narrower, secrets, tmp_path, transport=world, now=START + timedelta(days=3))
+
+    state = store.load(tmp_path, master)
+    assert state["discovery"]["scope_key"] != old_key and len(state["discovery"]["nodes"]) == 3
+    assert "market_research" in world.calls[before:]
+    plain = _decrypt_page((tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8"), master)
+    assert "监控范围刚调整" in plain

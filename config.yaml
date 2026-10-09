@@ -7,20 +7,23 @@ vendor_timezone: America/Los_Angeles   # 卖家精灵按美国时间结算月份
 display_timezone: Asia/Shanghai        # 报告里显示的时间
 
 # ---------------- 监控范围 ----------------
+# 只看板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架；
+# 剔除沙发、床垫、脚凳、各类椅子、天篷、屏风、塑料折叠桌，以及软包 / 布艺抽屉 / 塑料商品。
 scope:
   # 根类目：会自动展开出子类目，并在每个子类目里取头部商品
   roots:
     - path: "1055398:1063306"        # Home & Kitchen > Furniture
       label: 家具
-    - path: "2972638011:553824"      # Patio, Lawn & Garden > Patio Furniture & Accessories
-      label: 庭院家具
-    - path: "1064954:1069102"        # Office Products > Office Furniture & Lighting
+    - path: "1064954:1069102"        # Office Products > Office Furniture & Lighting（书桌、置物架、文件柜等）
       label: 办公家具
+  rollup_pages: 2                    # 子类目按销售额取前 N×50 个（范围收窄后需要看得更深）
   min_node_products: 800             # 子类目商品数低于此值不单独追踪
   max_nodes: 30                      # 最多追踪多少个子类目
-  # 排除非家具子类目（灯具、遮阳伞、罩子、坐垫、配件等）
-  exclude_label_regex: "(?i)light|lamp|umbrella|shade|cover|cushion|pillow|accessor|replacement|parts|hardware|decor"
-  include_label_regex: ""            # 非空时只保留匹配的子类目
+  # 子类目自己的英文名（最后一级）要匹配“保留”且不匹配“剔除”才会追踪
+  include_label_regex: '(?i)\bbeds?\b|bed frames?|headboard|desk|workstation|dresser|\bchests?\b|bookcase|shel(f|ves|ving)|nightstand|night stand|tables?\b|console|\btv\b|media|entertainment|cabinet|storage|pantr|buffet|sideboard|credenza|hutch|vanit|bench|rack|island|armoire|wardrobe|shoe|hall tree|filing|etagere'
+  exclude_label_regex: '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart'
+  # 商品标题匹配下面的词直接剔除（软包、布艺抽屉、塑料等）
+  exclude_product_regex: '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\bplastic\b|\bresin\b'
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
   extra_nodes: []
   #  - path: "1055398:1063306:1063318:3733551"
@@ -44,21 +47,21 @@ discovery:
 
 # ---------------- 追踪池 ----------------
 pool:
-  max_size: 150                      # 核心追踪池上限（另加上升榜和探索位；实际刷新多少由预算决定）
-  per_node_top: 4                    # 每个子类目按销量取前 N（同一父体只取一个）
-  momentum_top: 30                   # 全局按“上升势头”再取前 N
+  max_size: 140                      # 核心追踪池上限（另加上升榜和探索位）
+  per_node_top: 6                    # 每个子类目按销量取前 N（同一父体只取一个）
+  momentum_top: 25                   # 全局按“上升势头”再取前 N
   watch_runs: 3                      # 被标记过的 ASIN 继续追踪的期数
   risers_top: 15                     # 从 BSR 上升榜里取前 N 个加入追踪
-  explore_per_run: 20                # 探索位：每期从基线里轮换抽查 N 个（发现本月才起量的商品）
+  explore_per_run: 15                # 探索位：每期从基线里轮换抽查 N 个（发现本月才起量的商品）
   explore_cooldown_runs: 6           # 抽查过的 N 期内不重复抽查
 
 # ---------------- 卖家精灵调用预算 ----------------
 budget:
-  per_run: 80                        # 常规每期调用上限
-  bootstrap_run: 160                 # 首次运行（还没有历史数据）调用上限
-  monthly_cap: 900                   # 每月总上限
+  per_run: 175                       # 每期调用上限（追踪池约 170 个商品全部刷新 + 可疑商品核查）
+  bootstrap_run: 230                 # 需要重新发现子类目的那一期（首期 / 换范围 / 每月初）
+  monthly_cap: 1800                  # 每月总上限
   review_checks: 5                   # 每期对可疑商品做评论核查的个数（每个 1~2 次调用）
-  stable_refresh_every: 3            # 稳定商品每隔 N 期才刷新一次
+  stable_refresh_every: 1            # 每期都刷新全部追踪商品，报告完全反映当期最新情况
   min_interval_seconds: 1.0          # 两次调用之间的最小间隔（卖家精灵有每分钟次数上限）
   rate_limit_wait_seconds: 60        # 被限流（“每分钟访问已达上限”）时等待多久再重试，最多重试 3 次
 
@@ -89,6 +92,9 @@ thresholds:
     max_cv: 0.35                     # 近 6 个月销量波动系数上限
     min_trend: -0.15                 # 近 3 个月月均变化不低于 -15%（真实数据月度波动较大）
     min_recent_ratio: 0.7            # 近 28 天日均 ≥ 近 6 个月日均的 0.7 倍（没有掉下来）
+  rising:                            # 上升中：不够“突然爆火”但近 28 天明显在涨，一起纳入外观分析
+    min_ratio: 1.3                   # 近 28 天日均 ≥ 再之前 28 天的 1.3 倍
+    min_daily_sales: 3
   potential:                         # 潜力
     min_age_days: 30
     max_age_days: 180
@@ -126,6 +132,7 @@ deal_windows:
 # ---------------- 报告 ----------------
 report:
   title: 家具爆品雷达
+  subtitle: 亚马逊美国站 · 板材 / 实木 / 铁木家具
   base_url: ""                       # 留空自动推导为 https://<用户名>.github.io/<仓库名>/
   keep_reports: 60                   # 网站上保留最近 N 期报告
   top_n: 15                          # 每个板块最多展示多少个商品
@@ -148,5 +155,5 @@ llm:
   # 主图外观识别：用视觉模型读爆火/潜力商品的主图（风格、材质、造型、工艺、颜色），约 300 tokens/张，结果会缓存
   vision: auto                       # auto = 有 key 才启用；false = 关闭
   vision_model: deepseek-v4-flash-vision-exp
-  vision_focus: 12                   # 识别多少个爆火/潜力商品
-  vision_reference: 8                # 再识别多少个持续热销商品作对照
+  vision_focus: 20                   # 识别多少个爆火/潜力/上升中商品
+  vision_reference: 10               # 再识别多少个持续热销商品作对照

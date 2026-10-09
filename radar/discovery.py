@@ -10,7 +10,9 @@
 """
 from __future__ import annotations
 
+import hashlib
 import html
+import json
 import re
 from datetime import datetime, timezone
 
@@ -25,6 +27,22 @@ def _variation(cfg: dict) -> str | None:
 
 def clean_text(value) -> str:
     return " ".join(html.unescape(str(value or "")).split())
+
+
+def scope_key(cfg: dict) -> str:
+    """监控范围的指纹：范围或发现参数一改，就在本期重新发现，而不是等到下个月。"""
+    keys = ("top_per_node", "order_field", "merge_variations", "newcomer_max_nodes", "newcomers_per_node",
+            "newcomer_min_revenue")
+    body = {"scope": cfg["scope"], "discovery": {k: cfg["discovery"].get(k) for k in keys}}
+    return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+
+
+def keep_product(item: dict | None, cfg: dict) -> bool:
+    """商品级过滤：标题里是软包、布艺抽屉、塑料等不在监控范围内的，直接剔除。"""
+    if not item:
+        return False
+    pattern = cfg["scope"].get("exclude_product_regex")
+    return not (pattern and re.search(pattern, item.get("title") or ""))
 
 
 def depth(path: str) -> int:
@@ -81,10 +99,11 @@ def select_nodes(raw: list[dict], cfg: dict) -> list[dict]:
             continue
         if node["products"] < scope["min_node_products"]:
             continue
-        relative = _relative_label(node)
-        if exclude and exclude.search(relative):
+        # 只看子类目自己的名字：父类目名会误伤（如 Kitchen Islands 的父类目叫 Storage Islands & Carts）
+        name = node["name"] or _relative_label(node)
+        if exclude and exclude.search(name):
             continue
-        if include and not include.search(relative):
+        if include and not include.search(name):
             continue
         seen[node["path"]] = node
 
@@ -158,23 +177,29 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
     """返回发现结果；该月份数据还没发布时返回 None。预算不够时返回 complete=False 的部分结果。"""
     mp = cfg["marketplace"]
     disc_cfg = cfg["discovery"]
-    if previous and previous.get("period") == period and not previous.get("complete"):
+    key = scope_key(cfg)
+    if (previous and previous.get("period") == period and not previous.get("complete")
+            and previous.get("scope_key") == key):
         disc = previous
     else:
         disc = {"period": period, "complete": False, "nodes": [], "done_top": [], "done_new": [],
-                "products": {}, "fetched_at": None}
+                "products": {}, "fetched_at": None, "scope_key": key}
 
     try:
         if not disc["nodes"]:
             raw: list[dict] = []
             for root in cfg["scope"]["roots"]:
-                reply = vendor.call("market_research", request(
-                    marketplace=mp, nodeIdPath=root["path"], nodeIdPathEqual="false", month=period,
-                    size=50, order={"field": "total_amount", "desc": True}), purpose="子类目")
-                for row in reply.rows:
-                    node = parse_node(row, root)
-                    if node:
-                        raw.append(node)
+                # 子类目按销售额排序，取前几页（范围收窄后，柜类/桌类可能排在 50 名以后）
+                for page in range(1, int(cfg["scope"].get("rollup_pages", 1)) + 1):
+                    reply = vendor.call("market_research", request(
+                        marketplace=mp, nodeIdPath=root["path"], nodeIdPathEqual="false", month=period,
+                        size=50, page=page, order={"field": "total_amount", "desc": True}), purpose="子类目")
+                    for row in reply.rows:
+                        node = parse_node(row, root)
+                        if node:
+                            raw.append(node)
+                    if len(reply.rows) < 50:
+                        break
             if not raw:
                 return None
             disc["nodes"] = select_nodes(raw, cfg)
@@ -188,7 +213,9 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
                 size=disc_cfg["top_per_node"], page=1, variation=_variation(cfg),
                 order={"field": disc_cfg["order_field"], "desc": True}), purpose="头部商品")
             for rank, row in enumerate(reply.rows, start=1):
-                _add(disc["products"], normalize_product(row, node, "top", rank))
+                item = normalize_product(row, node, "top", rank)
+                if keep_product(item, cfg):
+                    _add(disc["products"], item)
             disc["done_top"].append(node["path"])
 
         newcomer_nodes = sorted(disc["nodes"], key=lambda n: -n["units"])[: disc_cfg["newcomer_max_nodes"]]
@@ -200,7 +227,9 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
                 size=disc_cfg["newcomers_per_node"], minRevenue=disc_cfg["newcomer_min_revenue"],
                 variation=_variation(cfg), order={"field": "available_date", "desc": True}), purpose="新品")
             for rank, row in enumerate(reply.rows, start=1):
-                _add(disc["products"], normalize_product(row, node, "new", rank))
+                item = normalize_product(row, node, "new", rank)
+                if keep_product(item, cfg):
+                    _add(disc["products"], item)
             disc["done_new"].append(node["path"])
         disc["complete"] = True
     except BudgetExhausted:
@@ -246,7 +275,7 @@ def find_risers(vendor: Vendor, cfg: dict, period: str, nodes: list[dict]) -> li
                     continue
                 node = owning_node(str(row.get("nodeIdPath") or ""), nodes)
                 item = normalize_product(row, node, "riser", rank) if node else None
-                if not item:
+                if not keep_product(item, cfg):
                     continue
                 key = item["parent"] or item["asin"]
                 if item["asin"] in found or key in parents:

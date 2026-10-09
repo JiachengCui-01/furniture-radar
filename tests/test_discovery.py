@@ -11,32 +11,38 @@ def _node(path, label, products=5000, units=1000, root="1064954:1069102"):
             "root_label": "", "products": products, "units": units, "revenue": 0, "avg_price": None}
 
 
-def test_exclusion_only_looks_below_the_root(cfg):
-    """办公根类目名里带 Lighting、庭院根类目名里带 Accessories，不能因此把整个根排除掉。"""
+def test_scope_keeps_panel_wood_metal_case_goods_only(cfg):
+    """只留柜类、桌类、床架、置物架；沙发、床垫、椅子、推车等剔除。只看子类目自己的名字。"""
     raw = [
-        _node("1064954:1069102:1", "Office Products:Office Furniture & Lighting:Chairs & Sofas"),
-        _node("1064954:1069102:2", "Office Products:Office Furniture & Lighting:Office Lighting"),
-        _node("2972638011:553824:3", "Patio, Lawn & Garden:Patio Furniture & Accessories:Umbrellas & Shade",
-              root="2972638011:553824"),
-        _node("2972638011:553824:4", "Patio, Lawn & Garden:Patio Furniture & Accessories:Patio Furniture Sets",
-              root="2972638011:553824"),
-        _node("1064954:1069102:9", "Office Products:Office Furniture & Lighting:Tiny", products=10),
+        _node("1", "Office Products:Office Furniture & Lighting:Desks & Workstations:Computer Workstations"),
+        _node("2", "Office Products:Office Furniture & Lighting:Chairs & Sofas"),
+        _node("3", "Office Products:Office Furniture & Lighting:Carts & Stands:Utility Carts"),
+        _node("4", "H:Bedroom Furniture:Beds, Frames & Bases:Bed Frames", root="H"),
+        _node("5", "H:Bedroom Furniture:Mattresses & Box Springs:Mattresses", root="H"),
+        _node("6", "H:Living Room Furniture:Tables:Sofa & Console Tables", root="H"),
+        _node("7", "H:Living Room Furniture:Sofas & Couches", root="H"),
+        _node("8", "H:Kitchen Furniture:Storage Islands & Carts:Kitchen Islands", root="H"),
+        _node("9", "H:Bedroom Furniture:Dressers", root="H", products=10),
     ]
     picked = {n["path"] for n in discovery.select_nodes(raw, cfg)}
-    assert picked == {"1064954:1069102:1", "2972638011:553824:4"}
+    assert picked == {"1", "4", "6", "8"}
 
 
 def test_overlapping_nodes_keep_the_deeper_one(cfg):
     raw = [
-        _node("1055398:1063306:1063318", "Home & Kitchen:Furniture:Living Room Furniture", units=9000,
-              root="1055398:1063306"),
-        _node("1055398:1063306:1063318:3733551", "Home & Kitchen:Furniture:Living Room Furniture:Sofas & Couches",
-              units=4000, root="1055398:1063306"),
-        _node("1055398:1063306:1063308", "Home & Kitchen:Furniture:Bedroom Furniture", units=7000,
-              root="1055398:1063306"),
+        _node("H:1", "H:Living Room Furniture:Tables", units=9000, root="H"),
+        _node("H:1:2", "H:Living Room Furniture:Tables:Coffee Tables", units=4000, root="H"),
+        _node("H:3", "H:Bedroom Furniture:Dressers", units=7000, root="H"),
     ]
     picked = [n["path"] for n in discovery.select_nodes(raw, cfg)]
-    assert picked == ["1055398:1063306:1063308", "1055398:1063306:1063318:3733551"]
+    assert picked == ["H:3", "H:1:2"]
+
+
+def test_product_filter_drops_upholstered_and_plastic(cfg):
+    keep = [discovery.keep_product({"title": t}, cfg) for t in (
+        "Upholstered Platform Bed Frame", "Dresser with 6 Fabric Drawers", "Plastic Storage Cabinet",
+        "Console Table Behind Sofa", "Industrial Metal and Wood Bookcase")]
+    assert keep == [False, False, False, True, True]
 
 
 def test_real_product_research_row_normalizes():

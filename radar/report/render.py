@@ -211,8 +211,9 @@ def _head(item: dict) -> str:
     node = item.get("node_cn") or item.get("node_name") or ""
     rating = f"★{item['rating']}（{fmt_int(item['ratings'])}）" if item.get("rating") is not None else ""
     age = f"上架 {item['age_days']} 天" if item.get("age_days") is not None else ""
-    meta = " · ".join(x for x in (esc(item.get("brand")), esc(node), fmt_price(item.get("price")), rating, age,
-                                  f"ASIN {esc(item['asin'])}") if x)
+    material = item.get("material") if item.get("material") not in (None, "未注明") else ""
+    meta = " · ".join(x for x in (esc(item.get("brand")), esc(node), esc(material), fmt_price(item.get("price")),
+                                  rating, age, f"ASIN {esc(item['asin'])}") if x)
     return (f'<a href="{url}" target="_blank" rel="noopener noreferrer">{img}</a><div>'
             f'<div class="t"><a href="{url}" target="_blank" rel="noopener noreferrer">{esc(item["title"])}</a></div>'
             f'<div class="meta">{meta}</div>')
@@ -275,8 +276,9 @@ def _design_boxes(design: dict, n_focus: int) -> str:
     boxes = []
     for dim, rows in design.items():
         lines = "".join(
-            f'<div class="drow"><span>{esc(r["label"])}</span><span><b>×{r["lift"]}</b></span>'
-            f'<em>爆火/潜力 {r["count"]}/{n_focus}（{r["share"]:.0%}）· 全部家具 {r["baseline_share"]:.0%}</em><span></span>'
+            f'<div class="drow"><span>{esc(r["label"])}</span>'
+            f'<span><b{"" if r["lift"] >= 1 else " style=color:var(--muted)"}>×{r["lift"]}</b></span>'
+            f'<em>爆火/上升中 {r["count"]}/{n_focus}（{r["share"]:.0%}）· 全部商品 {r["baseline_share"]:.0%}</em><span></span>'
             f'{_meter(r["share"], r["baseline_share"])}</div>' for r in rows)
         boxes.append(f'<div class="dbox"><h4>{esc(dim)}</h4>{lines}</div>')
     return f'<div class="dgrid">{"".join(boxes)}</div>'
@@ -285,10 +287,10 @@ def _design_boxes(design: dict, n_focus: int) -> str:
 def _vision_block(v: dict) -> str:
     if not v or not v.get("n_focus"):
         return ""
-    parts = [f'<h3 class="sub3">主图识别：爆火/潜力商品长什么样</h3>'
-             f'<p class="hint">AI 看了 {v["n_focus"]} 个爆火/潜力商品的主图'
+    parts = [f'<h3 class="sub3">主图识别：爆火/上升中的商品长什么样</h3>'
+             f'<p class="hint">AI 看了 {v["n_focus"]} 个爆火/潜力/上升中商品的主图'
              + (f'，并对照 {v["n_reference"]} 个持续热销商品' if v.get("n_reference") else "")
-             + '。数字为“出现该特征的商品数 / 识别数”；绿框 = 在爆火/潜力里明显比持续热销更常见的外观。</p>']
+             + '。数字为“出现该特征的商品数 / 识别数”；绿框 = 比持续热销明显更常见的外观。</p>']
     for dim, rows in (v.get("dimensions") or {}).items():
         chips = "".join(
             f'<span{" class=hi" if r.get("distinct") else ""}>{esc(r["label"])} <b>{r["focus"]}/{v["n_focus"]}</b>'
@@ -340,8 +342,13 @@ def _traits(tr: dict) -> str:
         return f'<p class="empty">{esc(tr["note"])}</p>'
     design = tr.get("design") or {}
     appearance = {d: rows for d, rows in design.items() if d != "功能卖点"}
-    parts = [f'<p class="hint">本期真爆火 + 潜力 {tr["n_focus"]} 个，对比全部家具头部商品 {tr["n_baseline"]} 个。'
-             f'“×倍数”= 这个特征在爆火/潜力商品里出现的比例 ÷ 在全部家具里的比例；进度条竖线为全部家具中的占比。</p>']
+    parts = [f'<p class="hint">样本：本期突然爆火、潜力和上升中（近 28 天销量增长 ≥30%）的商品共 {tr["n_focus"]} 个，'
+             f'对比本月全部头部商品 {tr["n_baseline"]} 个。“×倍数”= 这个特征在爆火/潜力/上升中商品里出现的比例 ÷ '
+             f'在全部商品里的比例；进度条竖线为全部商品中的占比。</p>']
+    if tr.get("materials"):
+        rows = [{**m, "asins": []} for m in tr["materials"]]
+        parts.append('<h3 class="sub3">主材质构成（来自商品标题）</h3>'
+                     + _design_boxes({"板材 / 实木 / 铁木": rows}, tr["n_focus"]))
     if appearance:
         parts.append('<h3 class="sub3">外观与工艺（来自商品标题）</h3>' + _design_boxes(appearance, tr["n_focus"]))
     else:
@@ -355,7 +362,7 @@ def _traits(tr: dict) -> str:
 
 def _changes(diff: dict, by_asin: dict) -> str:
     if diff.get("first"):
-        return '<p class="empty">这是第一期报告，从下一期开始显示与上期的对比。</p>'
+        return '<p class="empty">本期没有可对比的上一期（首期或监控范围刚调整），从下一期开始显示变化。</p>'
     names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察"}
 
     def name(asin: str) -> str:
@@ -429,7 +436,7 @@ def render(ctx: dict) -> str:
     chips = "".join(f'<span class="chip">{esc(c)}</span>' for c in (
         f"数据月份 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
         f"追踪 {counts['total']} 个 ASIN", f"本期刷新 {cov['refreshed']} 个",
-        f"卖家精灵调用 {cov['calls']} 次", f"总结：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"))
+        f"上升中 {counts.get('rising', 0)} 个", f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次", f"总结：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"))
     history = ""
     if ctx.get("history"):
         history = '<p class="hist sub">往期报告：' + "".join(
@@ -439,7 +446,7 @@ def render(ctx: dict) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer"><title>{esc(ctx['title'])} {esc(ctx['report_id'])}</title>
 <style>{CSS}</style></head><body><div class="wrap">
-<header><div class="sub">亚马逊美国站 · 家具全类目</div><h1>{esc(ctx['title'])}</h1>
+<header><div class="sub">{esc(ctx['cfg']['report'].get('subtitle') or '亚马逊美国站 · 家具')}</div><h1>{esc(ctx['title'])}</h1>
 <div class="sub">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期</div><div class="chips">{chips}</div>{history}</header>
 <div class="kpis">{kpi}</div>
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期简报</h2>{markdown(ctx['summary'])}</section>
