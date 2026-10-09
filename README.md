@@ -75,6 +75,21 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_secrets.ps1
 
 ---
 
+## 推送到更多钉钉群
+
+每个群在 GitHub 上单独存一个 Secret，新增群时不用改原来的配置：
+
+1. 在新群里添加自定义机器人，安全设置选“加签”，复制 Webhook 和 SEC 开头的密钥。
+2. 仓库 → Settings → Secrets and variables → Actions → **New repository secret**：
+   - Name：以 `DINGTALK_ROBOT_` 开头，后面随便起，只能用大写字母、数字、下划线，例如 `DINGTALK_ROBOT_TEAM`
+   - Secret：`Webhook地址,SEC密钥`（中间英文逗号；机器人用“关键词”方式的话只填 Webhook）
+3. 保存即可，下一期起这个群也会收到。不想再推送某个群，删掉对应的 Secret 就行。
+
+`DINGTALK_WEBHOOK` / `DINGTALK_SECRET` 继续有效，可以和 `DINGTALK_ROBOT_*` 同时用。
+注意：GitHub 的 Secret 保存后不会再显示原值，点“编辑”看到的是空的，这是正常的。
+
+---
+
 ## 本地运行与预览（Windows）
 
 ```powershell

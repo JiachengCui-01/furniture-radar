@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -146,15 +147,52 @@ def load_secrets(cfg: dict, *, dotenv: bool = True) -> Secrets:
         except ImportError:  # pragma: no cover
             pass
     env = os.environ
+    webhooks, secrets = dingtalk_robots(env)
     return Secrets(
         sellersprite_key=env.get("SELLERSPRITE_SECRET_KEY", "").strip(),
         sellersprite_url=env.get("SELLERSPRITE_MCP_URL", "").strip() or DEFAULT_MCP_URL,
         report_key=env.get("REPORT_KEY", "").strip(),
-        dingtalk_webhooks=_split(env.get("DINGTALK_WEBHOOK")),
-        dingtalk_secrets=_split(env.get("DINGTALK_SECRET")),
+        dingtalk_webhooks=webhooks,
+        dingtalk_secrets=secrets,
         llm_api_key=env.get(cfg["llm"].get("api_key_env") or "DEEPSEEK_API_KEY", "").strip(),
         report_base_url=env.get("REPORT_BASE_URL", "").strip(),
     )
+
+
+def parse_robot(value: str) -> tuple[str, str] | None:
+    """一个群一个值：“webhook 地址” + 可选的 “SEC 加签密钥”，用逗号、空格或换行隔开都行。"""
+    parts = [p for p in re.split(r"[\s,，]+", value or "") if p]
+    url = next((p for p in parts if p.startswith("http")), "")
+    secret = next((p for p in parts if p.startswith("SEC")), "")
+    return (url, secret) if url else None
+
+
+def dingtalk_robots(env) -> tuple[list[str], list[str]]:
+    """所有要推送的钉钉群，返回 (webhook 列表, 加签密钥列表)，一一对应。
+
+    两种写法可以同时用：
+    * DINGTALK_WEBHOOK / DINGTALK_SECRET：最早的写法，多个群用英文逗号按顺序对应；
+    * DINGTALK_ROBOT_<任意名字>：每个群单独一个，值是“webhook,SEC密钥”。新增群只要新建一个，
+      不用改原来的。GitHub Actions 里通过 RADAR_SECRETS_JSON（= toJSON(secrets)）读取全部仓库密钥。
+    """
+    webhooks = _split(env.get("DINGTALK_WEBHOOK"))
+    secrets = _split(env.get("DINGTALK_SECRET"))
+    secrets = (secrets + [""] * len(webhooks))[: len(webhooks)]
+
+    named: dict[str, str] = {k: v for k, v in env.items() if k.startswith("DINGTALK_ROBOT_")}
+    try:
+        all_secrets = json.loads(env.get("RADAR_SECRETS_JSON") or "{}")
+    except ValueError:
+        all_secrets = {}
+    if isinstance(all_secrets, dict):
+        named.update({k: v for k, v in all_secrets.items()
+                      if str(k).upper().startswith("DINGTALK_ROBOT_") and isinstance(v, str)})
+    for name in sorted(named):
+        robot = parse_robot(named[name])
+        if robot and robot[0] not in webhooks:
+            webhooks.append(robot[0])
+            secrets.append(robot[1])
+    return webhooks, secrets
 
 
 def report_base_url(cfg: dict, secrets: Secrets) -> str:
