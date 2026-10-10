@@ -112,7 +112,8 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
     return done
 
 
-def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim: int = 6) -> dict:
+def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim: int = 12,
+              min_gap: float = 0.2) -> dict:
     """汇总主图标签：每个维度里，增长商品最常见的特征，并和持续热销对照组比较。
     每个商品自己的“外观要点”直接显示在商品卡片上（pipeline 里写到 item["look"]）。"""
     def tags_of(items):
@@ -139,8 +140,8 @@ def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim:
             rows.append({"label": label, "focus": n, "focus_share": round(share, 3),
                          "reference": cr.get(label, 0),
                          "reference_share": None if ref_share is None else round(ref_share, 3),
-                         # 增长商品里比持续热销对照组多 20 个百分点以上的，才算增长商品特有的外观
-                         "distinct": ref_share is not None and share - ref_share >= 0.2})
+                         # 增长商品里比持续热销对照组多 min_gap 以上的，才算增长商品特有的外观（留浮点误差余量）
+                         "distinct": ref_share is not None and share - ref_share >= min_gap - 1e-9})
         # 有对照组时，按“比持续热销多出多少”排序，通用特征（如“现代”）排到后面
         rows.sort(key=lambda r: (-(r["focus_share"] - (r["reference_share"] or 0)) if r_tagged else 0,
                                  -r["focus"]))

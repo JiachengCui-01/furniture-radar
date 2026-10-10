@@ -167,6 +167,8 @@ html.noscroll,html.noscroll body{overflow:hidden}
 .drow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;font-size:13px;margin:7px 0}
 .drow .m{grid-column:1/-1}
 .drow em{font-style:normal;color:var(--muted);font-size:12px}
+.common{font-size:12.5px;margin:10px 0 2px;padding-top:8px;border-top:1px dashed var(--line)}
+.common em{font-style:normal;color:var(--muted);display:block}
 .drow span:nth-child(2){font-variant-numeric:tabular-nums;color:var(--potential);font-weight:600}
 """
 
@@ -315,20 +317,38 @@ def _material_box(m: dict) -> str:
     return f'<div class="dbox"><h4>主材质</h4>{"".join(lines)}</div>'
 
 
-def _feature_box(dim: str, rows: list[dict], vision: dict) -> str:
+def _evidence_lines(f: dict, vision: dict) -> list[str]:
+    t, i = f.get("title"), f.get("image")
+    ev = []
+    if t:
+        ev.append(f"标题：增长商品 {t['share']:.0%} · 全部头部商品 {t['baseline_share']:.0%}")
+    if i:
+        ref = f" · 持续热销对照组 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
+        ev.append(f"主图：增长商品 {i['focus']}/{vision['n_focus']}{ref}")
+    return ev
+
+
+def _feature_box(dim: str, rows: dict, vision: dict) -> str:
+    """一个维度：先列“更多”的特征（带依据和进度条），最后一行是“常见”的特征。"""
     lines = []
-    for f in rows:
+    for f in rows.get("more") or []:
         t, i = f.get("title"), f.get("image")
-        ev = []
-        if t:
-            ev.append(f"标题：增长商品 {t['share']:.0%} · 全部头部商品 {t['baseline_share']:.0%}")
+        src, share, base = ("主图", i["focus_share"], i["reference_share"]) if i else ("标题", t["share"], t["baseline_share"])
+        lines.append(f'<div class="drow"><span>{esc(f["label"])}</span><span>{src} {share:.0%}</span>'
+                     f'<em>{"<br>".join(esc(e) for e in _evidence_lines(f, vision))}</em>{_meter(share, base)}</div>')
+    if not lines:
+        lines.append('<p class="empty">没有比对照组明显更多的特征。</p>')
+    common = []
+    for f in rows.get("common") or []:
+        t, i = f.get("title"), f.get("image")
         if i:
-            ref = f" · 持续热销对照组 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
-            ev.append(f"主图：增长商品 {i['focus']}/{vision['n_focus']}{ref}")
-        share, base = (t["share"], t["baseline_share"]) if t else (i["focus_share"], i["reference_share"])
-        lines.append(f'<div class="drow"><span>{esc(f["label"])}</span><span>{share:.0%}</span>'
-                     f'<em>{"<br>".join(esc(e) for e in ev)}</em>{_meter(share, base)}</div>')
-    return f'<div class="dbox"><h4>{esc(dim)}</h4>{"".join(lines)}</div>'
+            ref = f"，对照组 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
+            common.append(f"{f['label']} {i['focus']}/{vision['n_focus']}（{ref.lstrip('，')}）" if ref else
+                          f"{f['label']} {i['focus']}/{vision['n_focus']}")
+        else:
+            common.append(f"{f['label']} {t['share']:.0%}（全部头部商品 {t['baseline_share']:.0%}）")
+    tail = (f'<div class="common"><em>常见但不比对照组多</em>{esc("；".join(common))}</div>' if common else "")
+    return f'<div class="dbox"><h4>{esc(dim)}</h4>{"".join(lines)}{tail}</div>'
 
 
 def _structure(tr: dict) -> str:
@@ -353,7 +373,7 @@ def _structure(tr: dict) -> str:
             + "</details>")
 
 
-def _traits(tr: dict, counts: dict) -> str:
+def _traits(tr: dict, counts: dict, cfg: dict) -> str:
     if tr.get("note"):
         return f'<p class="empty">{esc(tr["note"])}</p>'
     vision = tr.get("vision") or {}
@@ -362,18 +382,19 @@ def _traits(tr: dict, counts: dict) -> str:
               f' + 上升中 {counts.get("rising", 0)}）。标题统计对比全部头部商品 {tr["n_baseline"]} 个；')
     if vision.get("n_focus"):
         sample += f'主图识别看增长商品里势头最强的 {vision["n_focus"]} 个；'
+    a = cfg["thresholds"]["appearance"]
     sample += (f'主材质看全部增长商品（每个商品一类，依次取亚马逊 Material 属性、标题、主图识别）；'
                f'后两者都对比持续热销对照组（月销量最高的 {mats.get("n_reference") or 0} 个）。'
-               '两种依据方向相反的特征不列。百分比是增长商品中的占比，进度条竖线是对比对象中的占比。')
+               f'列出的特征至少 {a["min_count"]} 个增长商品有，且标题里占比 ≥{a["title_min_share"]:.0%}、是全部头部商品的 '
+               f'{a["title_min_lift"]:g} 倍以上，或主图里比对照组多 {a["image_min_gap"] * 100:.0f} 个百分点以上；两种依据方向相反的不列。'
+               f'“常见”= 增长商品里 ≥{a["common_share"]:.0%} 有、但不比对照组多。'
+               '右侧数字是增长商品中的占比（两种依据都有时取主图），进度条竖线是对比对象中的占比。')
     boxes = [_material_box(mats)]
     for dim, rows in (tr.get("appearance") or {}).items():
         boxes.append(_feature_box(dim, rows, vision))
-    selling = (tr.get("design") or {}).get("功能卖点") or []
-    if selling:
-        boxes.append(_feature_box("功能卖点", [{"label": r["label"], "title": r} for r in selling], vision))
     body = "".join(b for b in boxes if b)
-    if not (tr.get("appearance") or selling):
-        body += '<p class="empty">增长商品没有明显偏多的外观/工艺特征。</p>'
+    if not tr.get("appearance"):
+        body += '<p class="empty">增长商品没有明显偏多或常见的外观/工艺特征。</p>'
     return f'<p class="hint">{sample}</p><div class="dgrid">{body}</div>{_structure(tr)}'
 
 
@@ -477,7 +498,7 @@ def _method(cfg: dict) -> str:
 <li><b>外观与工艺依据</b>：材质只有“主材质”一种口径，每个商品一类（铁木 / 实木 / 板材 / 金属…），依次取亚马逊商品详情的 Material 属性、
 标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色有两种依据——
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组），
-同一特征合并成一行；两种依据方向相反的不算趋势、不列出。</li>
+同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的不算趋势、不列出；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
 <li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
 累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体多的商品评论为父体共享，不算评论/销量比；
@@ -524,7 +545,7 @@ def render(ctx: dict) -> str:
 <div class="sub hist">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期 · 日数据截至 {esc(ctx['as_of'])}{history}</div></header>
 <div class="kpis">{kpi}</div><p class="sub kpi-hint">点数字查看商品清单</p>
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{markdown(ctx['summary'])}</section>
-<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>外观与工艺依据</h2>{_traits(ctx['traits'], counts)}</section>
+<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>外观与工艺依据</h2>{_traits(ctx['traits'], counts, cfg)}</section>
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="about" style="--c:var(--muted)"><h2><span class="dot"></span>数据说明</h2>
 <p class="sub">{' · '.join(esc(x) for x in facts)}</p>

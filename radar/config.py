@@ -78,6 +78,8 @@ DEFAULTS: dict = {
         },
         "rising": {"min_ratio": 1.3, "min_daily_sales": 3},
         "momentum": {"min_vs_peak_week": 0.8, "min_last3_vs_7d": 0.8},
+        "appearance": {"min_count": 2, "title_min_share": 0.1, "title_min_lift": 1.3, "image_min_gap": 0.1,
+                       "common_share": 0.3, "per_dim": 6},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,
@@ -106,7 +108,7 @@ DEFAULTS: dict = {
         "vision": "auto",
         "vision_model": "deepseek-v4-flash-vision-exp",
         "vision_focus": 20,
-        "vision_reference": 10,
+        "vision_reference": 20,
     },
 }
 

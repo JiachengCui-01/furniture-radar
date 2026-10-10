@@ -9,7 +9,7 @@ from radar.cli import _decrypt_page
 from radar.cli import TRACK_ALL
 from radar.config import Secrets
 from radar.demo import SyntheticWorld
-from radar.detect import design
+from radar.detect import design, traits
 
 
 def test_extract_reads_appearance_and_craft_from_titles():
@@ -141,3 +141,25 @@ def test_potential_growth_shows_units_when_percentage_is_absurd():
     item = {"potential": {"growth": 93.0}, "monthly": [["2026-08", 13], ["2026-09", 1222]]}
     assert growth_text(item) == "月销 13 → 1,222 件"
     assert growth_text({"potential": {"growth": 0.42}, "monthly": []}) == "月环比 +42%"
+
+
+def test_appearance_lists_more_and_common_features(cfg):
+    """“更多”要有依据且不冲突；“常见”只说明多数有。卡在门槛上的不能因为浮点误差漏掉。"""
+    t = lambda label, n, share, base: {"label": label, "count": n, "share": share, "baseline_share": base}
+    i = lambda label, n, ref: {"label": label, "focus": n, "focus_share": n / 20, "reference": ref,
+                               "reference_share": ref / 10}
+    tr = {"design": {"工艺": [dict(t("凹槽竖纹", 3, 0.15, 0.07), lift=2.1)],
+                     "风格": [dict(t("现代", 4, 0.2, 0.13), lift=1.5)]},
+          "title_shares": {"工艺": {"凹槽竖纹": t("凹槽竖纹", 3, 0.15, 0.07)},
+                           "风格": {"现代": t("现代", 4, 0.2, 0.13), "农舍风": t("农舍风", 2, 0.1, 0.09)},
+                           "颜色": {"黑色": t("黑色", 3, 0.15, 0.2)}}}
+    vision = {"n_focus": 20, "n_reference": 10, "dimensions": {
+        "风格": [i("现代", 16, 9), i("农舍风", 3, 0)],
+        "工艺": [i("锥形/外八腿", 6, 1)],
+        "颜色": [i("黑色", 11, 8)]}}
+    out = traits.merge_appearance(tr, vision, cfg)
+    assert [f["label"] for f in out["工艺"]["more"]] == ["锥形/外八腿", "凹槽竖纹"]  # 30% − 10% 正好 20 个百分点
+    assert [f["label"] for f in out["风格"]["more"]] == ["农舍风"]  # 现代：标题说更多、主图说更少 → 冲突
+    assert [f["label"] for f in out["风格"]["common"]] == ["现代"]
+    assert out["颜色"]["more"] == [] and [f["label"] for f in out["颜色"]["common"]] == ["黑色"]
+

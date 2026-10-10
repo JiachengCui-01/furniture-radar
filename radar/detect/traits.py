@@ -114,14 +114,20 @@ def _median(values: list) -> float | None:
     return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
 
 
-def compute(baseline: list[dict], focus: list[dict], today: date) -> dict:
+def compute(baseline: list[dict], focus: list[dict], today: date, appearance: dict | None = None) -> dict:
+    """appearance：config.yaml 的 thresholds.appearance（标题统计的门槛）。"""
     nf, nb = len(focus), len(baseline)
-    result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}, "design": {}}
+    result = {"n_focus": nf, "n_baseline": nb, "facts": [], "keywords": [], "numbers": {}, "design": {},
+              "title_shares": {}}
     if nf < 3 or nb < 20:
         result["note"] = "本期增长商品太少（少于 3 个），暂不总结共性特点"
         return result
 
-    result["design"] = design.compare(baseline, focus)
+    a = appearance or {}
+    result["design"] = design.compare(baseline, focus, per_dim=int(a.get("per_dim", 5)),
+                                      min_count=a.get("min_count"), min_share=float(a.get("title_min_share", 0.15)),
+                                      min_lift=float(a.get("title_min_lift", 1.3)))
+    result["title_shares"] = design.shares(baseline, focus)
     ctx = {"bands": _price_bands(baseline), "today": today}
     for dim, fn in DIMENSIONS.items():
         cf = Counter(v for v in (fn(r, ctx) for r in focus) if v)
@@ -167,33 +173,45 @@ def compute(baseline: list[dict], focus: list[dict], today: date) -> dict:
     return result
 
 
-def merge_appearance(design_rows: dict, vision: dict | None, per_dim: int = 4) -> dict[str, list[dict]]:
-    """外观特征清单（风格 / 造型 / 工艺 / 颜色；材质只看主材质）。两种依据按特征名合并，每个特征只出现一次：
-      title：标题统计，增长商品 vs 全部头部商品（design.compare 已筛过：占比 ≥15%、提升 ≥1.3 倍）
-      image：主图识别，增长商品里势头最强的若干个 vs 持续热销对照组（只取比对照组多 20 个百分点以上的，
-             或者标题统计里也出现的）
-    两种依据都有时必须同向（都比对照组多），方向相反的特征不算趋势、不列出。按“比对照组多出的占比”排序。"""
+def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict[str, list[dict]]]:
+    """外观特征清单（风格 / 造型 / 工艺 / 颜色 / 功能卖点；材质只看主材质）。两种依据按特征名合并，每个特征只出现一次。
+    依据（都要至少 min_count 个增长商品有，才算数）：
+      title：标题统计，增长商品 vs 全部头部商品
+      image：主图识别，增长商品里势头最强的若干个 vs 持续热销对照组
+    更多：标题里占比 ≥ title_min_share 且是全部头部商品的 title_min_lift 倍以上，或主图里比对照组多 image_min_gap 以上；
+          任何一种算数的依据说“更少”，就是依据冲突，不列。按“比对照组多出的占比”排序，每个维度最多 per_dim 个。
+    常见：不在“更多”里、增长商品中占比 ≥ common_share 的（有主图识别看主图，没有看标题），不代表比对照组多。"""
+    a = cfg["thresholds"]["appearance"]
+    min_count, gap_min = int(a["min_count"]), float(a["image_min_gap"])
     vdims = (vision or {}).get("dimensions") or {}
-    out: dict[str, list[dict]] = {}
-    for dim in design.APPEARANCE_DIMENSIONS:
-        feats: dict[str, dict] = {}
-        for r in (design_rows or {}).get(dim, []):
-            feats.setdefault(r["label"], {"label": r["label"]})["title"] = r
-        for r in vdims.get(dim, []):
-            if r.get("distinct") or r["label"] in feats:
-                feats.setdefault(r["label"], {"label": r["label"]})["image"] = r
-        for label in list(feats):
-            i = feats[label].get("image")
-            if i and i.get("reference_share") is not None and i["focus_share"] < i["reference_share"]:
-                del feats[label]  # 标题统计说更多、主图识别说更少：依据冲突
+    qualified_title = {dim: {r["label"] for r in rows} for dim, rows in (tr.get("design") or {}).items()}
+    out: dict[str, dict[str, list[dict]]] = {}
+    for dim in (*design.APPEARANCE_DIMENSIONS, "功能卖点"):
+        titles = {label: r for label, r in ((tr.get("title_shares") or {}).get(dim) or {}).items()
+                  if r["count"] >= min_count}
+        images = {r["label"]: r for r in vdims.get(dim, []) if r["focus"] >= min_count}
+        more, common = [], []
+        for label in dict.fromkeys([*titles, *images]):
+            t, i = titles.get(label), images.get(label)
+            t_more = label in qualified_title.get(dim, set())
+            i_gap = None if not i or i.get("reference_share") is None else i["focus_share"] - i["reference_share"]
+            i_more = i_gap is not None and i_gap >= gap_min - 1e-9
+            t_less = t is not None and t["share"] < t["baseline_share"]
+            i_less = i_gap is not None and i_gap < 0
+            row = {"label": label, "title": t, "image": i}
+            if (t_more or i_more) and not (t_less or i_less):
+                more.append(row)
+            elif (i or t) and (i["focus_share"] if i else t["share"]) >= float(a["common_share"]) - 1e-9:
+                common.append(row)
 
         def gap(f: dict) -> float:
             t, i = f.get("title"), f.get("image")
-            a = t["share"] - t["baseline_share"] if t else 0.0
-            b = i["focus_share"] - (i["reference_share"] or 0) if i else 0.0
-            return max(a, b) + (0.05 if t and i else 0.0)  # 两种依据都支持的排前面
+            x = t["share"] - t["baseline_share"] if t else 0.0
+            y = i["focus_share"] - (i["reference_share"] or 0) if i else 0.0
+            return max(x, y) + (0.05 if t and i else 0.0)  # 两种依据都支持的排前面
 
-        rows = sorted(feats.values(), key=lambda f: -gap(f))
-        if rows:
-            out[dim] = rows[:per_dim]
+        more.sort(key=lambda f: -gap(f))
+        common.sort(key=lambda f: -((f["image"] or {}).get("focus_share") or (f["title"] or {}).get("share") or 0))
+        if more or common:
+            out[dim] = {"more": more[: int(a["per_dim"])], "common": common[:3]}
     return out

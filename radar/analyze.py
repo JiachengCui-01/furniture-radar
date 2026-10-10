@@ -266,6 +266,6 @@ def trait_rows(items: list[dict], disc: dict | None, state: dict) -> tuple[list[
     return baseline, focus
 
 
-def compute_traits(items: list[dict], disc: dict | None, state: dict, today: date) -> dict:
+def compute_traits(items: list[dict], disc: dict | None, state: dict, today: date, cfg: dict | None = None) -> dict:
     baseline, focus = trait_rows(items, disc, state)
-    return traits.compute(baseline, focus, today)
+    return traits.compute(baseline, focus, today, ((cfg or {}).get("thresholds") or {}).get("appearance"))

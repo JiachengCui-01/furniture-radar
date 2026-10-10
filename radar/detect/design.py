@@ -145,14 +145,33 @@ def extract(title: str) -> dict[str, set[str]]:
     return {dim: {label for label, rx in rules if rx.search(title)} for dim, rules in _COMPILED.items()}
 
 
-def compare(baseline: list[dict], focus: list[dict], *, per_dim: int = 5) -> dict[str, list[dict]]:
-    """每个维度里，爆火/潜力中明显偏多的特征（按 提升倍数 × 占比 排序）。"""
+def shares(baseline: list[dict], focus: list[dict]) -> dict[str, dict[str, dict]]:
+    """标题里每个特征在增长商品和全部头部商品中的占比（不筛选）。"""
+    nf, nb = len(focus), len(baseline)
+    if not nf or not nb:
+        return {}
+    feats_f = [extract(r.get("title", "")) for r in focus]
+    feats_b = [extract(r.get("title", "")) for r in baseline]
+    out: dict[str, dict[str, dict]] = {}
+    for dim in LEXICON:
+        cf = Counter(label for f in feats_f for label in f[dim])
+        cb = Counter(label for f in feats_b for label in f[dim])
+        out[dim] = {label: {"label": label, "count": n, "share": round(n / nf, 3),
+                            "baseline_share": round(cb.get(label, 0) / nb, 3)} for label, n in cf.items()}
+    return out
+
+
+def compare(baseline: list[dict], focus: list[dict], *, per_dim: int = 5, min_count: int | None = None,
+            min_share: float = 0.15, min_lift: float = 1.3) -> dict[str, list[dict]]:
+    """每个维度里，增长商品中明显偏多的特征（按 提升倍数 × 占比 排序）。
+    条件：至少 min_count 个增长商品的标题有、占比 ≥ min_share、占比是全部头部商品的 min_lift 倍以上（加 0.5 平滑）。"""
     nf, nb = len(focus), len(baseline)
     if nf < 3 or nb < 20:
         return {}
     feats_f = [extract(r.get("title", "")) for r in focus]
     feats_b = [extract(r.get("title", "")) for r in baseline]
-    min_count = 2 if nf < 15 else 3
+    if min_count is None:
+        min_count = 2 if nf < 15 else 3
     out: dict[str, list[dict]] = {}
     for dim in LEXICON:
         cf = Counter(label for f in feats_f for label in f[dim])
@@ -161,7 +180,7 @@ def compare(baseline: list[dict], focus: list[dict], *, per_dim: int = 5) -> dic
         for label, count in cf.items():
             share, base_share = count / nf, cb.get(label, 0) / nb
             lift = ((count + 0.5) / (nf + 1)) / ((cb.get(label, 0) + 0.5) / (nb + 1))
-            if count >= min_count and share >= 0.15 and lift >= 1.3:
+            if count >= min_count and share >= min_share - 1e-9 and lift >= min_lift:
                 examples = [r.get("asin") for r, f in zip(focus, feats_f) if label in f[dim]][:6]
                 rows.append({"label": label, "count": count, "share": round(share, 3),
                              "baseline_share": round(base_share, 3), "lift": round(lift, 2),

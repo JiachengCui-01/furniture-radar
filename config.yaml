@@ -152,6 +152,15 @@ thresholds:
     review_burst_share: 0.3          # 近 60 天评论 ≥30% 集中在 3 天
     unverified_share: 0.5            # 非验证购买评论占比
 
+  # 外观与工艺依据：增长商品“更多”的特征怎么算（报告里的说明直接取这些数字）
+  appearance:
+    min_count: 2                     # 至少几个增长商品有，这条依据才算数
+    title_min_share: 0.1             # 标题统计：增长商品里占比 ≥10%
+    title_min_lift: 1.3              #   且是全部头部商品的 1.3 倍以上
+    image_min_gap: 0.1               # 主图识别：比持续热销对照组多 10 个百分点以上（对照组 20 个，即至少多 2 个）
+    common_share: 0.3                # “常见”：增长商品里 ≥30% 有、但不比对照组多
+    per_dim: 6                       # 每个维度最多列几个“更多”的特征
+
 # 大促窗口：落在窗口内的暴涨会标注“大促”，脉冲不计入假爆火分
 deal_windows:
   - {name: 黑五网一, start: "2026-11-27", end: "2026-12-01"}
@@ -187,4 +196,4 @@ llm:
   vision: auto                       # auto = 有 key 才启用；false = 关闭
   vision_model: deepseek-v4-flash-vision-exp
   vision_focus: 20                   # 识别增长商品里势头最强的 N 个
-  vision_reference: 10               # 持续热销对照组：月销量最高的 N 个
+  vision_reference: 20               # 持续热销对照组：月销量最高的 N 个（主图识别和主材质都和它比）

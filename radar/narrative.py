@@ -21,8 +21,9 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    ### 风险提醒（1~3 条）
 4. 名词严格按 JSON 的叫法：“增长商品”= 突然爆火 + 潜力 + 上升中；“全部头部商品”是标题统计的对比对象；
    “持续热销对照组”是主图识别和主材质的对比对象。引用数字时写清楚是哪种依据、和谁比。
-5. “外观与工艺趋势”：第一条说主材质构成（只用“主材质”的数据）；后面按风格、造型、工艺、颜色写增长商品明显更多的特征，
-   引用“外观特征”里的占比；可以引用“外观要点”的具体描述；功能卖点最多一条。不要另外讨论材质。
+5. “外观与工艺趋势”：第一条说主材质构成（只用“主材质”的数据）；后面按风格、造型、工艺、颜色写“增长商品更多”的特征，
+   引用对应的占比；“常见特征”只能说“增长商品多数是…（对照组也一样多）”，不能说成趋势；可以引用“外观要点”的具体描述；
+   功能卖点最多一条。不要另外讨论材质。
 6. “开发建议”具体到设计方向（风格、造型、工艺、配色），可以点名 1~2 个参考商品（品牌 + 简短品名）。
 7. “风险提醒”：异常信号只能说“疑似、需人工核实”，不要断言刷单；带季节性、大促、降价驱动标签的增长提醒不要当成长期需求。
 8. 不要输出链接和长标题。每条不超过 60 字，一条只说一个特征或一个建议；总长度不超过 450 字，宁可少写几条。"""
@@ -85,10 +86,11 @@ def design_facts(tr: dict) -> dict:
             + (f"，持续热销对照组 {m['reference']}/{mats['n_reference']}（{m['reference_share']:.0%}）"
                if m.get("reference_share") is not None else "")
             for m in mats.get("rows", []) if m["count"] or m["reference"]],
-        "外观特征": {dim: [f"{f['label']}（{_evidence(f, tr)}）" for f in rows]
-                 for dim, rows in (tr.get("appearance") or {}).items()},
-        "功能卖点": [f"{r['label']}：增长商品 {r['share']:.0%}，全部头部商品 {r['baseline_share']:.0%}"
-                 for r in (tr.get("design") or {}).get("功能卖点", [])],
+        "外观特征（增长商品更多）": {dim: [f"{f['label']}（{_evidence(f, tr)}）" for f in rows.get("more") or []]
+                             for dim, rows in (tr.get("appearance") or {}).items() if rows.get("more")},
+        "常见特征（增长商品多数有，但不比对照组多）": {
+            dim: [f"{f['label']}（{_evidence(f, tr)}）" for f in rows.get("common") or []]
+            for dim, rows in (tr.get("appearance") or {}).items() if rows.get("common")},
         "其他结构特征": [f"{f['dimension']}={f['value']}：增长商品 {f['share']:.0%}，全部头部商品 {f['baseline_share']:.0%}"
                    for f in tr.get("facts", [])[:3]],
         "备注": tr.get("note"),
@@ -98,7 +100,8 @@ def design_facts(tr: dict) -> dict:
 
 def top_design_labels(tr: dict, k: int = 4) -> list[str]:
     """增长商品最突出的几个外观特征名（钉钉卡片用），取每个维度排第一的。"""
-    rows = [rs[0]["label"] for rs in (tr.get("appearance") or {}).values() if rs]
+    rows = [rs["more"][0]["label"] for dim, rs in (tr.get("appearance") or {}).items()
+            if rs.get("more") and dim != "功能卖点"]
     return rows[:k]
 
 
@@ -148,11 +151,8 @@ def template_summary(facts: dict) -> str:
             if not m.startswith(("未注明", "木质（未注明）", "其他")) and "：增长商品 0/" not in m]
     if mats:
         lines.append(f"- 主材质：{'；'.join(mats[:3])}。")
-    for dim, rows in trait.get("外观特征", {}).items():
-        if rows:
-            lines.append(f"- {dim}：{rows[0]}。")
-    if trait.get("功能卖点"):
-        lines.append(f"- 功能卖点：{trait['功能卖点'][0]}。")
+    for dim, rows in trait.get("外观特征（增长商品更多）", {}).items():
+        lines.append(f"- {dim}：{'；'.join(rows[:2])}。")
     if len(lines) == 1:
         lines.append("- 增长商品没有明显偏多的外观/工艺特征。")
     lines.append("### 开发建议")

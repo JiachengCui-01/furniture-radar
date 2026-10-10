@@ -279,16 +279,17 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
                  prev_run: dict | None, coverage: dict, today) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。"""
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
-    trait = analyze.compute_traits(items, disc, state, today)
+    trait = analyze.compute_traits(items, disc, state, today, cfg)
 
     # 主图外观识别 + 主材质：增长商品，另取持续热销对照组
     focus, reference = analysis_groups(items, cfg)
     tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
     if tagged:
         log.info(f"主图识别 {tagged} 张")
-    trait["vision"] = vision.summarize(focus, reference, state)
+    trait["vision"] = vision.summarize(focus, reference, state,
+                                       min_gap=float(cfg["thresholds"]["appearance"]["image_min_gap"]))
     trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
-    trait["appearance"] = merge_appearance(trait.get("design") or {}, trait["vision"])
+    trait["appearance"] = merge_appearance(trait, trait["vision"], cfg)
     for item in items:
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
