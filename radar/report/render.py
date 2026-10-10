@@ -163,13 +163,27 @@ html.noscroll,html.noscroll body{overflow:hidden}
 @media (max-width:560px){.pop{padding:0;align-items:flex-end}.pop-panel{max-height:92vh;border-radius:16px 16px 0 0}}
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:8px 0 4px}
 .dbox{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-.dbox h4{margin:0 0 4px;font-size:14px}
-.drow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;font-size:13px;margin:7px 0}
-.drow .m{grid-column:1/-1}
-.drow em{font-style:normal;color:var(--muted);font-size:12px}
-.common{font-size:12.5px;margin:10px 0 2px;padding-top:8px;border-top:1px dashed var(--line)}
-.common em{font-style:normal;color:var(--muted);display:block}
-.drow span:nth-child(2){font-variant-numeric:tabular-nums;color:var(--potential);font-weight:600}
+.dbox h4{margin:0 0 8px;font-size:15px}
+.grp-h{font-size:12px;color:var(--muted);margin:10px 0 6px}
+.grp-h:first-of-type{margin-top:0}
+.feat{background:var(--bg);border-radius:8px;padding:7px 10px;margin:0 0 6px}
+.feat b{display:block;font-size:14px;margin-bottom:3px}
+.ev{display:grid;grid-template-columns:auto 4.6em minmax(40px,1fr) 4.6em;align-items:center;gap:6px;font-size:12px;
+line-height:1.9;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ev.nopill{grid-template-columns:4.6em minmax(40px,1fr) 4.6em}
+.ev .src{font-size:11px;border-radius:4px;padding:0 5px;line-height:1.6}
+.src.img{background:rgba(43,138,62,.14);color:var(--potential)}
+.src.ttl{background:rgba(28,109,208,.14);color:var(--hot)}
+.ev .g{color:var(--potential);font-weight:600}
+.ev .r{color:var(--muted);text-align:right}
+.ev .meter{min-width:40px;background:var(--line);height:7px}
+.ev .meter u{background:var(--text);width:2px}
+.chips2{display:flex;flex-wrap:wrap;gap:6px}
+.chips2 span{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;white-space:nowrap}
+.chips2 span em{font-style:normal;color:var(--muted);margin-left:4px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:0 0 6px}
+.legend .src{font-size:11px;border-radius:4px;padding:0 5px;margin-right:4px}
+details.rules{margin:0 0 6px;font-size:12.5px}details.rules ul{margin:4px 0;padding-left:18px;color:var(--muted)}
 """
 
 
@@ -304,51 +318,54 @@ def growth_text(item: dict) -> str:
     return ""
 
 
+def _ev(src: str, growth: str, share: float, other: str, base: float | None) -> str:
+    """一条依据：[来源] 增长商品的数字 | 进度条（绿 = 增长商品占比，竖线 = 对比对象占比）| 对比对象的数字。"""
+    pill = {"主图": '<span class="src img">主图</span>', "标题": '<span class="src ttl">标题</span>'}.get(src, "")
+    return (f'<div class="ev{"" if pill else " nopill"}">{pill}<span class="g">增长 {esc(growth)}</span>'
+            f'{_meter(share, base)}<span class="r">{esc(other)}</span></div>')
+
+
 def _material_box(m: dict) -> str:
     rows = [r for r in m.get("rows") or [] if r["count"] or r["reference"]]
     if not rows:
         return ""
     nf, nr = m["n_focus"], m["n_reference"]
-    lines = []
-    for r in rows:
-        ref = f" · 持续热销对照组 {r['reference']}/{nr}" if nr else ""
-        lines.append(f'<div class="drow"><span>{esc(r["label"])}</span><span>{r["share"]:.0%}</span>'
-                     f'<em>增长商品 {r["count"]}/{nf}{ref}</em>{_meter(r["share"], r["reference_share"])}</div>')
-    return f'<div class="dbox"><h4>主材质</h4>{"".join(lines)}</div>'
+    feats = "".join(
+        f'<div class="feat"><b>{esc(r["label"])}</b>'
+        + _ev("", f'{r["count"]}/{nf}', r["share"], f'对照 {r["reference"]}/{nr}' if nr else "", r["reference_share"])
+        + "</div>" for r in rows)
+    return f'<div class="dbox"><h4>主材质</h4>{feats}</div>'
 
 
-def _evidence_lines(f: dict, vision: dict) -> list[str]:
+def _evidence(f: dict, vision: dict) -> str:
     t, i = f.get("title"), f.get("image")
-    ev = []
-    if t:
-        ev.append(f"标题：增长商品 {t['share']:.0%} · 全部头部商品 {t['baseline_share']:.0%}")
+    out = []
     if i:
-        ref = f" · 持续热销对照组 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
-        ev.append(f"主图：增长商品 {i['focus']}/{vision['n_focus']}{ref}")
-    return ev
+        other = f"对照 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
+        out.append(_ev("主图", f"{i['focus']}/{vision['n_focus']}", i["focus_share"], other, i["reference_share"]))
+    if t:
+        out.append(_ev("标题", f"{t['share']:.0%}", t["share"], f"头部 {t['baseline_share']:.0%}", t["baseline_share"]))
+    return "".join(out)
 
 
 def _feature_box(dim: str, rows: dict, vision: dict) -> str:
-    """一个维度：先列“更多”的特征（带依据和进度条），最后一行是“常见”的特征。"""
-    lines = []
-    for f in rows.get("more") or []:
-        t, i = f.get("title"), f.get("image")
-        src, share, base = ("主图", i["focus_share"], i["reference_share"]) if i else ("标题", t["share"], t["baseline_share"])
-        lines.append(f'<div class="drow"><span>{esc(f["label"])}</span><span>{src} {share:.0%}</span>'
-                     f'<em>{"<br>".join(esc(e) for e in _evidence_lines(f, vision))}</em>{_meter(share, base)}</div>')
-    if not lines:
-        lines.append('<p class="empty">没有比对照组明显更多的特征。</p>')
-    common = []
+    """一个维度：“比对照组更多”的特征各占一块（每种依据一行），下面是“常见但不比对照组多”的标签。"""
+    more = rows.get("more") or []
+    parts = ['<div class="grp-h">比对照组更多</div>']
+    parts += [f'<div class="feat"><b>{esc(f["label"])}</b>{_evidence(f, vision)}</div>' for f in more]
+    if not more:
+        parts.append('<p class="empty">没有比对照组明显更多的特征。</p>')
+    chips = []
     for f in rows.get("common") or []:
         t, i = f.get("title"), f.get("image")
         if i:
-            ref = f"，对照组 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
-            common.append(f"{f['label']} {i['focus']}/{vision['n_focus']}（{ref.lstrip('，')}）" if ref else
-                          f"{f['label']} {i['focus']}/{vision['n_focus']}")
+            ref = f" · 对照 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
+            chips.append(f'<span>{esc(f["label"])}<em>{i["focus"]}/{vision["n_focus"]}{ref}</em></span>')
         else:
-            common.append(f"{f['label']} {t['share']:.0%}（全部头部商品 {t['baseline_share']:.0%}）")
-    tail = (f'<div class="common"><em>常见但不比对照组多</em>{esc("；".join(common))}</div>' if common else "")
-    return f'<div class="dbox"><h4>{esc(dim)}</h4>{"".join(lines)}{tail}</div>'
+            chips.append(f'<span>{esc(f["label"])}<em>{t["share"]:.0%} · 头部 {t["baseline_share"]:.0%}</em></span>')
+    if chips:
+        parts.append(f'<div class="grp-h">常见但不比对照组多</div><div class="chips2">{"".join(chips)}</div>')
+    return f'<div class="dbox"><h4>{esc(dim)}</h4>{"".join(parts)}</div>'
 
 
 def _structure(tr: dict) -> str:
@@ -378,24 +395,27 @@ def _traits(tr: dict, counts: dict, cfg: dict) -> str:
         return f'<p class="empty">{esc(tr["note"])}</p>'
     vision = tr.get("vision") or {}
     mats = tr.get("materials") or {}
-    sample = (f'<a href="#" data-pop="growth">增长商品 {tr["n_focus"]} 个</a>（突然爆火 {counts["surge"]} + 潜力 {counts["potential"]}'
-              f' + 上升中 {counts.get("rising", 0)}）。标题统计对比全部头部商品 {tr["n_baseline"]} 个；')
-    if vision.get("n_focus"):
-        sample += f'主图识别看增长商品里势头最强的 {vision["n_focus"]} 个；'
     a = cfg["thresholds"]["appearance"]
-    sample += (f'主材质看全部增长商品（每个商品一类，依次取亚马逊 Material 属性、标题、主图识别）；'
-               f'后两者都对比持续热销对照组（月销量最高的 {mats.get("n_reference") or 0} 个）。'
-               f'列出的特征至少 {a["min_count"]} 个增长商品有，且标题里占比 ≥{a["title_min_share"]:.0%}、是全部头部商品的 '
-               f'{a["title_min_lift"]:g} 倍以上，或主图里比对照组多 {a["image_min_gap"] * 100:.0f} 个百分点以上；两种依据方向相反的不列。'
-               f'“常见”= 增长商品里 ≥{a["common_share"]:.0%} 有、但不比对照组多。'
-               '右侧数字是增长商品中的占比（两种依据都有时取主图），进度条竖线是对比对象中的占比。')
+    sample = (f'样本：<a href="#" data-pop="growth">增长商品 {tr["n_focus"]} 个</a>（突然爆火 {counts["surge"]} + '
+              f'潜力 {counts["potential"]} + 上升中 {counts.get("rising", 0)}）')
+    legend = [f'<span><span class="src img">主图</span>AI 看主图：增长商品里势头最强的 {vision.get("n_focus") or 0} 个，'
+              f'对比“对照”= 持续热销对照组（月销量最高的 {mats.get("n_reference") or 0} 个）</span>',
+              f'<span><span class="src ttl">标题</span>标题统计：增长商品，对比“头部”= 全部头部商品 {tr["n_baseline"]} 个</span>',
+              '<span>进度条：绿色 = 增长商品中的占比，竖线 = 对比对象中的占比</span>']
+    rules = [f'主材质：每个商品一类，依次取亚马逊 Material 属性、标题、主图识别；看全部增长商品，对比对照组。',
+             f'比对照组更多：至少 {a["min_count"]} 个增长商品有，且标题里占比 ≥{a["title_min_share"]:.0%}、是头部的 '
+             f'{a["title_min_lift"]:g} 倍以上，或主图里比对照多 {a["image_min_gap"] * 100:.0f} 个百分点以上；'
+             '两种依据方向相反的不列。',
+             f'常见但不比对照组多：增长商品里 ≥{a["common_share"]:.0%} 有（有主图识别看主图，没有看标题），只说明是基本盘，不代表趋势。']
+    head = (f'<p class="hint">{sample}</p><div class="legend">{"".join(legend)}</div>'
+            f'<details class="rules"><summary>入选规则</summary><ul>{"".join(f"<li>{esc(r)}</li>" for r in rules)}</ul></details>')
     boxes = [_material_box(mats)]
     for dim, rows in (tr.get("appearance") or {}).items():
         boxes.append(_feature_box(dim, rows, vision))
     body = "".join(b for b in boxes if b)
     if not tr.get("appearance"):
         body += '<p class="empty">增长商品没有明显偏多或常见的外观/工艺特征。</p>'
-    return f'<p class="hint">{sample}</p><div class="dgrid">{body}</div>{_structure(tr)}'
+    return f'{head}<div class="dgrid">{body}</div>{_structure(tr)}'
 
 
 def _changes(diff: dict, by_asin: dict) -> str:
