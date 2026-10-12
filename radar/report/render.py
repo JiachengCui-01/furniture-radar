@@ -421,28 +421,26 @@ def _traits(tr: dict, counts: dict, cfg: dict) -> str:
 def _changes(diff: dict, by_asin: dict) -> str:
     if diff.get("first"):
         return '<p class="empty">本期没有可对比的上一期（首期或监控范围刚调整），从下一期开始显示变化。</p>'
-    names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
-             "low": "评分偏低"}
+    names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号"}
+    moved_from = diff.get("moved_from") or {}
 
     def name(asin: str) -> str:
         item = by_asin.get(asin)
         title = (item or {}).get("title", asin)
         name = display_name((item or {}).get("brand", ""), title)
+        was = f'<span class="sub">（上期{names[moved_from[asin]]}）</span>' if asin in moved_from else ""
         return f"<a href=\"https://www.amazon.com/dp/{esc(asin)}\" target=_blank rel=\"noopener noreferrer\">" \
-               f"{esc(name[:40])}</a>"
+               f"{esc(name[:40])}</a>{was}"
 
-    parts = []
-    for label in ("surge", "potential", "fake", "hot"):
-        asins = diff["new"].get(label) or []
-        if asins:
-            parts.append(f"<li>新进入「{names[label]}」{len(asins)} 个：" + "、".join(name(a) for a in asins[:5])
-                         + ("…" if len(asins) > 5 else "") + "</li>")
-    moves = [t for t in diff.get("transitions", []) if t["from"] != "watch" and t["to"] != "watch"]
-    for t in moves[:8]:
-        parts.append(f"<li>{name(t['asin'])}：{names.get(t['from'], t['from'])} → <b>{names.get(t['to'], t['to'])}</b></li>")
+    def line(head: str, asins: list[str]) -> str:
+        return f"<li>{head}{len(asins)} 个：" + "、".join(name(a) for a in asins[:5]) \
+            + ("…" if len(asins) > 5 else "") + "</li>"
+
+    parts = [line("依旧爆火 ", diff["still"])] if diff.get("still") else []
+    parts += [line(f"新进入「{names[label]}」", diff["new"][label])
+              for label in ("surge", "potential", "fake", "hot") if diff["new"].get(label)]
     if diff.get("cooled"):
-        parts.append(f"<li>不再爆火 {len(diff['cooled'])} 个：" + "、".join(name(a) for a in diff["cooled"][:5])
-                     + ("…" if len(diff["cooled"]) > 5 else "") + "</li>")
+        parts.append(line("不再爆火 ", diff["cooled"]))
     if not parts:
         return '<p class="empty">与上期相比没有明显变化。</p>'
     return f'<p class="hint">对比上期 {esc(diff.get("prev_id", ""))}</p><ul>{"".join(parts)}</ul>'
@@ -523,7 +521,8 @@ def _method(cfg: dict) -> str:
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
 累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体多的商品评论为父体共享，不算评论/销量比；
 评论暴增且父体/变体变化的标“变体合并”、短时脉冲落在大促里的标“大促脉冲”、抽查评论里 Vine 评论 ≥30% 的标“Vine 评论多”，这三项不计分。</li>
-<li><b>与上期对比</b>：“不再爆火”= 上期爆火、本期留在追踪里但不在爆火 / 潜力 / 异常信号板块。</li>
+<li><b>与上期对比</b>：每个商品只出现一次。“依旧爆火”= 上期、本期都在突然爆火板块；“新进入「某板块」”= 本期在该板块、上期不在，
+上期在别的板块的在括号里注明；“不再爆火”= 上期爆火、本期留在追踪里但不在任何板块。</li>
 <li>阈值都可以在仓库的 config.yaml 中调整。</li></ul></details>"""
 
 

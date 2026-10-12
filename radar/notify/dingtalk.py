@@ -133,7 +133,8 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):
-        lines.append(f"较上期：新增爆火 {len(diff['new']['surge'])}、新增潜力 {len(diff['new']['potential'])}、"
+        lines.append(f"较上期：依旧爆火 {len(diff['still'])}、新增爆火 {len(diff['new']['surge'])}、"
+                     f"新增潜力 {len(diff['new']['potential'])}、"
                      f"新增异常 {len(diff['new']['fake'])}、不再爆火 {len(diff.get('cooled', []))}")
     return "\n".join(lines)
 

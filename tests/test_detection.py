@@ -268,3 +268,17 @@ def test_many_variations_skip_new_listing_ratio(cfg):
            "months": _months([2482, 352])}
     result = fakehot.score(rec, d, END, None, 2.0, f, [])
     assert "new_listing_reviews" not in {s["code"] for s in result["signals"]}
+
+
+def test_period_diff_lists_each_product_once():
+    from radar.detect import diff
+    prev = {"id": "p", "labels": {"A": ["surge", 0], "B": ["surge", 0], "C": ["surge", 0], "D": ["potential", 0],
+                                  "E": ["watch", 0], "F": ["surge", 0]}}
+    now = {"A": "surge", "B": "hot", "C": "watch", "D": "surge", "E": "potential", "G": "surge"}
+    d = diff.compare(prev, now)
+    assert d["still"] == ["A"]                                        # 依旧爆火
+    assert d["new"]["surge"] == ["D", "G"] and d["new"]["hot"] == ["B"] and d["new"]["potential"] == ["E"]
+    assert d["moved_from"] == {"B": "surge", "D": "potential"}        # 上期在别的板块的注明来源
+    assert d["cooled"] == ["C"]                                       # 转去持续热销的 B 不算不再爆火；F 已不在追踪
+    listed = d["still"] + [a for v in d["new"].values() for a in v] + d["cooled"]
+    assert len(listed) == len(set(listed))
