@@ -4,11 +4,13 @@
   1. 优先读取链接 #k=<报告密钥>（钉钉消息里的链接自带）；
   2. 也可以手动粘贴“报告密钥”或“主密钥 REPORT_KEY”（主密钥会在浏览器里用 HKDF 派生出该报告的密钥）。
 解密成功后把密钥从地址栏去掉（存进 sessionStorage），再用解密出的 HTML 替换整页。
+外壳还记着最新一期的 ID（每期运行时改写往期外壳，不需要解密）：打开的是往期报告时，顶部加一条“回到最新报告”。
 """
 from __future__ import annotations
 
 import html
 import json
+import re
 
 DECRYPT_JS = r"""
 const enc = new TextEncoder();
@@ -41,11 +43,20 @@ BOOT_JS = r"""
     // DOMParser 解析出来的脚本不会执行，重新创建一遍报告里的脚本（小窗等交互）
     Array.prototype.forEach.call(document.querySelectorAll('script'),function(old){
       var s=document.createElement('script');s.text=old.text;old.parentNode.replaceChild(s,old);});}
+  function latestBar(){
+    if(!p.latest||p.latest===p.id)return;
+    const bar=document.createElement('div'), a=document.createElement('a');
+    bar.style.cssText='margin:0 0 10px;padding:8px 12px;border:1px solid var(--line,#e4e7ec);'+
+      'border-left:4px solid var(--accent,#1c6dd0);border-radius:10px;background:var(--card,#fff);'+
+      'color:var(--muted,#667085);font-size:13px';
+    a.href=encodeURIComponent(p.latest)+'.html';a.textContent='回到最新报告（'+p.latest+'）';a.style.fontWeight='600';
+    bar.append('这是往期报告 · ',a);
+    const wrap=document.querySelector('.wrap')||document.body;wrap.insertBefore(bar,wrap.firstChild);}
   async function attempt(k){
     const r=await openReport(k,p);
     try{sessionStorage.setItem('radar:'+p.id,r.key);}catch(e){}
     if(location.hash)history.replaceState(null,'',location.pathname+location.search);
-    show(r.html);}
+    show(r.html);latestBar();}
   if(!(window.crypto&&crypto.subtle)){msg.textContent='当前浏览器不支持解密，请用新版 Chrome / Safari / Edge 打开此链接。';return;}
   const fromHash=new URLSearchParams(location.hash.slice(1)).get('k');
   let saved=null;try{saved=sessionStorage.getItem('radar:'+p.id);}catch(e){}
@@ -66,8 +77,11 @@ background:#1c6dd0;color:#fff;font-size:14px}.sub{color:#667085;font-size:13px}
 @media (prefers-color-scheme:dark){body{background:#0f1218;color:#e6e8ec}input{background:#181c24;color:#e6e8ec;border-color:#2a303b}}"""
 
 
-def encrypted_page(title: str, envelope: dict, report_id: str) -> str:
-    payload = json.dumps({**envelope, "id": report_id}, separators=(",", ":"))
+PAYLOAD_RE = re.compile(r'<script id="payload" type="application/json">(.*?)</script>', re.S)
+
+
+def encrypted_page(title: str, envelope: dict, report_id: str, latest_id: str) -> str:
+    payload = json.dumps({**envelope, "id": report_id, "latest": latest_id}, separators=(",", ":"))
     return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer"><title>{html.escape(title)}</title><style>{SHELL_CSS}</style></head>
@@ -76,6 +90,18 @@ def encrypted_page(title: str, envelope: dict, report_id: str) -> str:
 <button type="submit">打开报告</button></form></div>
 <script id="payload" type="application/json">{payload}</script>
 <script>{DECRYPT_JS}{BOOT_JS}</script></body></html>"""
+
+
+def read_payload(page: str) -> dict:
+    """从外壳页面取出密文信封（含 id / latest），不需要密钥。"""
+    m = PAYLOAD_RE.search(page)
+    if not m:
+        raise ValueError("不是加密报告页面")
+    return json.loads(m.group(1))
+
+
+def envelope_of(payload: dict) -> dict:
+    return {k: v for k, v in payload.items() if k not in ("id", "latest")}
 
 
 def index_page(title: str, report_ids: list[str]) -> str:

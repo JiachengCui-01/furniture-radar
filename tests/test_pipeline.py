@@ -111,6 +111,19 @@ def test_report_is_encrypted_and_decryptable(world_run, master_key):
     assert second.url.startswith("https://demo.github.io/radar/reports/2026-10-08.html#k=")
 
 
+def test_old_reports_point_to_latest(world_run, master_key):
+    """出了新一期后，往期报告的外壳改记最新一期 ID（打开后显示“回到最新报告”），密文不变、照样能解开。"""
+    from radar.report import shell
+    _world, _secrets, site, first, second = world_run
+    old_page = (site / "reports" / f"{first.report_id}.html").read_text(encoding="utf-8")
+    old, new = (shell.read_payload((site / "reports" / f"{r}.html").read_text(encoding="utf-8"))
+                for r in (first.report_id, second.report_id))
+    assert old["id"] == first.report_id and old["latest"] == second.report_id
+    assert new["latest"] == second.report_id                       # 最新一期不显示这一条
+    assert "回到最新报告" in old_page
+    assert "突然爆火" in _decrypt_page(old_page, crypto.parse_master_key(master_key))
+
+
 def test_not_due_is_skipped(cfg, master_key, tmp_path):
     world = SyntheticWorld(START.date())
     secrets = Secrets(report_key=master_key)

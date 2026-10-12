@@ -211,6 +211,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         if old.exists():
             old.unlink()
     state["reports"] = state["reports"][-keep:]
+    point_to_latest(cfg, site, state["reports"])
     (site / "index.html").write_text(shell.index_page(cfg["report"]["title"], state["reports"]), encoding="utf-8")
     (site / ".nojekyll").write_text("", encoding="utf-8")
 
@@ -325,11 +326,27 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     page = report_render.render(ctx)
     envelope = crypto.encrypt(crypto.report_key(master, report_id), page.encode("utf-8"),
                               crypto.report_aad(report_id))
+    _write_shell(cfg, site, report_id, envelope, latest_id=report_id)
+    return ctx
+
+
+def _write_shell(cfg: dict, site: Path, report_id: str, envelope: dict, latest_id: str) -> None:
     reports_dir = site / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     (reports_dir / f"{report_id}.html").write_text(
-        shell.encrypted_page(f"{cfg['report']['title']} {report_id}", envelope, report_id), encoding="utf-8")
-    return ctx
+        shell.encrypted_page(f"{cfg['report']['title']} {report_id}", envelope, report_id, latest_id), encoding="utf-8")
+
+
+def point_to_latest(cfg: dict, site: Path, report_ids: list[str]) -> None:
+    """往期报告的外壳改记最新一期的 ID，打开后顶部显示“回到最新报告”。只换外壳，密文原样保留。"""
+    latest = report_ids[-1]
+    for old_id in report_ids[:-1]:
+        path = site / "reports" / f"{old_id}.html"
+        if not path.exists():
+            continue
+        payload = shell.read_payload(path.read_text(encoding="utf-8"))
+        if payload.get("latest") != latest:
+            _write_shell(cfg, site, old_id, shell.envelope_of(payload), latest)
 
 
 def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
@@ -368,6 +385,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                                                                             cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
                        prev_run=state["runs"][-2] if len(state["runs"]) >= 2 else None, coverage=coverage,
                        today=today)
+    point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)
     store.save(site, master, state)

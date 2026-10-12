@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import crypto, log, pipeline, store
 from .config import PROJECT_ROOT, load_config, load_secrets, report_base_url
+from .report import shell
 
 
 def _utf8_stdout() -> None:
@@ -95,8 +96,7 @@ def cmd_demo(args, cfg, secrets) -> int:
 
 
 def _decrypt_page(page: str, master: bytes) -> str:
-    start = page.index('<script id="payload" type="application/json">') + len('<script id="payload" type="application/json">')
-    payload = json.loads(page[start: page.index("</script>", start)])
+    payload = shell.read_payload(page)
     key = crypto.report_key(master, payload["id"])
     return crypto.decrypt(key, payload, crypto.report_aad(payload["id"])).decode("utf-8")
 
