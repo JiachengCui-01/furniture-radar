@@ -226,3 +226,31 @@ def test_scope_change_rediscovers_without_cross_scope_diff(cfg, master_key, tmp_
     assert "market_research" in world.calls[before:]
     plain = _decrypt_page((tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8"), master)
     assert "监控范围刚调整" in plain
+
+
+def test_send_last_refuses_a_link_that_cannot_open(world_run, cfg, monkeypatch):
+    """推不出报告网址时，按钮只有相对路径、在钉钉里点不开：不发送。"""
+    from radar import config as config_mod
+
+    _world, secrets, site, _first, _second = world_run
+    secrets.report_base_url = ""
+    secrets.dingtalk_webhooks = ["https://oapi.dingtalk.com/robot/send?access_token=t"]
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.setattr(config_mod, "github_repo_from_remote", lambda: "")
+    sent = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200, json={})))
+    assert pipeline.send_last(cfg, secrets, site, client=client) == [] and sent == []
+
+
+def test_local_runs_derive_pages_url_from_git_remote(cfg, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    from radar import config as config_mod
+
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    for remote in ("https://github.com/JiachengCui-01/furniture-radar.git", "git@github.com:JiachengCui-01/furniture-radar"):
+        monkeypatch.setattr(subprocess, "run", lambda *a, remote=remote, **k: SimpleNamespace(stdout=remote + "\n"))
+        assert config_mod.report_base_url(cfg, Secrets()) == "https://jiachengcui-01.github.io/furniture-radar/"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="https://gitee.com/a/b.git"))
+    assert config_mod.report_base_url(cfg, Secrets()) == ""

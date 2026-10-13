@@ -412,8 +412,9 @@ def send_last(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *, clien
     key_text = crypto.report_key_text(master, last["id"])
     log.mask(key_text)
     url = build_url(cfg, secrets, last["id"], key_text)
-    if not url.startswith("http"):
-        log.warn("无法确定报告网址：请设置 REPORT_BASE_URL 或在 GitHub Actions 中运行")
+    if not url.startswith("http"):  # 只有相对路径的按钮在钉钉里点不开，宁可不发
+        log.warn("无法确定报告网址，未推送钉钉：请设置 REPORT_BASE_URL 或 config.yaml 的 report.base_url")
+        return []
     payload = dingtalk.action_card(last["notify"]["title"], last["notify"]["text"], url,
                                    open_in_browser=bool(cfg["notify"]["open_in_browser"]))
     results = dingtalk.send(secrets.dingtalk_webhooks, secrets.dingtalk_secrets, payload, client=client)

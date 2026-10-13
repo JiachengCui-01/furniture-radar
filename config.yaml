@@ -177,7 +177,7 @@ deal_windows:
 report:
   title: 家具爆品雷达
   subtitle: 亚马逊美国站 · 板材 / 实木 / 铁木家具
-  base_url: ""                       # 留空自动推导为 https://<用户名>.github.io/<仓库名>/
+  base_url: ""                       # 留空自动推导为 https://<用户名>.github.io/<仓库名>/（本地运行取 git 的 origin 地址）
   keep_reports: 60                   # 网站上保留最近 N 期报告
   top_n: 15                          # 每个板块最多展示多少个商品
 

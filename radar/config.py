@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -198,11 +199,22 @@ def dingtalk_robots(env) -> tuple[list[str], list[str]]:
     return webhooks, secrets
 
 
+def github_repo_from_remote() -> str:
+    """本地运行时没有 GITHUB_REPOSITORY：从 git 的 origin 地址读出 "用户名/仓库名"，不是 GitHub 的返回空。"""
+    try:
+        out = subprocess.run(["git", "-C", str(PROJECT_ROOT), "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=10).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", out.strip())
+    return f"{match.group(1)}/{match.group(2)}" if match else ""
+
+
 def report_base_url(cfg: dict, secrets: Secrets) -> str:
-    """报告网址前缀：环境变量 > config.yaml > 由 GITHUB_REPOSITORY 推导。"""
+    """报告网址前缀：环境变量 > config.yaml > 由 GITHUB_REPOSITORY（本地运行时取 git 的 origin 地址）推导。"""
     base = secrets.report_base_url or cfg["report"].get("base_url") or ""
     if not base:
-        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        repo = os.environ.get("GITHUB_REPOSITORY", "") or github_repo_from_remote()
         if "/" in repo:
             owner, name = repo.split("/", 1)
             if name.lower() == f"{owner.lower()}.github.io":
