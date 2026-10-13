@@ -10,6 +10,7 @@ from typing import Callable
 from . import analyze, clock, crypto, discovery, log, materials, narrative, store, tracking, verify, vision
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
+from .detect import directions
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -295,6 +296,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = (rec.get("vision") or {}).get("summary") or ""
+    trait["directions"] = directions.compute(analyze.focus_items(items), state, trait["appearance"], cfg)
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of")]

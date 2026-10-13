@@ -10,6 +10,7 @@ import html
 import re
 
 from ..analyze import display_name
+from ..detect import directions
 from ..tracking import REASON_CN
 from .sparkline import bars, sparkline
 
@@ -184,6 +185,14 @@ line-height:1.9;font-variant-numeric:tabular-nums;white-space:nowrap}
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:0 0 6px}
 .legend .src{font-size:11px;border-radius:4px;padding:0 5px;margin-right:4px}
 details.rules{margin:0 0 6px;font-size:12.5px}details.rules ul{margin:4px 0;padding-left:18px;color:var(--muted)}
+#traits h3{font-size:15px;margin:16px 0 4px}
+.dirs{grid-template-columns:repeat(auto-fill,minmax(min(290px,100%),1fr))}
+.dir h4 .sub{font-weight:400;font-size:12px;margin-left:6px}
+.spec{display:grid;grid-template-columns:3.6em minmax(0,1fr);gap:6px 8px;margin:0 0 4px;font-size:13px;align-items:baseline}
+.spec dt{color:var(--muted);font-size:12px}.spec dd{margin:0;min-width:0}
+.spec .none{color:var(--muted);font-size:12px}
+.chips2 .up{color:var(--potential);font-weight:700;margin-left:2px}
+.refs{margin:0;padding-left:18px;font-size:12.5px}.refs li{margin:3px 0}.refs em{font-style:normal;color:var(--muted)}
 """
 
 
@@ -390,9 +399,60 @@ def _structure(tr: dict) -> str:
             + "</details>")
 
 
+DIRECTION_ROWS = (("主材质", None), ("风格", "风格"), ("造型", "造型"), ("工艺", "工艺"), ("颜色", "颜色"),
+                  ("功能", "功能卖点"))
+
+
+def _clip(text: str, limit: int) -> str:
+    """截到 limit 个字符以内，不断在单词中间。"""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;-")
+    return cut + "…"
+
+
+def _direction_box(d: dict) -> str:
+    """一个开发方向：每个维度入选的特征（几个商品有 / 该子类目增长商品数）、价格、参考商品。"""
+    n = d["n"]
+
+    def chips(rows: list[dict]) -> str:
+        if not rows:
+            return '<span class="none">不统一</span>'
+        return '<div class="chips2">' + "".join(
+            f'<span>{esc(r["label"])}'
+            + ('<b class="up" title="在全部增长商品里也比对照组更多">↑</b>' if r.get("trend") else "")
+            + f'<em>{r["count"]}/{n}</em></span>' for r in rows) + "</div>"
+
+    spec = "".join(f"<dt>{label}</dt><dd>{chips(d['materials'] if dim is None else d['features'][dim])}</dd>"
+                   for label, dim in DIRECTION_ROWS)
+    price = d.get("price")
+    if price:
+        median = f"，中位 ${price['median']:,.0f}" if price.get("median") is not None else ""
+        spec += f"<dt>价格</dt><dd>{esc(directions.price_text(price))}{median}</dd>"
+    refs = "".join(
+        f'<li><a href="https://www.amazon.com/dp/{esc(r["asin"])}" target="_blank" rel="noopener noreferrer">'
+        f'{esc(_clip(r["name"], 48))}</a> <em>{fmt_price(r.get("price"))}</em>'
+        + (f"：{esc(r['look'])}" if r.get("look") else "") + "</li>" for r in d["refs"])
+    surge = f"，其中突然爆火 {d['n_surge']} 个" if d["n_surge"] else ""
+    return (f'<div class="dbox dir"><h4>{esc(d["node"])}<span class="sub">增长商品 {n} 个{surge}</span></h4>'
+            f'<dl class="spec">{spec}</dl><div class="grp-h">参考商品</div><ul class="refs">{refs}</ul></div>')
+
+
+def _directions(tr: dict, cfg: dict) -> str:
+    c = cfg["thresholds"]["directions"]
+    rule = (f"增长商品 ≥{c['min_items']} 个的子类目，按增长商品个数（同数时看突然爆火个数、势头）取前 {c['max']} 个。"
+            f"每一项列出该子类目里至少 {c['feature_min_share']:.0%}（且不少于 2 个）增长商品具备的主材质和特征"
+            f"（标题或主图识别任一有就算，每项最多 {c['per_dim']} 个），数字 = 具备的商品数 / 该子类目增长商品数，"
+            "“不统一”= 没有达到这个比例的；↑ = 这个特征在全部增长商品里也比对照组更多；"
+            "价格 = 最低价 ~ 最高价（3 个以上给中位数）；参考商品 = 该子类目势头最强的两个。")
+    boxes = "".join(_direction_box(d) for d in tr.get("directions") or [])
+    body = f'<div class="dgrid dirs">{boxes}</div>' if boxes else '<p class="empty">本期没有增长商品数达到门槛的子类目。</p>'
+    return f'<h3>开发方向依据</h3><p class="hint">{esc(rule)}</p>{body}'
+
+
 def _traits(tr: dict, counts: dict, cfg: dict) -> str:
     if tr.get("note"):
-        return f'<p class="empty">{esc(tr["note"])}</p>'
+        return f'<p class="empty">{esc(tr["note"])}</p>' + (_directions(tr, cfg) if tr.get("directions") else "")
     vision = tr.get("vision") or {}
     mats = tr.get("materials") or {}
     a = cfg["thresholds"]["appearance"]
@@ -415,7 +475,7 @@ def _traits(tr: dict, counts: dict, cfg: dict) -> str:
     body = "".join(b for b in boxes if b)
     if not tr.get("appearance"):
         body += '<p class="empty">增长商品没有明显偏多或常见的外观/工艺特征。</p>'
-    return f'{head}<div class="dgrid">{body}</div>{_structure(tr)}'
+    return f'{head}<div class="dgrid">{body}</div>{_directions(tr, cfg)}{_structure(tr)}'
 
 
 def _changes(diff: dict, by_asin: dict) -> str:
@@ -517,6 +577,8 @@ def _method(cfg: dict) -> str:
 标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色有两种依据——
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组），
 同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的不算趋势、不列出；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
+<li><b>开发方向</b>：增长商品最多的几个子类目，各给一个产品画像（主材质、风格、造型、工艺、颜色、功能、价格），
+只用该子类目自己的增长商品统计；每项的入选比例和商品数写在“开发方向依据”里。</li>
 <li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
 累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体多的商品评论为父体共享，不算评论/销量比；

@@ -98,6 +98,7 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     assert "外观与工艺依据" in body and "增长商品" in body and "本期要点" in body
     assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
     assert "Material 属性" in plain
+    assert "<h3>开发方向</h3>" in body and "<h3>开发方向依据</h3>" in body and 'class="dbox dir"' in body
     for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
         assert gone not in plain, gone  # 同一个概念只有一种叫法
 
@@ -163,3 +164,36 @@ def test_appearance_lists_more_and_common_features(cfg):
     assert [f["label"] for f in out["风格"]["common"]] == ["现代"]
     assert out["颜色"]["more"] == [] and [f["label"] for f in out["颜色"]["common"]] == ["黑色"]
 
+
+
+def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
+    """开发方向：只看该子类目自己的增长商品，特征要一半以上（且 ≥2 个）具备；标题和主图任一有就算。"""
+    from radar.detect import directions
+
+    def item(asin, node, title, label="surge", material="板材", price=100.0):
+        return {"asin": asin, "node_cn": node, "node_name": "", "title": title, "brand": "B", "label": label,
+                "material": material, "price": price, "look": ""}
+
+    focus = [
+        item("V1", "梳妆台", "Vanity Desk with Mirror and LED Lights, Glass Doors, White", price=160),
+        item("V2", "梳妆台", "Makeup Vanity with LED Lights and Charging Outlet, White", price=228),
+        item("V3", "梳妆台", "Vanity Table with Drawers, Black", label="potential", material="实木", price=170),
+        item("S1", "书架", "Narrow Bookshelf, Black"),
+        item("S2", "书架", "Narrow Bookcase for Small Space, Walnut", label="potential"),
+        item("T1", "茶几", "Round Coffee Table"),
+    ]
+    state = {"asins": {"V3": {"vision": {"tags": {"工艺": ["玻璃门"]}}}}}
+    appearance = {"工艺": {"more": [{"label": "玻璃门"}], "common": []}}
+    out = directions.compute(focus, state, appearance, cfg)
+    assert [d["node"] for d in out] == ["梳妆台", "书架"]  # 茶几只有 1 个增长商品
+    v = out[0]
+    assert v["n"] == 3 and v["need"] == 2 and v["n_surge"] == 2
+    assert v["materials"] == [{"label": "板材", "count": 2}]
+    assert v["features"]["工艺"] == [{"label": "玻璃门", "count": 2, "trend": True}]  # 标题 1 个 + 主图 1 个
+    assert [f["label"] for f in v["features"]["功能卖点"]] == ["LED 灯"]  # 充电/插座、抽屉各只有 1 个
+    assert v["features"]["颜色"] == [{"label": "白色", "count": 2, "trend": False}]
+    assert v["price"] == {"min": 160, "max": 228, "median": 170}
+    assert [r["asin"] for r in v["refs"]] == ["V1", "V2"]
+    assert directions.headline(v) == "梳妆台：板材，玻璃门，白色，LED 灯，$160–$228"
+    assert [f["label"] for f in out[1]["features"]["造型"]] == ["窄小省空间"] and out[1]["materials"] == [
+        {"label": "板材", "count": 2}]

@@ -10,6 +10,7 @@ import httpx
 
 from . import log
 from .analyze import display_name
+from .detect import directions
 
 SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
 请用简体中文写一份给选品/开发团队看的“本期要点”，严格遵守：
@@ -17,16 +18,21 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
 2. 不要复述各板块的商品数量（页面顶部已经有），也不要逐个罗列商品（点开板块就能看到）。
 3. 结构固定为三个小节，用 "- " 开头：
    ### 外观与工艺趋势（3~5 条）
-   ### 开发建议（2~3 条）
+   ### 开发方向（JSON“开发方向”里有几个就写几条，一个方向一条）
    ### 风险提醒（1~3 条）
 4. 名词严格按 JSON 的叫法：“增长商品”= 突然爆火 + 潜力 + 上升中；“全部头部商品”是标题统计的对比对象；
    “持续热销对照组”是主图识别和主材质的对比对象。引用数字时写清楚是哪种依据、和谁比。
 5. “外观与工艺趋势”：第一条说主材质构成（只用“主材质”的数据）；后面按风格、造型、工艺、颜色写“增长商品更多”的特征，
    引用对应的占比；“常见特征”只能说“增长商品多数是…（对照组也一样多）”，不能说成趋势；可以引用“外观要点”的具体描述；
    功能卖点最多一条。不要另外讨论材质。
-6. “开发建议”具体到设计方向（风格、造型、工艺、配色），可以点名 1~2 个参考商品（品牌 + 简短品名）。
+6. “开发方向”：每条写成“开发<品类>：<主材质>，<风格>，<造型>，<工艺>，<颜色>，<功能>，定价 <价格区间>”，
+   品类就是该方向的子类目（可以说得更口语，如“梳妆台”），特征只能用该方向列出的，不得添加、替换或挪用别的方向的；
+   某个维度没有列出的就略过；“主材质”是“未注明”“木质（未注明）”“其他”的不写；
+   末尾可以加“参考 <品牌>的<一个外观细节>”，外观细节只能取该方向参考商品的“外观要点”，
+   并且不能和这条已经写出的颜色、主材质矛盾（矛盾就换一个细节或不写参考）。
 7. “风险提醒”：异常信号只能说“疑似、需人工核实”，不要断言刷单；带季节性、大促、降价驱动标签的增长提醒不要当成长期需求。
-8. 不要输出链接和长标题。每条不超过 60 字，一条只说一个特征或一个建议；总长度不超过 450 字，宁可少写几条。"""
+8. 不要输出链接和长标题。“开发方向”每条不超过 80 字，其余每条不超过 60 字、一条只说一个特征；
+   总长度不超过 650 字，宁可少写几条趋势。"""
 
 
 def build_facts(ctx: dict) -> dict:
@@ -57,6 +63,7 @@ def build_facts(ctx: dict) -> dict:
         "潜力": [brief(i) for i in sec["potential"][:6]],
         "异常信号": [brief(i) for i in sec["fake"][:5]],
         "共性特点": design_facts(ctx["traits"]),
+        "开发方向": direction_facts(ctx["traits"]),
     }
 
 
@@ -95,6 +102,23 @@ def design_facts(tr: dict) -> dict:
                    for f in tr.get("facts", [])[:3]],
         "备注": tr.get("note"),
     }
+    return out
+
+
+def direction_facts(tr: dict) -> list[dict]:
+    """开发方向（directions.py 算好的），每个特征带“几个商品有 / 该子类目增长商品数”。"""
+    out = []
+    for d in tr.get("directions") or []:
+        n = d["n"]
+        row = {"子类目": d["node"],
+               "依据": f"该子类目的增长商品 {n} 个（突然爆火 {d['n_surge']} 个），下面每个特征至少 {d['need']} 个有",
+               "画像": directions.headline(d),
+               "主材质": [f"{m['label']} {m['count']}/{n}" for m in d["materials"]]}
+        for dim in directions.DIMENSIONS:
+            row[dim.replace("卖点", "")] = [f"{f['label']} {f['count']}/{n}" for f in d["features"][dim]]
+        row["价格区间"] = directions.price_text(d["price"])
+        row["参考商品"] = [{"品牌": r["brand"], "品名": r["name"][:60], "外观要点": r["look"]} for r in d["refs"]]
+        out.append(row)
     return out
 
 
@@ -155,12 +179,11 @@ def template_summary(facts: dict) -> str:
         lines.append(f"- {dim}：{'；'.join(rows[:2])}。")
     if len(lines) == 1:
         lines.append("- 增长商品没有明显偏多的外观/工艺特征。")
-    lines.append("### 开发建议")
-    refs = [i for i in facts["突然爆火"][:2] + facts["潜力"][:2] if i.get("外观要点")]
-    for item in refs[:2]:
-        lines.append(f"- 参考 {_short(item['品名'])}：{item['外观要点']}")
-    if not refs:
-        lines.append("- 点开“突然爆火”“潜力产品”查看本期的参考商品。")
+    lines.append("### 开发方向")
+    for d in facts["开发方向"]:
+        lines.append(f"- 开发{d['画像']}")
+    if not facts["开发方向"]:
+        lines.append("- 本期没有增长商品数达到门槛的子类目，暂不给开发方向。")
     lines.append("### 风险提醒")
     for item in facts["异常信号"][:2]:
         signal = (item.get("异常信号") or [""])[0]

@@ -15,6 +15,7 @@ import httpx
 
 from .. import log
 from ..analyze import display_name
+from ..detect.directions import headline
 from ..report.render import growth_text
 from ..narrative import top_design_labels
 
@@ -130,6 +131,10 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     if looks:
         lines.append(f"**🎨 增长商品外观特点**：{'、'.join(looks)}")
     if mats or looks:
+        lines.append("")
+    if traits.get("directions"):
+        lines.append("**🛠 开发方向**")
+        lines += [f"- {headline(d)}" for d in traits["directions"]]
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):
