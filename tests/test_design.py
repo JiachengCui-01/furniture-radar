@@ -98,7 +98,8 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     assert "外观与工艺依据" in body and "增长商品" in body and "本期要点" in body
     assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
     assert "Material 属性" in plain
-    assert "<h3>开发方向</h3>" in body and "<h3>开发方向依据</h3>" in body and 'class="dbox dir"' in body
+    assert body.index("<h3>开发建议</h3>") < body.index("<h3>开发方向</h3>")  # 两节都要有，不是互相替换
+    assert "<h3>开发方向依据</h3>" in body and 'class="dbox dir"' in body
     for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
         assert gone not in plain, gone  # 同一个概念只有一种叫法
 
