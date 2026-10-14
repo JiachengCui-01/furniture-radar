@@ -21,15 +21,21 @@ from . import design
 from .design import brand_key
 
 DIMENSIONS = ("风格", "造型", "工艺", "颜色", "功能卖点")
-VISION_DIMENSIONS = ("风格", "造型", "工艺", "颜色")  # 主图识别没有功能卖点
+VISION_DIMENSIONS = ("风格", "造型", "工艺", "颜色", "功能卖点")  # 主图识别的功能只认看得见的（design.VISION_FUNCTIONS）
 VAGUE_MATERIALS = ("未注明", "木质（未注明）", "其他")
 
 
 def _features(item: dict, state: dict) -> dict[str, set[str]]:
+    """标题词库 + 主图识别，任一有就算；颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图。"""
     feats = design.extract(item.get("title", ""))
-    tags = (((state.get("asins") or {}).get(item["asin"]) or {}).get("vision") or {}).get("tags") or {}
-    return {dim: feats.get(dim, set()) | (set(tags.get(dim) or []) if dim in VISION_DIMENSIONS else set())
-            for dim in DIMENSIONS}
+    vision = (((state.get("asins") or {}).get(item["asin"]) or {}).get("vision") or {})
+    tags = vision.get("tags") or {}
+    out = {}
+    for dim in DIMENSIONS:
+        seen = set(tags.get(dim) or []) if dim in VISION_DIMENSIONS else set()
+        title = set() if vision and dim in design.IMAGE_FIRST_DIMENSIONS else feats.get(dim, set())
+        out[dim] = title | seen
+    return out
 
 
 def _median(values: list[float]) -> float:

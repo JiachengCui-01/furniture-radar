@@ -370,3 +370,12 @@ def test_period_diff_lists_each_product_once():
     assert d["cooled"] == ["C"]                                       # 转去持续热销的 B 不算不再爆火；F 已不在追踪
     listed = d["still"] + [a for v in d["new"].values() for a in v] + d["cooled"]
     assert len(listed) == len(set(listed))
+
+
+def test_section_popups_list_every_item_by_default(cfg):
+    """顶部数字和小窗里的个数要一致：report.top_n 默认 0 = 全部列出（实测持续热销 31 个，小窗只列了前 15 个）。"""
+    assert cfg["report"]["top_n"] == 0
+    items = [{"label": "hot", "hot": {"avg_monthly": float(k)}, "asin": f"H{k}"} for k in range(31)]
+    sec = analyze.sections(items, cfg["report"]["top_n"])
+    assert len(sec["hot"]) == sec["counts"]["hot"] == 31
+    assert len(analyze.sections(items, 15)["hot"]) == 15

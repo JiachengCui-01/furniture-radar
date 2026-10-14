@@ -185,19 +185,24 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
       image：主图识别，增长商品里势头最强的若干个 vs 持续热销对照组
     更多：标题里占比 ≥ title_min_share 且是全部头部商品的 title_min_lift 倍以上，或主图里比对照组多 image_min_gap 以上；
           任何一种算数的依据说“更少”，就是依据冲突，不列。按“比对照组多出的占比”排序，每个维度最多 per_dim 个。
-    常见：不在“更多”里、增长商品中占比 ≥ common_share 的（有主图识别看主图，没有看标题），不代表比对照组多。"""
+    常见：不在“更多”里、增长商品中占比 ≥ common_share 的（有主图识别看主图，没有看标题），不代表比对照组多。
+    也有：不在上面两档、增长商品中占比 ≥ also_share 的（同样要 min_count 个、min_brands 个品牌），只说明有，不代表趋势。
+    颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图：标题里的颜色常是把可选变体都列出来，不代表商品本身。"""
     a = cfg["thresholds"]["appearance"]
     min_count, gap_min = int(a["min_count"]), float(a["image_min_gap"])
     min_brands = int(a.get("min_brands", 1))
     vdims = (vision or {}).get("dimensions") or {}
+    has_images = bool((vision or {}).get("n_focus"))
     qualified_title = {dim: {r["label"] for r in rows} for dim, rows in (tr.get("design") or {}).items()}
     out: dict[str, dict[str, list[dict]]] = {}
     for dim in (*design.APPEARANCE_DIMENSIONS, "功能卖点"):
         titles = {label: r for label, r in ((tr.get("title_shares") or {}).get(dim) or {}).items()
                   if r["count"] >= min_count and r.get("brands", min_brands) >= min_brands}
+        if has_images and dim in design.IMAGE_FIRST_DIMENSIONS:
+            titles = {}
         images = {r["label"]: r for r in vdims.get(dim, [])
                   if r["focus"] >= min_count and r.get("brands", min_brands) >= min_brands}
-        more, common = [], []
+        more, common, also = [], [], []
         for label in dict.fromkeys([*titles, *images]):
             t, i = titles.get(label), images.get(label)
             t_more = t is not None and label in qualified_title.get(dim, set())
@@ -206,10 +211,13 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
             t_less = t is not None and t["share"] < t["baseline_share"]
             i_less = i_gap is not None and i_gap < 0
             row = {"label": label, "title": t, "image": i}
+            share = i["focus_share"] if i else t["share"]
             if (t_more or i_more) and not (t_less or i_less):
                 more.append(row)
-            elif (i or t) and (i["focus_share"] if i else t["share"]) >= float(a["common_share"]) - 1e-9:
+            elif share >= float(a["common_share"]) - 1e-9:
                 common.append(row)
+            elif share >= float(a.get("also_share", 1)) - 1e-9:
+                also.append(row)
 
         def gap(f: dict) -> float:
             t, i = f.get("title"), f.get("image")
@@ -217,8 +225,12 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
             y = i["focus_share"] - (i["reference_share"] or 0) if i else 0.0
             return max(x, y) + (0.05 if t and i else 0.0)  # 两种依据都支持的排前面
 
+        def share_of(f: dict) -> float:
+            return (f["image"] or {}).get("focus_share") or (f["title"] or {}).get("share") or 0
+
         more.sort(key=lambda f: -gap(f))
-        common.sort(key=lambda f: -((f["image"] or {}).get("focus_share") or (f["title"] or {}).get("share") or 0))
-        if more or common:
-            out[dim] = {"more": more[: int(a["per_dim"])], "common": common[:3]}
+        common.sort(key=lambda f: -share_of(f))
+        also.sort(key=lambda f: -share_of(f))
+        if more or common or also:
+            out[dim] = {"more": more[: int(a["per_dim"])], "common": common[:3], "also": also[: int(a["per_dim"])]}
     return out

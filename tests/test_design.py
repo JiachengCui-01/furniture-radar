@@ -13,13 +13,57 @@ from radar.detect import design, traits
 
 
 def test_extract_reads_appearance_and_craft_from_titles():
-    f = design.extract("Mid-Century Modern Boucle Curved Sofa with Fluted Base, Cream, Channel Tufted Back, Storage")
-    assert {"中古风", "现代"} <= f["风格"]
-    assert f["材质"] == {"泰迪绒/羊羔绒"}
-    assert f["造型"] == {"弧形曲线"}
-    assert {"凹槽竖纹", "竖条拉扣"} <= f["工艺"] and "拉扣软包" not in f["工艺"]
-    assert f["颜色"] == {"奶油/米色"}
+    f = design.extract("Mid-Century Modern Sideboard Buffet with Fluted Glass Doors, Open Shelves, Rattan, Walnut, Storage")
+    assert f["风格"] == {"中古风", "现代"}
+    assert f["材质"] == {"玻璃", "藤/编织"}
+    assert f["造型"] == {"开放格"}
+    assert f["工艺"] == {"凹槽竖纹", "玻璃门", "藤编/编织"}
+    assert f["颜色"] == {"胡桃色"}
     assert f["功能卖点"] == {"带储物/抽屉"}
+    # 板式家具的造型、功能、颜色（2026-10 重写词库时补上的）
+    g = design.extract("L Shaped Computer Desk with Power Outlets, Monitor Stand, Cable Management, Rolling Wheels, Espresso")
+    assert g["造型"] == {"L 形/U 形"} and g["颜色"] == {"深咖色"}
+    assert g["功能卖点"] == {"充电/插座", "显示器架/键盘托", "线缆管理", "带轮可移动"}
+    h = design.extract("Lift Top Coffee Table, Extendable, Barn Door, Greige; 5-Tier Staggered Bookshelf")
+    assert h["功能卖点"] == {"升降台面", "可伸缩/加长"} and h["工艺"] == {"谷仓门/推拉门"}
+    assert h["颜色"] == {"灰褐/做旧灰"} and h["造型"] == {"错落/阶梯层板"}  # “5-Tier”只是层数，不算错落
+
+
+def test_appearance_also_tier_and_colors_from_images(cfg):
+    """“也有”：10%~30% 有、不比对照组多；颜色有主图识别时只看主图，标题里的颜色不能否决（标题常列出全部可选颜色）。"""
+    t = lambda label, n, share, base: {"label": label, "count": n, "share": share, "baseline_share": base, "brands": n}
+    i = lambda label, n, ref: {"label": label, "focus": n, "focus_share": n / 50, "reference": ref,
+                               "reference_share": ref / 40, "brands": n}
+    tr = {"design": {"颜色": [{"label": "棕色"}]},
+          "title_shares": {"颜色": {"胡桃色": t("胡桃色", 3, 0.05, 0.08), "棕色": t("棕色", 8, 0.15, 0.09)},
+                                         "功能卖点": {"电动/可升降": t("电动/可升降", 12, 0.21, 0.17)}}}
+    vision = {"n_focus": 50, "n_reference": 40, "dimensions": {
+        "颜色": [i("胡桃色", 10, 0), i("白色", 12, 10), i("原木色", 7, 6), i("灰色", 4, 2)],
+        "造型": [i("模块化组合", 7, 4)]}}
+    out = traits.merge_appearance(tr, vision, cfg)
+    assert [f["label"] for f in out["颜色"]["more"]] == ["胡桃色"]  # 主图 20% vs 0%，标题 5% vs 8% 不再否决；标题的棕色不看
+    assert [f["label"] for f in out["颜色"]["also"]] == ["白色", "原木色"]  # 灰色 8% 不到 10%
+    assert [f["label"] for f in out["造型"]["also"]] == ["模块化组合"]
+    assert [f["label"] for f in out["功能卖点"]["also"]] == ["电动/可升降"]  # 只有标题依据，21%、1.24 倍
+    no_images = traits.merge_appearance(tr, {}, cfg)  # 没有主图识别时颜色看标题
+    assert [f["label"] for f in no_images["颜色"]["more"]] == ["棕色"]
+
+
+def test_vision_cache_is_redone_when_the_vocabulary_changes(cfg):
+    """词库一改（词表版本不同），缓存的识别结果按新词表重看；同一版本不重复调用。"""
+    def handler(request: httpx.Request):
+        if request.method == "GET":
+            return httpx.Response(200, content=b"\xff\xd8fake", headers={"content-type": "image/jpeg"})
+        content = '{"风格":[],"材质":[],"造型":["开放格"],"工艺":[],"颜色":[],"外观要点":"x"}'
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    url = "https://x/a._AC_US600_.jpg"
+    state = {"asins": {"A": {"vision": {"image": url, "tags": {"造型": ["云朵造型"]}, "summary": ""}}}}
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert vision.tag_items([{"asin": "A", "image": url}], state, cfg, "key", client=client) == 1
+    assert state["asins"]["A"]["vision"]["tags"]["造型"] == ["开放格"]
+    assert state["asins"]["A"]["vision"]["vocab"] == vision.VOCAB_VERSION
+    assert vision.tag_items([{"asin": "A", "image": url}], state, cfg, "key", client=client) == 0
 
 
 def test_compare_finds_features_overrepresented_in_hot_products():

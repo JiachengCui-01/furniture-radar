@@ -1,12 +1,13 @@
-"""商品主图外观识别（可选）：用视觉大模型读主图，提取风格、材质、造型、工艺、颜色和一句外观要点。
+"""商品主图外观识别（可选）：用视觉大模型读主图，提取风格、材质、造型、工艺、颜色、看得见的功能和一句外观要点。
 
 默认用 DeepSeek 的视觉模型（与 AI工作台 相同），每张图约 300 tokens。
-结果按“ASIN + 图片地址”缓存在加密状态里，图片不变就不会重复调用。
+结果按“ASIN + 图片地址 + 词表版本”缓存在加密状态里，图片和词表都不变就不会重复调用。
 识别失败不影响报告，只是少了“主图识别”这一块；单张失败会重试，还不行就跳过这张，不影响其他图片。
 """
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -15,21 +16,30 @@ from collections import Counter
 import httpx
 
 from . import log
-from .detect.design import DESIGN_DIMENSIONS, LEXICON, brand_key
+from .detect.design import DESIGN_DIMENSIONS, LEXICON, VISION_FUNCTIONS, brand_key
 
 
 def _vocab() -> str:
-    return "\n".join(f"{dim}：{'、'.join(label for label, _ in LEXICON[dim])}" for dim in DESIGN_DIMENSIONS)
+    def labels(dim: str) -> list[str]:
+        if dim == "功能卖点":
+            return list(VISION_FUNCTIONS)
+        return [label for label, _ in LEXICON[dim]]
+
+    return "\n".join(f"{dim}：{'、'.join(labels(dim))}" for dim in DESIGN_DIMENSIONS)
 
 
 PROMPT = f"""你是家具设计分析师。看这张亚马逊家具商品主图，只输出一个 JSON 对象，不要任何其他文字：
-{{"风格":[],"材质":[],"造型":[],"工艺":[],"颜色":[],"外观要点":""}}
+{{"风格":[],"材质":[],"造型":[],"工艺":[],"颜色":[],"功能卖点":[],"外观要点":""}}
 要求：
-- 每个数组 0~3 项，优先使用下面词表里的说法，词表里没有的再用 2~6 个字的中文自拟；
-- 只写图片里看得出来的，看不清就留空，不要猜；
+- 每个数组 0~4 项，优先使用下面词表里的说法，词表里没有的再用 2~6 个字的中文自拟；
+- 只写图片里看得出来的，看不清就留空，不要猜；“功能卖点”只写图里看得见的（抽屉、灯带、镜子、轮子、挂钩、插座口等）；
 - “外观要点”用一句话（不超过 40 字）说清这件家具最抓眼的外观/工艺设计。
 词表：
 {_vocab()}"""
+
+
+# 词表版本：词库（design.LEXICON）一改，缓存的识别结果就按新词表重看一遍
+VOCAB_VERSION = hashlib.sha1(PROMPT.encode("utf-8")).hexdigest()[:8]
 
 
 def small_image(url: str, size: int = 400) -> str:
@@ -50,7 +60,7 @@ def _parse(text: str) -> dict | None:
         values = data.get(dim) or []
         if isinstance(values, str):
             values = [values]
-        tags[dim] = [str(v).strip() for v in values if str(v).strip()][:3]
+        tags[dim] = [str(v).strip() for v in values if str(v).strip()][:4]
     return {"tags": tags, "summary": str(data.get("外观要点") or "").strip()[:60]}
 
 
@@ -121,7 +131,7 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
             if not url or rec is None:
                 continue
             cached = rec.get("vision")
-            if cached and cached.get("image") == url:
+            if cached and cached.get("image") == url and cached.get("vocab") == VOCAB_VERSION:
                 continue
             try:
                 result = _describe_with_retry(client, cfg, api_key, url)
@@ -137,7 +147,7 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
                 continue
             in_a_row = 0
             if result:
-                rec["vision"] = {"image": url, **result}
+                rec["vision"] = {"image": url, "vocab": VOCAB_VERSION, **result}
                 done += 1
     finally:
         if own:

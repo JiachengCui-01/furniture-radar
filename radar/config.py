@@ -86,7 +86,7 @@ DEFAULTS: dict = {
         "events": {"auto": True, "jump": 1.8, "core_share": 0.3, "edge_share": 0.15, "base_days": 14,
                    "min_base_daily": 3, "min_items": 40},
         "appearance": {"min_count": 2, "title_min_share": 0.1, "title_min_lift": 1.3, "image_min_gap": 0.1,
-                       "common_share": 0.3, "per_dim": 6, "min_brands": 2},
+                       "common_share": 0.3, "also_share": 0.1, "per_dim": 6, "min_brands": 2},
         "directions": {"min_items": 2, "min_brands": 2, "max": 5, "feature_min_share": 0.5, "per_dim": 3},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
@@ -104,7 +104,7 @@ DEFAULTS: dict = {
     },
     "deal_windows": [],
     "report": {"title": "家具爆品雷达", "subtitle": "亚马逊美国站 · 板材 / 实木 / 铁木家具", "base_url": "",
-               "keep_reports": 60, "top_n": 20},
+               "keep_reports": 60, "top_n": 0},
     "notify": {"open_in_browser": True, "at_all": False, "max_items": 3},
     "llm": {
         "enabled": "auto",
@@ -116,7 +116,7 @@ DEFAULTS: dict = {
         "vision": "auto",
         "vision_model": "deepseek-v4-flash-vision-exp",
         "vision_focus": 50,
-        "vision_reference": 20,
+        "vision_reference": 40,
     },
 }
 

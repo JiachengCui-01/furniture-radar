@@ -262,12 +262,16 @@ def _growth(item: dict) -> float:
 
 
 def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
+    """每个板块按排序；top_n ≤ 0 时全部列出（报告小窗默认如此，免得顶部数字和小窗里的个数对不上）。"""
+    def cut(rows: list[dict]) -> list[dict]:
+        return rows if top_n <= 0 else rows[:top_n]
+
     surge = sorted((i for i in items if i["label"] == "surge"), key=lambda i: -i["surge"]["strength"])
     fake = sorted((i for i in items if i["label"] == "fake"),
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
     potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: -_growth(i))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
-    return {"surge": surge[:top_n], "fake": fake[:top_n], "potential": potential[:top_n], "hot": hot[:top_n],
+    return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
                        # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
                        "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),

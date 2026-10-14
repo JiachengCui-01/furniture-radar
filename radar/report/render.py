@@ -359,22 +359,23 @@ def _evidence(f: dict, vision: dict) -> str:
 
 
 def _feature_box(dim: str, rows: dict, vision: dict) -> str:
-    """一个维度：“比对照组更多”的特征各占一块（每种依据一行），下面是“常见但不比对照组多”的标签。"""
+    """一个维度：“比对照组更多”的特征各占一块（每种依据一行），下面是“常见但不比对照组多”和“也有”的标签。"""
     more = rows.get("more") or []
     parts = ['<div class="grp-h">比对照组更多</div>']
     parts += [f'<div class="feat"><b>{esc(f["label"])}</b>{_evidence(f, vision)}</div>' for f in more]
     if not more:
         parts.append('<p class="empty">没有比对照组明显更多的特征。</p>')
-    chips = []
-    for f in rows.get("common") or []:
+    def chip(f: dict) -> str:
         t, i = f.get("title"), f.get("image")
         if i:
             ref = f" · 对照 {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
-            chips.append(f'<span>{esc(f["label"])}<em>{i["focus"]}/{vision["n_focus"]}{ref}</em></span>')
-        else:
-            chips.append(f'<span>{esc(f["label"])}<em>{t["share"]:.0%} · 头部 {t["baseline_share"]:.0%}</em></span>')
-    if chips:
-        parts.append(f'<div class="grp-h">常见但不比对照组多</div><div class="chips2">{"".join(chips)}</div>')
+            return f'<span>{esc(f["label"])}<em>{i["focus"]}/{vision["n_focus"]}{ref}</em></span>'
+        return f'<span>{esc(f["label"])}<em>{t["share"]:.0%} · 头部 {t["baseline_share"]:.0%}</em></span>'
+
+    for key, head in (("common", "常见但不比对照组多"), ("also", "也有（不比对照组多）")):
+        chips = [chip(f) for f in rows.get(key) or []]
+        if chips:
+            parts.append(f'<div class="grp-h">{head}</div><div class="chips2">{"".join(chips)}</div>')
     return f'<div class="dbox"><h4>{esc(dim)}</h4>{"".join(parts)}</div>'
 
 
@@ -471,7 +472,10 @@ def _traits(tr: dict, counts: dict, cfg: dict) -> str:
              f'标题里占比 ≥{a["title_min_share"]:.0%}、是头部的 '
              f'{a["title_min_lift"]:g} 倍以上，或主图里比对照多 {a["image_min_gap"] * 100:.0f} 个百分点以上；'
              '两种依据方向相反的不列。',
-             f'常见但不比对照组多：增长商品里 ≥{a["common_share"]:.0%} 有（有主图识别看主图，没有看标题），只说明是基本盘，不代表趋势。']
+             f'常见但不比对照组多：增长商品里 ≥{a["common_share"]:.0%} 有（有主图识别看主图，没有看标题），只说明是基本盘，不代表趋势。',
+             f'也有（不比对照组多）：增长商品里 ≥{a.get("also_share", 0):.0%}、不到 {a["common_share"]:.0%} 有（同样至少 {a["min_count"]} 个、'
+             f'{a.get("min_brands", 1)} 个品牌），只说明有人在做，不代表趋势。',
+             '颜色以主图识别为准：标题里的颜色常是把可选变体都列出来（Walnut/Black/White），不代表商品本身；没有主图识别时才看标题。']
     head = (f'<p class="hint">{sample}</p><div class="legend">{"".join(legend)}</div>'
             f'<details class="rules"><summary>入选规则</summary><ul>{"".join(f"<li>{esc(r)}</li>" for r in rules)}</ul></details>')
     boxes = [_material_box(mats)]
@@ -592,7 +596,7 @@ def _method(cfg: dict) -> str:
 <li><b>爆火的附加标签</b>：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
 对比期里 ≥7 天（且 ≥25%）没有销量、而更早之前卖得和现在差不多的是“断货恢复”，不算爆火。</li>
 <li><b>外观与工艺依据</b>：材质只有“主材质”一种口径，每个商品一类（铁木 / 实木 / 板材 / 金属…），依次取亚马逊商品详情的 Material 属性、
-标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色有两种依据——
+标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色、功能卖点有两种依据（功能只认图里看得见的，颜色以主图为准）——
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组），
 同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的不算趋势、不列出；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
 <li><b>开发方向</b>：增长商品最多的几个子类目，各给一个产品画像（主材质、风格、造型、工艺、颜色、功能、价格），
