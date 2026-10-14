@@ -338,3 +338,25 @@ def test_risk_bullets_must_name_a_flagged_product():
                                 "- OOOK 旋转书架有季节性，不要当成长期需求。"]
     only_guess = "### 风险提醒\n- 部分增长商品带 LED 灯，需留意季节性。"
     assert narrative.guard_risks(only_guess, facts).splitlines() == ["### 风险提醒", narrative.NO_RISK]
+
+
+def test_summary_product_mentions_become_amazon_links():
+    """本期要点里点名的商品写成 [品牌 简称](ASIN)，渲染成亚马逊商品链接（悬停看主图）；
+    ASIN 不是本期商品、或方括号里没有它的品牌（写错了商品），只保留文字，不会链到别的商品。"""
+    from radar import narrative
+    from radar.report.render import markdown
+
+    products = {"B0H2XKVQ5L": {"brand": "Huuger", "image": "https://m.media-amazon.com/images/I/x.jpg"}}
+    html_text = markdown("### 开发建议\n- 参考 [Huuger 窄长玄关桌](B0H2XKVQ5L) 的插座\n"
+                         "- 参考 [VASAGLE 床头柜](B0H2XKVQ5L)\n- 参考 [某品牌 书架](B0ZZZZZZZZ)", products)
+    assert html_text.count('href="https://www.amazon.com/dp/B0H2XKVQ5L"') == 1
+    assert 'class="peek" src="https://m.media-amazon.com/images/I/x.jpg"' in html_text
+    assert "<li>参考 VASAGLE 床头柜</li>" in html_text and "<li>参考 某品牌 书架</li>" in html_text
+
+    item = {"品牌": "Huuger", "品名": "Huuger 63.4-78.3'' Extendable Behind Couch Table", "ASIN": "B0H2XKVQ5L",
+            "外观要点": "窄长条案", "标签": [], "可作参考": True, "异常信号": ["留评率高"]}
+    facts = {"共性特点": {}, "突然爆火": [item], "潜力": [], "异常信号": [item],
+             "开发方向": [{"画像": "玄关桌：窄小省空间", "参考商品": [{"品名": item["品名"], "ASIN": "B0H2XKVQ5L"}]}]}
+    text = narrative.template_summary(facts)
+    assert "[Huuger 63.4-78.3'' Extendable Behind…](B0H2XKVQ5L)" in text
+    assert "- 开发玄关桌：窄小省空间，参考 [Huuger" in text

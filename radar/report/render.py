@@ -44,8 +44,27 @@ def fmt_price(value) -> str:
     return "—" if value is None else f"${value:,.2f}"
 
 
-def markdown(text: str) -> str:
-    """只支持 ### 标题、- 列表、**加粗**、段落：足够渲染总结文字。"""
+PRODUCT_LINK = re.compile(r"\[([^\[\]]{1,80})\]\(([A-Z0-9]{10})\)")
+
+
+def product_links(body: str, products: dict | None) -> str:
+    """把（已转义的）文字里的 [品牌 简称](ASIN) 换成亚马逊商品链接，悬停显示主图。
+    ASIN 必须是本期追踪的商品、方括号里必须写着它的品牌，否则只保留文字（大模型写错 ASIN 时不会链到别的商品）。"""
+    def repl(m: re.Match) -> str:
+        text, asin = m.group(1), m.group(2)
+        item = (products or {}).get(asin)
+        brand = ((item or {}).get("brand") or "").strip().lower()
+        if not item or (brand and brand not in html.unescape(text).lower()):
+            return text
+        peek = (f'<img class="peek" src="{esc(item["image"])}" alt="" loading="lazy">'
+                if item.get("image") else "")
+        return (f'<a class="ref" href="https://www.amazon.com/dp/{asin}" target="_blank" '
+                f'rel="noopener noreferrer">{text}{peek}</a>')
+    return PRODUCT_LINK.sub(repl, body)
+
+
+def markdown(text: str, products: dict | None = None) -> str:
+    """只支持 ### 标题、- 列表、**加粗**、段落，以及 [品牌 简称](ASIN) 商品链接（见 product_links）：足够渲染总结文字。"""
     out: list[str] = []
     in_list = False
     for raw in (text or "").splitlines():
@@ -55,7 +74,8 @@ def markdown(text: str) -> str:
                 out.append("</ul>")
                 in_list = False
             continue
-        body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc(line.lstrip("#-* ").strip()))
+        body = product_links(re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc(line.lstrip("#-* ").strip())),
+                             products)
         if line.startswith("#"):
             if in_list:
                 out.append("</ul>")
@@ -65,8 +85,8 @@ def markdown(text: str) -> str:
             if not in_list:
                 out.append("<ul>")
                 in_list = True
-            body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>",
-                          esc(re.sub(r"^(\d+[.、)]|[-*•])\s*", "", line)))
+            body = product_links(re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>",
+                                        esc(re.sub(r"^(\d+[.、)]|[-*•])\s*", "", line))), products)
             out.append(f"<li>{body}</li>")
         else:
             if in_list:
@@ -104,6 +124,10 @@ section>h2{font-size:18px;margin:0 0 4px;display:flex;align-items:center;gap:8px
 section>h2 .dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
 .hint{color:var(--muted);font-size:13px;margin:0 0 10px}
 .summary h3{font-size:15px;margin:14px 0 4px}.summary ul{margin:4px 0;padding-left:20px}.summary p{margin:6px 0}
+.summary a.ref{position:relative;color:var(--accent);text-decoration:underline dotted;text-underline-offset:3px}
+.summary a.ref .peek{display:none;position:absolute;left:0;top:1.6em;width:180px;height:180px;object-fit:contain;
+background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.18);padding:6px;z-index:20}
+.summary a.ref:hover .peek,.summary a.ref:focus .peek{display:block}
 .cards{display:grid;gap:10px}
 .card{display:grid;grid-template-columns:76px minmax(0,1fr);gap:12px;border:1px solid var(--line);border-radius:12px;
 padding:10px;border-left:4px solid var(--c)}
@@ -650,7 +674,7 @@ def render(ctx: dict) -> str:
 <header><div class="sub">{esc(cfg['report'].get('subtitle') or '亚马逊美国站 · 家具')}</div><h1>{esc(ctx['title'])}</h1>
 <div class="sub hist">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期 · 日数据截至 {esc(ctx['as_of'])}{history}</div></header>
 <div class="kpis">{kpi}</div><p class="sub kpi-hint">点数字查看商品清单</p>
-<section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{markdown(ctx['summary'])}</section>
+<section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{markdown(ctx['summary'], by_asin)}</section>
 <section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>外观与工艺依据</h2>{_traits(ctx['traits'], counts, cfg)}</section>
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="about" style="--c:var(--muted)"><h2><span class="dot"></span>数据说明</h2>
