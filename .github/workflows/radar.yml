@@ -37,7 +37,7 @@ concurrency:
 jobs:
   radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90   # 每期约 500 次调用，每次约 1.5 秒，加上限流等待约 15~25 分钟
     outputs:
       published: ${{ steps.run.outputs.published }}
       report_id: ${{ steps.run.outputs.report_id }}

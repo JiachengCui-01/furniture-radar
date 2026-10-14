@@ -149,6 +149,10 @@ def test_find_risers_uses_recent_30_days_and_find_similar_parses(cfg):
     research = [a["request"] for t, a in calls if t == "product_research"]
     assert research and all("month" not in r for r in research)  # 不传月份 = 截至当天的近 30 天
     assert {r["order"]["field"] for r in research} == {"total_units_growth", "bsr_rank_cr", "available_date"}
+    # 上升榜的量：销量 ≥300 件或销售额 ≥4 万美元，接口条件是“且”，所以每个排序两种门槛各查一次
+    for order in ("total_units_growth", "bsr_rank_cr"):
+        floors = [{k: r[k] for k in ("minUnits", "minRevenue") if k in r} for r in research if r["order"]["field"] == order]
+        assert {"minUnits": 300} in floors and {"minRevenue": 40000} in floors
 
     found = discovery.find_similar(vendor, cfg, ["B0TEST0100"], nodes)
     asins = [p["asin"] for p in found]
@@ -170,3 +174,22 @@ def test_pool_skips_low_rated_and_backfills(cfg):
     cfg["pool"]["core_max"] = 3  # 每个子类目取完后，按销量从全部类目里补
     pool, _ = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1))
     assert pool == ["A2", "A3", "A4"]
+
+
+def test_candidates_need_units_or_revenue(cfg):
+    """机会候选的量：月销量 ≥300 件或月销售额 ≥4 万美元，满足一个就行（只看件数时，卖得贵的几乎都进不来）。"""
+    rows = {"CHEAP": (350, 10_000), "PRICEY": (150, 80_000), "SMALL": (100, 10_000)}
+    products = {a: {"asin": a, "parent": a, "node": "N", "units": u, "revenue": r, "units_gr": 50,
+                    "available": "2025-01-01", "sources": ["top"]} for a, (u, r) in rows.items()}
+    cands = tracking.opportunity_candidates({"products": products}, {"asins": {}, "runs": []}, cfg, date(2026, 10, 1))
+    assert {p["asin"] for p in cands} == {"CHEAP", "PRICEY"}
+
+
+def test_node_heads_by_units_and_by_revenue(cfg):
+    """每个子类目必看：销量第一和销售额第一（不是同一个时两个都看）。"""
+    rows = {"VOLUME": (900, 18_000), "VALUE": (150, 90_000), "OTHER": (400, 30_000)}
+    products = {a: {"asin": a, "parent": a, "node": "N", "units": u, "revenue": r, "available": "2025-01-01",
+                    "sources": ["top"]} for a, (u, r) in rows.items()}
+    cfg["pool"].update(per_node_top=1, per_node_top_revenue=1, core_max=2, similar_max=0, opportunity_every_run=0)
+    pool, reasons = tracking.select_pool({"products": products}, {"asins": {}, "runs": []}, cfg, date(2026, 10, 1))
+    assert pool == ["VOLUME", "VALUE"] and set(reasons.values()) == {"top"}

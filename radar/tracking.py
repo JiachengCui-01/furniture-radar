@@ -4,10 +4,13 @@
 “新”只能靠日数据，每个 ASIN 1 次调用；所以每期约 150 个名额的分配决定了能发现多少机会。
 
 追踪池（本地计算，不花调用），按顺序填满 max_size：
-  1. 必看（≤ core_max）：往期被标为 爆火/潜力/异常 的 + 每个子类目月销量前 per_node_top（轮流取），
+  1. 必看（≤ core_max）：往期被标为 爆火/潜力/异常 的 + 每个子类目月销量前 per_node_top、月销售额前 per_node_top_revenue
+     （轮流取；只按件数挑会偏向便宜货：实测件数第一的价格中位数 $65，销售额第一的 $130，29 个子类目里 15 个不是同一个），
      名额还有剩就按月销量从全部子类目里补（持续热销板块按月销量排，床架这类大类目的头部不能漏）
   2. 相似款（≤ similar_max）：上期爆款的同类竞品（近 30 天数据）
   3. 机会候选（剩余名额）：近 30 天上升榜 / 新品榜 / 相似款，以及月度名单里增长快或上架半年内的商品，
+     量要够：月销量 ≥ opportunity_min_units 或月销售额 ≥ opportunity_min_revenue（满足一个就行；只看件数时，
+     卖得贵的商品几乎都进不来：实测被件数门槛挡掉的一半候选价格中位数 $250，其中 284 个月销售额超过 2 万美元）；
      按机会分排序；分数最高的 opportunity_every_run 个每期都看，其余按“最久没查”轮流查。
 同一父体只取一个；评分不达标的（见 rules.rating_floor）不占名额，各类都由排在后面的商品依次补位。
 
@@ -55,8 +58,15 @@ def _pct_rank(values: list[float | None]) -> list[float]:
     return out
 
 
+def enough_volume(p: dict, pcfg: dict) -> bool:
+    """量够不够：月销量 ≥ opportunity_min_units，或月销售额 ≥ opportunity_min_revenue，满足一个就行。"""
+    return ((p.get("units") or 0) >= float(pcfg.get("opportunity_min_units", 0))
+            or (p.get("revenue") or 0) >= float(pcfg.get("opportunity_min_revenue") or float("inf")))
+
+
 def opportunity_rank(cands: list[dict], today) -> list[dict]:
-    """机会分 = 销量增长率 35% + 近 7 天 BSR 改善率 20% + 子类目内销量位次 20% + 上架半年内 15% + 近 30 天数据 10%。
+    """机会分 = 销量增长率 35% + 近 7 天 BSR 改善率 20% + 子类目内销量位次 10% + 子类目内销售额位次 10%
+    + 上架半年内 15% + 近 30 天数据 10%。
     units_gr 在近 30 天榜单里是“近 30 天 vs 之前 30 天”，在月度名单里是月环比；bsr_cr 为正 = 排名上升。"""
     if not cands:
         return []
@@ -66,15 +76,19 @@ def opportunity_rank(cands: list[dict], today) -> list[dict]:
     for p in cands:
         by_node.setdefault(p["node"], []).append(p)
     unit_pct: dict[str, float] = {}
+    revenue_pct: dict[str, float] = {}
     for items in by_node.values():
         for p, r in zip(items, _pct_rank([p["units"] for p in items])):
             unit_pct[p["asin"]] = r
+        for p, r in zip(items, _pct_rank([p.get("revenue") for p in items])):
+            revenue_pct[p["asin"]] = r
     scored = []
     for p, g, b in zip(cands, growth, bsr):
         age = clock.days_between(clock.parse_day(p.get("available")), today)
         young = 1.0 if age is not None and age <= 180 else 0.0
         fresh = 1.0 if p["sources"][0] in FRESH_SOURCES else 0.0
-        scored.append((0.35 * g + 0.2 * b + 0.2 * unit_pct.get(p["asin"], 0.5) + 0.15 * young + 0.1 * fresh, p))
+        scored.append((0.35 * g + 0.2 * b + 0.1 * unit_pct.get(p["asin"], 0.5) + 0.1 * revenue_pct.get(p["asin"], 0.5)
+                       + 0.15 * young + 0.1 * fresh, p))
     scored.sort(key=lambda t: -t[0])
     return [p for _, p in scored]
 
@@ -88,10 +102,9 @@ def fresh_rows(state: dict) -> dict[str, dict]:
 
 def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> list[dict]:
     """机会候选（按机会分排序）：近 30 天榜单和相似款全部纳入；月度名单里只取增长快或上架半年内的。
-    同一 ASIN 用最新的一行；评分不达标、销量太小、标题不在范围内的剔除；同一父体只留销量最大的。"""
+    同一 ASIN 用最新的一行；评分不达标、量不够（enough_volume）、标题不在范围内的剔除；同一父体只留销量最大的。"""
     pcfg = cfg["pool"]
     th = cfg["thresholds"]
-    min_units = float(pcfg.get("opportunity_min_units", 0))
     min_growth = float(pcfg.get("opportunity_min_growth", 0))
     max_age = int(pcfg.get("opportunity_max_age_days", 180))
     nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
@@ -100,7 +113,7 @@ def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> 
     for p in rows.values():
         if not p.get("node") or (nodes and p["node"] not in nodes) or not keep_product(p, cfg):
             continue
-        if (p.get("units") or 0) < min_units:
+        if not enough_volume(p, pcfg):
             continue
         if low_rating(*current_rating(state["asins"].get(p["asin"]), p), th):
             continue
@@ -156,14 +169,16 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
             by_node.setdefault(p["node"], []).append(p)
     for items in by_node.values():
         items.sort(key=lambda p: -(p["units"] or 0))
-    taken = {node: 0 for node in by_node}
-    for _ in range(int(pcfg["per_node_top"])):
-        for node, items in by_node.items():
-            # 评分不达标 / 同父体的跳过，由本子类目下一名补位
-            for i in range(taken[node], len(items)):
-                taken[node] = i + 1
-                if add(items[i]["asin"], "top", core_max):
-                    break
+    # 每个子类目：月销量前 per_node_top + 月销售额前 per_node_top_revenue（轮流取；评分不达标 / 同父体 / 已选的跳过，由下一名补位）
+    for field, n in (("units", int(pcfg["per_node_top"])), ("revenue", int(pcfg.get("per_node_top_revenue", 0)))):
+        ranked = {node: sorted(items, key=lambda p: -(p.get(field) or 0)) for node, items in by_node.items()}
+        taken = {node: 0 for node in ranked}
+        for _ in range(n):
+            for node, items in ranked.items():
+                for i in range(taken[node], len(items)):
+                    taken[node] = i + 1
+                    if add(items[i]["asin"], "top", core_max):
+                        break
     for p in sorted((p for items in by_node.values() for p in items), key=lambda p: -(p["units"] or 0)):
         if len(order) >= core_max:
             break
@@ -173,7 +188,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
     similar = sorted((state.get("similar") or {}).get("items") or [], key=lambda p: (-p.get("run", 0), p["rank"]))
     cap = min(size, len(order) + int(pcfg.get("similar_max", 0)))
     for p in similar:
-        if (p.get("units") or 0) >= float(pcfg.get("opportunity_min_units", 0)) and keep_product(p, cfg):
+        if enough_volume(p, pcfg) and keep_product(p, cfg):
             add(p["asin"], "similar", cap)
 
     # 3. 机会候选：分数最高的每期都看，其余按“最久没查”轮流

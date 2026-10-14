@@ -39,11 +39,14 @@ discovery:
   newcomer_max_nodes: 12             # 在销量最大的 N 个子类目里额外查新品
   newcomers_per_node: 30
   newcomer_min_revenue: 20000        # 新品月销售额门槛（美元，近 30 天新品榜也用它）
-  # 近 30 天榜单（每期刷新，每期约 6 次调用）：每个根类目按“销量增长率”“近 7 天 BSR 增长率”各取前 N，
+  # 近 30 天榜单（每期刷新，每期约 10 次调用）：每个根类目按“销量增长率”“近 7 天 BSR 增长率”各取前 N，
   # 再按上架时间倒序取销售额达标的新品。覆盖头部 50 名以外、最近才起量的商品；最终是否爆火由日数据判定。
   risers_per_root: 50                # 0 = 关闭
   risers_new_per_root: 50            # 新品榜，0 = 关闭
-  risers_min_units: 300              # 近 30 天销量下限，过滤小基数的排名跳动
+  # 量的门槛（过滤小基数的排名跳动）：近 30 天销量 ≥ risers_min_units 或销售额 ≥ risers_min_revenue，满足一个就行。
+  # 接口的条件是“且”，所以两个门槛各查一次（每个排序 × 每个根类目多 1 次调用）。只按件数时卖得贵的商品进不了榜
+  risers_min_units: 300
+  risers_min_revenue: 40000
   risers_orders: [total_units_growth, bsr_rank_cr]
   risers_max_prev_bsr: 1000000       # 之前 BSR 高于此值的多为断货恢复，剔除
   # 相似款：上期爆火/潜力商品里取前 N 个作种子，查同类竞品（每个 1 次调用，返回约 15 个近 30 天数据的商品）
@@ -53,26 +56,30 @@ discovery:
 
 # ---------------- 追踪池（每个商品每期 1 次调用拉日数据） ----------------
 # 按顺序填满：必看 → 相似款 → 机会候选。同一父体只取一个，评分不达标的不占名额，由后面的依次补位。
-# 池子大小还会受本期剩余预算限制。
+# 池子大小还会受本期剩余预算限制。默认名额够把全部机会候选每期都查一遍（实测约 460 个），每期报告都是完整的。
 pool:
-  max_size: 155
-  core_max: 80                       # 必看名额：往期爆火/潜力/异常 + 每个子类目月销量前 N，
+  max_size: 550
+  core_max: 100                      # 必看名额：往期爆火/潜力/异常 + 每个子类目月销量前 N、月销售额前 N，
   per_node_top: 1                    #   还有剩就按月销量从全部子类目里补（持续热销板块的大卖家不会漏）
+  per_node_top_revenue: 1            #   只按件数挑会偏向便宜货（实测件数第一的价格中位数 $65，销售额第一的 $130）
   watch_runs: 3                      # 被标为爆火/潜力/异常的 ASIN 继续必看的期数
   similar_max: 10                    # 相似款名额
   # 机会候选 = 近 30 天上升榜 / 新品榜 / 相似款，加上月度名单里增长快或上架半年内的商品，按机会分排序：
-  opportunity_every_run: 20          # 机会分最高的 N 个每期都看，其余按“最久没查”轮流查
-  opportunity_min_units: 300         # 月销量（或近 30 天销量）下限
+  opportunity_every_run: 20          # 机会分最高的 N 个每期都看，其余按“最久没查”轮流查（名额够时全部每期都看）
+  # 量的门槛：月销量（或近 30 天销量）≥ opportunity_min_units 或月销售额 ≥ opportunity_min_revenue（美元），满足一个就行。
+  # 实测只看件数时，被挡掉的一半候选价格中位数 $250，其中 284 个月销售额超过 2 万美元
+  opportunity_min_units: 300
+  opportunity_min_revenue: 40000
   opportunity_min_growth: 20         # 月度名单里：销量增长 ≥ N%
   opportunity_max_age_days: 180      #   或上架不超过 N 天
 
 # ---------------- 卖家精灵调用预算 ----------------
 budget:
-  per_run: 175                       # 每期调用上限（近 30 天榜单 ~6 + 相似款 ~3 + 追踪池约 145 + 核查 / 材质）
-  bootstrap_run: 230                 # 需要重新发现子类目的那一期（首期 / 换范围 / 每月初）
-  monthly_cap: 1800                  # 每月总上限
-  review_checks: 5                   # 每期对可疑商品做评论核查的个数（每个 1~2 次调用）
-  material_lookups: 15               # 每期最多查多少个商品的亚马逊 Material 属性（查过的永久缓存，之后每期只查新商品）
+  per_run: 600                       # 每期调用上限（近 30 天榜单 ~10 + 相似款 ~3 + 追踪池约 460 + 核查 / 材质），实际约 500~520
+  bootstrap_run: 660                 # 需要重新发现子类目的那一期（首期 / 换范围 / 每月初，发现约 50 次）
+  monthly_cap: 6600                  # 每月总上限（每 3 天一期，一个月 10~11 期）；和 AI工作台 共用一个 key 时两边一起算
+  review_checks: 10                  # 每期对可疑商品做评论核查的个数（每个 1~2 次调用）
+  material_lookups: 40               # 每期最多查多少个商品的亚马逊 Material 属性（查过的永久缓存，之后每期只查新商品）
   stable_refresh_every: 1            # 每期都刷新全部追踪商品，报告完全反映当期最新情况
   min_interval_seconds: 1.0          # 两次调用之间的最小间隔（卖家精灵有每分钟次数上限）
   rate_limit_wait_seconds: 60        # 被限流（“每分钟访问已达上限”）时等待多久再重试，最多重试 3 次
@@ -188,7 +195,7 @@ thresholds:
   directions:                        # 开发方向：增长商品最多的几个子类目，各写一个产品画像
     min_items: 2                     # 子类目里至少几个增长商品
     min_brands: 2                    #   且来自至少几个品牌；下面的特征比例也按品牌算（同一品牌的多个商品只算一次）
-    max: 3                           # 最多几个方向
+    max: 5                           # 最多几个方向
     feature_min_share: 0.5           # 特征 / 主材质要该子类目至少一半（且不少于 2 个）品牌具备
     per_dim: 3                       # 每个维度最多列几个特征
 
@@ -207,7 +214,7 @@ report:
   subtitle: 亚马逊美国站 · 板材 / 实木 / 铁木家具
   base_url: ""                       # 留空自动推导为 https://<用户名>.github.io/<仓库名>/（本地运行取 git 的 origin 地址）
   keep_reports: 60                   # 网站上保留最近 N 期报告
-  top_n: 15                          # 每个板块最多展示多少个商品
+  top_n: 20                          # 每个板块最多展示多少个商品
 
 # ---------------- 钉钉 ----------------
 notify:
@@ -228,5 +235,5 @@ llm:
   # 约 300 tokens/张，结果会缓存。材质标签只用来补全“主材质”
   vision: auto                       # auto = 有 key 才启用；false = 关闭
   vision_model: deepseek-v4-flash-vision-exp
-  vision_focus: 20                   # 识别增长商品里势头最强的 N 个
+  vision_focus: 50                   # 识别增长商品里势头最强的 N 个（识别过的缓存，之后只识别新商品）
   vision_reference: 20               # 持续热销对照组：月销量最高的 N 个（主图识别和主材质都和它比）

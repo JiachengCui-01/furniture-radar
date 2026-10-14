@@ -269,7 +269,9 @@ def find_risers(vendor: Vendor, cfg: dict, nodes: list[dict]) -> list[dict]:
 
     实测两种上升排序都有噪音：BSR 增长率榜前排多是断货后恢复的商品（之前 BSR 几百万），
     销量增长率榜会有整组变体同时出现。所以去掉“之前 BSR > risers_max_prev_bsr”的，
-    并按父体去重；最终是否爆火由日数据判定。"""
+    并按父体去重；最终是否爆火由日数据判定。
+    上升榜的量的门槛和机会候选一致：近 30 天销量 ≥ risers_min_units 或销售额 ≥ risers_min_revenue。接口的筛选条件是“且”，
+    所以两个门槛各查一次再合并（只按件数查，卖得贵的商品进不了榜）。"""
     dcfg = cfg["discovery"]
     size = int(dcfg.get("risers_per_root", 0))
     new_size = int(dcfg.get("risers_new_per_root", 0))
@@ -287,8 +289,12 @@ def find_risers(vendor: Vendor, cfg: dict, nodes: list[dict]) -> list[dict]:
         found[item["asin"]] = item
         parents.add(key)
 
-    lists = [(order, size, {"minUnits": dcfg.get("risers_min_units")}, "riser")
-             for order in (dcfg.get("risers_orders") or ["total_units_growth", "bsr_rank_cr"])] if size > 0 else []
+    floors = [{"minUnits": dcfg.get("risers_min_units")}]
+    if dcfg.get("risers_min_revenue"):
+        floors.append({"minRevenue": dcfg["risers_min_revenue"]})
+    lists = [(order, size, floor, "riser")
+             for order in (dcfg.get("risers_orders") or ["total_units_growth", "bsr_rank_cr"])
+             for floor in floors] if size > 0 else []
     if new_size > 0:
         lists.append(("available_date", new_size, {"minRevenue": dcfg.get("newcomer_min_revenue")}, "fresh_new"))
     for order_field, n, limits, source in lists:
