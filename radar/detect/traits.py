@@ -20,8 +20,13 @@ set pcs piece pieces inch inches ft feet cm lbs lb x w d h l up into over under 
 """.split())
 
 
-def title_tokens(title: str) -> set[str]:
-    words = [w for w in re.findall(r"[a-z][a-z\-]{2,}", (title or "").lower()) if w not in STOPWORDS]
+def title_tokens(title: str, brand: str = "") -> set[str]:
+    """标题里的单词和相邻两词；先去掉品牌名（否则高频词里会出现“vasagle”“fioneso vanity”这类品牌词）。"""
+    text = (title or "").lower()
+    brand = (brand or "").strip().lower()
+    if brand:
+        text = re.sub(rf"(?<![a-z0-9]){re.escape(brand)}(?![a-z0-9])", " ", text)
+    words = [w for w in re.findall(r"[a-z][a-z\-]{2,}", text) if w not in STOPWORDS]
     grams = set(words)
     grams.update(f"{a} {b}" for a, b in zip(words, words[1:]))
     return grams
@@ -146,9 +151,9 @@ def compute(baseline: list[dict], focus: list[dict], today: date, appearance: di
     df_focus: Counter = Counter()
     df_base: Counter = Counter()
     for r in focus:
-        df_focus.update(title_tokens(r.get("title", "")))
+        df_focus.update(title_tokens(r.get("title", ""), r.get("brand", "")))
     for r in baseline:
-        df_base.update(title_tokens(r.get("title", "")))
+        df_base.update(title_tokens(r.get("title", ""), r.get("brand", "")))
     min_support = 3 if nf >= 20 else max(2, math.ceil(0.15 * nf))
     keywords = []
     for gram, count in df_focus.items():
@@ -175,7 +180,7 @@ def compute(baseline: list[dict], focus: list[dict], today: date, appearance: di
 
 def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict[str, list[dict]]]:
     """外观特征清单（风格 / 造型 / 工艺 / 颜色 / 功能卖点；材质只看主材质）。两种依据按特征名合并，每个特征只出现一次。
-    依据（都要至少 min_count 个增长商品有，才算数）：
+    依据（都要至少 min_count 个增长商品有、且来自至少 min_brands 个品牌，才算数）：
       title：标题统计，增长商品 vs 全部头部商品
       image：主图识别，增长商品里势头最强的若干个 vs 持续热销对照组
     更多：标题里占比 ≥ title_min_share 且是全部头部商品的 title_min_lift 倍以上，或主图里比对照组多 image_min_gap 以上；
@@ -183,17 +188,19 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
     常见：不在“更多”里、增长商品中占比 ≥ common_share 的（有主图识别看主图，没有看标题），不代表比对照组多。"""
     a = cfg["thresholds"]["appearance"]
     min_count, gap_min = int(a["min_count"]), float(a["image_min_gap"])
+    min_brands = int(a.get("min_brands", 1))
     vdims = (vision or {}).get("dimensions") or {}
     qualified_title = {dim: {r["label"] for r in rows} for dim, rows in (tr.get("design") or {}).items()}
     out: dict[str, dict[str, list[dict]]] = {}
     for dim in (*design.APPEARANCE_DIMENSIONS, "功能卖点"):
         titles = {label: r for label, r in ((tr.get("title_shares") or {}).get(dim) or {}).items()
-                  if r["count"] >= min_count}
-        images = {r["label"]: r for r in vdims.get(dim, []) if r["focus"] >= min_count}
+                  if r["count"] >= min_count and r.get("brands", min_brands) >= min_brands}
+        images = {r["label"]: r for r in vdims.get(dim, [])
+                  if r["focus"] >= min_count and r.get("brands", min_brands) >= min_brands}
         more, common = [], []
         for label in dict.fromkeys([*titles, *images]):
             t, i = titles.get(label), images.get(label)
-            t_more = label in qualified_title.get(dim, set())
+            t_more = t is not None and label in qualified_title.get(dim, set())
             i_gap = None if not i or i.get("reference_share") is None else i["focus_share"] - i["reference_share"]
             i_more = i_gap is not None and i_gap >= gap_min - 1e-9
             t_less = t is not None and t["share"] < t["baseline_share"]

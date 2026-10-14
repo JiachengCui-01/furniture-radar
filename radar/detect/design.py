@@ -140,13 +140,18 @@ def main_material(title: str) -> str:
     return "未注明"
 
 
+def brand_key(row: dict) -> str:
+    """同一品牌的多条链接算一个品牌；没有品牌的商品各算一个。"""
+    return (row.get("brand") or "").strip().lower() or f"asin:{row.get('asin') or id(row)}"
+
+
 def extract(title: str) -> dict[str, set[str]]:
     title = title or ""
     return {dim: {label for label, rx in rules if rx.search(title)} for dim, rules in _COMPILED.items()}
 
 
 def shares(baseline: list[dict], focus: list[dict]) -> dict[str, dict[str, dict]]:
-    """标题里每个特征在增长商品和全部头部商品中的占比（不筛选）。"""
+    """标题里每个特征在增长商品和全部头部商品中的占比（不筛选）；brands = 增长商品里有这个特征的品牌数。"""
     nf, nb = len(focus), len(baseline)
     if not nf or not nb:
         return {}
@@ -156,7 +161,8 @@ def shares(baseline: list[dict], focus: list[dict]) -> dict[str, dict[str, dict]
     for dim in LEXICON:
         cf = Counter(label for f in feats_f for label in f[dim])
         cb = Counter(label for f in feats_b for label in f[dim])
-        out[dim] = {label: {"label": label, "count": n, "share": round(n / nf, 3),
+        brands = {label: len({brand_key(r) for r, f in zip(focus, feats_f) if label in f[dim]}) for label in cf}
+        out[dim] = {label: {"label": label, "count": n, "share": round(n / nf, 3), "brands": brands[label],
                             "baseline_share": round(cb.get(label, 0) / nb, 3)} for label, n in cf.items()}
     return out
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 
 from . import clock
+from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
@@ -54,17 +55,11 @@ def _last(values: list):
     return None
 
 
-def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date) -> dict:
-    th = cfg["thresholds"]
-    deals = cfg.get("deal_windows") or []
-    d = Daily.from_record(rec.get("series"))
-    as_of = d.as_of() if d else None
-    idx = d.index_of(as_of) if d and as_of else None
-    node = rec.get("node") or (disc_row or {}).get("node")
-    st = stats.get(node, {})
-    stale = as_of is None or (today - as_of).days > th["stale_days"]
-
-    surge = evaluate_surge(d, idx, th["surge"], deals) if idx is not None else None
+def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dict, st: dict, th: dict,
+                  stale: bool) -> dict:
+    """突然爆火（及断货恢复 / 新品起量 / 形态不稳）、潜力、上升中、回落：都在同一份日数据上判断。"""
+    oos = th.get("out_of_stock_bsr")
+    surge = evaluate_surge(d, idx, th["surge"], oos) if idx is not None else None
     restock = None
     if surge and surge.get("restock"):
         restock, surge = surge, None
@@ -78,16 +73,14 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     unshaped = None
     if surge and not surge["kind"]:  # 不符合任何一种爆火形态
         unshaped, surge = surge, None
-    hot = evaluate_hot(rec.get("months") or [], d, as_of, st.get("threshold"), th["hot"])
-    potential = evaluate_potential(rec, d, as_of, th["potential"]) if idx is not None else None
+    potential = evaluate_potential(rec, d, as_of, th["potential"], oos) if idx is not None else None
     if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断
         surge = potential = None
         new_ramp = None
-    fake = fakehot.score(rec, d, as_of, disc_row, st.get("median_rate"), th["fake"], deals)
     rising = None
     if idx is not None and not stale and not surge and not restock:
         rcfg = th.get("rising") or {}
-        avg28, prev28 = _avg(d, idx, 28), _avg(d, idx - 28, 28)
+        avg28, prev28 = _avg(d, idx, 28), _avg(d, idx - 28, 28, oos)
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
@@ -99,6 +92,34 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     faded = bool(mom and mom["fading"] and (surge or potential or rising))
     if faded:
         surge = potential = rising = None
+    return {"surge": surge, "restock": restock, "new_ramp": new_ramp, "unshaped": unshaped,
+            "potential": potential, "rising": rising, "mom": mom, "faded": faded}
+
+
+def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
+             data_date: date | None = None, events=frozenset()) -> dict:
+    """data_date：本期日数据的最新日期（所有追踪商品里最晚的一天），“数据陈旧”和它比；
+    events：大促日（detect/events.py），爆火 / 潜力 / 上升中 / 回落 / 季节性 / 持续热销都在去掉这些天的日数据上判断。"""
+    th = cfg["thresholds"]
+    full = Daily.from_record(rec.get("series"))
+    as_of = full.as_of() if full else None
+    idx = full.index_of(as_of) if full and as_of else None
+    node = rec.get("node") or (disc_row or {}).get("node")
+    st = stats.get(node, {})
+    stale = as_of is None or ((data_date or today) - as_of).days > th["stale_days"]
+    d = full.without(events) if full is not None and events else full
+
+    g = _judge_growth(d, idx, as_of, rec, st, th, stale)
+    # 大促拉动：近 56 天里有大促日、这个商品自己在大促日冲高了，而且算上大促日能达到爆火 / 潜力 / 上升中、去掉就达不到
+    deal_lift = False
+    if d is not full and idx is not None and not (g["surge"] or g["potential"] or g["rising"]) \
+            and _spiked_on_events(full, idx, events, th["events"]):
+        g_full = _judge_growth(full, idx, as_of, rec, st, th, stale)
+        deal_lift = bool(g_full["surge"] or g_full["potential"] or g_full["rising"])
+    surge, restock, new_ramp, unshaped = g["surge"], g["restock"], g["new_ramp"], g["unshaped"]
+    potential, rising, mom, faded = g["potential"], g["rising"], g["mom"], g["faded"]
+    hot = evaluate_hot(rec.get("months") or [], d, as_of, st.get("threshold"), th["hot"])
+    fake = fakehot.score(rec, full, as_of, disc_row, st.get("median_rate"), th["fake"], events)
 
     rating, n_ratings = current_rating(rec, disc_row)
     low = low_rating(rating, n_ratings, th)
@@ -124,25 +145,28 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         tags.append(surge["kind"])
         if surge["seasonal"]:
             tags.append("季节性")
-        if surge["deal"]:
-            tags.append(f"大促：{surge['deal']}")
         if surge["price_driven"]:
             tags.append("降价驱动")
     if rising and label in ("watch", "hot"):
         tags.append(f"上升中（近28天 ×{rising['ratio']:.1f}）")
     if faded:
         why = []
-        if mom["from_peak"]:
-            why.append(f"近7天日均 {mom['avg7']:.1f} 件，近4周最高一周 {mom['peak']:.1f} 件")
-        if mom["recent_dip"]:
-            why.append(f"最近3天日均 {mom['avg3']:.1f} 件，近7天 {mom['avg7']:.1f} 件")
-        tags.append(f"最近回落（{'；'.join(why)}）")
+        if mom["falling"]:
+            why.append(f"最近3天日均 {mom['avg3']:.1f} 件，再之前3天 {mom['prev3']:.1f} 件，近4周最高的3天 {mom['peak3']:.1f} 件")
+        if mom["lower_week"]:
+            why.append(f"近7天中位数 {mom['med7']:g} 件，再之前7天 {mom['prev_med7']:g} 件")
+        if mom["sliding"]:
+            why.append(f"近7天最高 {mom['peak_day']:g} 件，之后 {mom['slide_days']} 天没回升，最近一天 {mom['last_day']:g} 件")
+        excl = "去掉大促日后，" if d is not None and any(idx - 27 <= i <= idx for i in d.masked) else ""
+        tags.append(f"最近回落（{excl}{'；'.join(why)}）")
     if unshaped and not faded:
         tags.append("短时脉冲（不算爆火）" if unshaped.get("pulse") else "上涨形态不稳定（不算爆火）")
     if restock:
         tags.append("断货恢复")
     if new_ramp:
         tags.append("新品起量（未达爆火门槛）")
+    if deal_lift:
+        tags.append("大促拉动（去掉大促日后不达标）")
     if hot and label != "hot":
         tags.append("长期头部")  # 符合持续热销条件，但本期归入了别的板块
     if potential and label not in ("potential",):
@@ -164,8 +188,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "node": node,
         "node_name": rec.get("node_name") or (disc_row or {}).get("node_name") or "",
         "node_cn": rec.get("node_cn") or (disc_row or {}).get("node_cn") or "",
-        "price": (_last(d.price) if d else None) or rec.get("price"),
-        "bsr": _last(d.bsr) if d else None,
+        "price": (_last(full.price) if full else None) or rec.get("price"),
+        "bsr": _last(full.bsr) if full else None,
         "rating": rating,
         "ratings": n_ratings,
         "variations": rec.get("variations"),
@@ -182,8 +206,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "hot": hot,
         "potential": potential,
         "fake": fake,
-        "spark": (d.sales[max(0, idx - 89): idx + 1] if idx is not None else []),
-        "spark_start": d.day(max(0, idx - 89)).isoformat() if idx is not None else None,
+        "spark": (full.sales[max(0, idx - 89): idx + 1] if idx is not None else []),
+        "spark_start": full.day(max(0, idx - 89)).isoformat() if idx is not None else None,
         "monthly": [[k, s] for k, s in months[-12:]],
         "recent_avg7": (surge or {}).get("recent_avg") if surge else _avg(d, idx, 7),
         "recent_avg28": _avg(d, idx, 28),
@@ -192,25 +216,42 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     }
 
 
-def _avg(d: Daily | None, idx: int | None, days: int) -> float | None:
+def _spiked_on_events(d: Daily, idx: int, events, cfg: dict, lookback: int = 56) -> bool:
+    """近 lookback 天的大促日里，有没有哪天这个商品的销量达到自己之前 base_days 天（不含大促日）中位数的 jump 倍。"""
+    base_days, jump = int(cfg["base_days"]), float(cfg["jump"])
+    for day in events:
+        i = d.index_of(day)
+        if not 0 <= idx - i < lookback or i >= len(d.sales) or d.sales[i] is None:
+            continue
+        prior = [d.sales[j] for j in range(max(0, i - base_days), i)
+                 if d.sales[j] is not None and d.day(j) not in events]
+        if len(prior) >= base_days // 2 and d.sales[i] >= jump * max(median(prior), 1):
+            return True
+    return False
+
+
+def _avg(d: Daily | None, idx: int | None, days: int, oos_bsr: float | None = None) -> float | None:
+    """[idx-days+1, idx] 的日均销量；给了 oos_bsr 时跳过断货的日子（用于对比期）。"""
     if d is None or idx is None:
         return None
-    values = d.window("sales", idx, days)
+    values = d.in_stock_window("sales", idx, days, oos_bsr)
     return round(sum(values) / len(values), 2) if values else None
 
 
 def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: date,
             extra_rows: dict | None = None) -> dict:
-    """extra_rows：发现基线以外的月度行（例如 BSR 上升榜），用于留评率等信号。"""
+    """extra_rows：发现基线以外的月度行（例如 BSR 上升榜），用于留评率等信号。
+    大促日从本期追踪商品的日数据里识别（加上 config.yaml 登记的），见 detect/events.py。"""
     stats = node_stats(disc, cfg)
     products = {**(extra_rows or {}), **((disc or {}).get("products") or {})}
-    items = []
-    for asin in pool:
-        rec = state["asins"].get(asin)
-        if not rec or not rec.get("series"):
-            continue
-        items.append(evaluate(asin, rec, products.get(asin), stats, cfg, today))
-    return {"items": items, "node_stats": stats}
+    recs = [(asin, state["asins"][asin]) for asin in pool
+            if (state["asins"].get(asin) or {}).get("series")]
+    dailies = [d for d in (Daily.from_record(rec["series"]) for _, rec in recs) if d is not None]
+    data_date = max((day for day in (d.as_of() for d in dailies) if day), default=None)
+    ev = events_mod.detect(dailies, cfg["thresholds"]["events"], cfg.get("deal_windows") or [])
+    items = [evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"])
+             for asin, rec in recs]
+    return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date}
 
 
 def _growth(item: dict) -> float:
@@ -257,7 +298,7 @@ def trait_rows(items: list[dict], disc: dict | None, state: dict) -> tuple[list[
         row = products.get(item["asin"])
         if row is None:
             rec = state["asins"].get(item["asin"]) or {}
-            row = {"asin": item["asin"], "title": item["title"], "node": item["node"],
+            row = {"asin": item["asin"], "title": item["title"], "brand": item["brand"], "node": item["node"],
                    "node_cn": item["node_cn"], "node_name": item["node_name"], "price": item["price"],
                    "rating": item["rating"], "ratings": item["ratings"], "variations": rec.get("variations"),
                    "fulfillment": rec.get("fulfillment"), "seller_nation": rec.get("seller_nation"),

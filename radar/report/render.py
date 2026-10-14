@@ -10,7 +10,7 @@ import html
 import re
 
 from ..analyze import display_name
-from ..detect import directions
+from ..detect import directions, events
 from ..tracking import REASON_CN
 from .sparkline import bars, sparkline
 
@@ -222,7 +222,8 @@ GROUP_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中
 def _tags(item: dict) -> str:
     out = []
     for tag in item["tags"]:
-        cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定")) else \
+        cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定",
+                                               "拉动")) else \
             "good" if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith("上升中") else \
             "info" if any(k in tag for k in ("季节", "大促", "头部", "变体")) else ""
         out.append(f'<span class="tag {cls}">{esc(tag)}</span>')
@@ -412,8 +413,8 @@ def _clip(text: str, limit: int) -> str:
 
 
 def _direction_box(d: dict) -> str:
-    """一个开发方向：每个维度入选的特征（几个商品有 / 该子类目增长商品数）、价格、参考商品。"""
-    n = d["n"]
+    """一个开发方向：每个维度入选的特征（几个品牌有 / 该子类目增长商品的品牌数）、价格、参考商品。"""
+    n = d.get("n_brands", d["n"])
 
     def chips(rows: list[dict]) -> str:
         if not rows:
@@ -434,17 +435,20 @@ def _direction_box(d: dict) -> str:
         f'{esc(_clip(r["name"], 48))}</a> <em>{fmt_price(r.get("price"))}</em>'
         + (f"：{esc(r['look'])}" if r.get("look") else "") + "</li>" for r in d["refs"])
     surge = f"，其中突然爆火 {d['n_surge']} 个" if d["n_surge"] else ""
-    return (f'<div class="dbox dir"><h4>{esc(d["node"])}<span class="sub">增长商品 {n} 个{surge}</span></h4>'
-            f'<dl class="spec">{spec}</dl><div class="grp-h">参考商品</div><ul class="refs">{refs}</ul></div>')
+    refs = (f'<ul class="refs">{refs}</ul>' if refs
+            else '<p class="none">势头靠前的都有异常信号，不列参考商品</p>')
+    return (f'<div class="dbox dir"><h4>{esc(d["node"])}<span class="sub">增长商品 {d["n"]} 个、{n} 个品牌{surge}</span></h4>'
+            f'<dl class="spec">{spec}</dl><div class="grp-h">参考商品</div>{refs}</div>')
 
 
 def _directions(tr: dict, cfg: dict) -> str:
     c = cfg["thresholds"]["directions"]
-    rule = (f"增长商品 ≥{c['min_items']} 个的子类目，按增长商品个数（同数时看突然爆火个数、势头）取前 {c['max']} 个。"
-            f"每一项列出该子类目里至少 {c['feature_min_share']:.0%}（且不少于 2 个）增长商品具备的主材质和特征"
-            f"（标题或主图识别任一有就算，每项最多 {c['per_dim']} 个），数字 = 具备的商品数 / 该子类目增长商品数，"
+    rule = (f"增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目，按品牌数（同数时看增长商品个数、"
+            f"突然爆火个数、势头）取前 {c['max']} 个，没有任何共同主材质或特征的跳过。按品牌计数，同一品牌的多个商品只算一次：每一项列出该子类目里至少 "
+            f"{c['feature_min_share']:.0%}（且不少于 2 个）品牌具备的主材质和特征（该品牌任一增长商品的标题或主图识别有就算，"
+            f"每项最多 {c['per_dim']} 个），数字 = 具备的品牌数 / 该子类目增长商品的品牌数，"
             "“不统一”= 没有达到这个比例的；↑ = 这个特征在全部增长商品里也比对照组更多；"
-            "价格 = 最低价 ~ 最高价（3 个以上给中位数）；参考商品 = 该子类目势头最强的两个。")
+            "价格 = 最低价 ~ 最高价（3 个以上给中位数）；参考商品 = 该子类目势头最强、没有任何异常信号的两个，来自不同品牌。")
     boxes = "".join(_direction_box(d) for d in tr.get("directions") or [])
     body = f'<div class="dgrid dirs">{boxes}</div>' if boxes else '<p class="empty">本期没有增长商品数达到门槛的子类目。</p>'
     return f'<h3>开发方向依据</h3><p class="hint">{esc(rule)}</p>{body}'
@@ -463,7 +467,8 @@ def _traits(tr: dict, counts: dict, cfg: dict) -> str:
               f'<span><span class="src ttl">标题</span>标题统计：增长商品，对比“头部”= 全部头部商品 {tr["n_baseline"]} 个</span>',
               '<span>进度条：绿色 = 增长商品中的占比，竖线 = 对比对象中的占比</span>']
     rules = [f'主材质：每个商品一类，依次取亚马逊 Material 属性、标题、主图识别；看全部增长商品，对比对照组。',
-             f'比对照组更多：至少 {a["min_count"]} 个增长商品有，且标题里占比 ≥{a["title_min_share"]:.0%}、是头部的 '
+             f'比对照组更多：至少 {a["min_count"]} 个增长商品有（且来自至少 {a.get("min_brands", 1)} 个品牌），'
+             f'标题里占比 ≥{a["title_min_share"]:.0%}、是头部的 '
              f'{a["title_min_lift"]:g} 倍以上，或主图里比对照多 {a["image_min_gap"] * 100:.0f} 个百分点以上；'
              '两种依据方向相反的不列。',
              f'常见但不比对照组多：增长商品里 ≥{a["common_share"]:.0%} 有（有主图识别看主图，没有看标题），只说明是基本盘，不代表趋势。']
@@ -554,7 +559,15 @@ def _method(cfg: dict) -> str:
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
 <li><b>数据</b>：卖家精灵的月度头部名单（product_research，已结束月份）、近 30 天榜单（不传月份，截至当天）、
 每个追踪商品约 400 天的日销量 / BSR / 价格（asin_prediction）。日销量是卖家精灵按 BSR 估算的，所以以 BSR 中位数为主信号。
-所有判定都基于每个商品截至最近一天的日数据；日数据超过 {th['stale_days']} 天没更新的标“数据陈旧”，不做爆火/潜力判断。</li>
+所有判定都基于每个商品截至最近一天的日数据；比本期最新的一天晚 {th['stale_days']} 天以上的标“数据陈旧”，不做爆火 / 潜力 / 上升中判断。</li>
+<li><b>大促日</b>：这几天全类目一起冲高（历史上大促当天约六七成商品销量翻倍，第二天就回到原样），
+所以爆火 / 潜力 / 上升中 / 回落 / 季节性 / 持续热销的比较都去掉这些天：近 7 天、近 28 天、对比期都跳过大促日。
+大促日 = 从追踪商品的日数据自动识别（某天 ≥{th['events']['core_share']:.0%} 的商品当天销量达到自己前
+{th['events']['base_days']} 天中位数的 {th['events']['jump']:g} 倍，与它相连、比例 ≥{th['events']['edge_share']:.0%} 的日子也算）
++ config.yaml 登记的大促里、数据也印证（当天 ≥{th['events']['edge_share']:.0%} 的商品冲高）的日子。
+自己在大促日冲高过、算上大促日能达到爆火 / 潜力 / 上升中而去掉后达不到的，标“大促拉动”，不进这几个板块。</li>
+<li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
+爆火、潜力、上升中都只和真正在卖的日子比。</li>
 <li><b>追踪名额</b>：依次给必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']} + 全部类目里销量最大的）、
 上期爆款的相似款、机会候选（近 30 天榜单和月度名单里增长快或上架半年内的；机会分最高的 {cfg['pool']['opportunity_every_run']} 个每期都看，其余按最久没查轮流查）。
 机会分综合销量增长率、近 7 天 BSR 改善、子类目内销量位次、是否上架半年内。</li>
@@ -563,7 +576,10 @@ def _method(cfg: dict) -> str:
 <li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']}（评论少时几条差评就会跌破
 {th['min_rating']}，卖家精灵的评分也比亚马逊晚几天）的，不进任何板块和增长商品，也不占追踪名额，由后面的商品依次补位。
 评分优先取最新日数据；还没有评论的新品不受限。</li>
-<li><b>回落</b>：近 7 天日均比最近 4 周里最高的一周低 {1 - m['min_vs_peak_week']:.0%} 以上，或最近 3 天日均比近 7 天低 {1 - m['min_last3_vs_7d']:.0%} 以上。
+<li><b>回落</b>（任一）：① 冲高后正在往下掉 = 最近 3 天日均比近 4 周里最高的 3 天日均低 {1 - m['min_vs_peak_3d']:.0%} 以上，
+并且比再之前 3 天低 {1 - m['min_vs_prev_3d']:.0%} 以上；② 这一周整体变低 = 近 7 天销量的中位数比再之前 7 天的中位数低
+{1 - m['min_vs_prev_week']:.0%} 以上；③ 冲高后连着往下掉 = 近 7 天里最高的那天之后、直到最近一天都没有回升过（至少 {m['slide_days']} 天），
+且最近一天比最高那天低 {1 - m['slide_max_vs_peak']:.0%} 以上。冲高一两天后回到原来水平的不算回落（中位数不受一两天的尖峰影响）。
 突然爆火、潜力、上升中都要求没有回落，有回落的标“最近回落”。</li>
 <li><b>突然爆火的形态</b>（依次判断）：<b>新品爆发</b> = 之前 {s['base_days']} 天几乎没卖（日均 &lt;0.5 件），且日均 ≥{s['new_listing_min_daily']} 件、
 ≥ 所在子类目第 20 名水平的 {s['new_listing_node_share']:.0%}（量不够的标“新品起量（未达爆火门槛）”）；
@@ -571,8 +587,8 @@ def _method(cfg: dict) -> str:
 <b>仍在上涨</b> = 近 7 天日均比前 7 天高 ≥{s['climb_ratio'] - 1:.0%}，且最近 3 天日均高于近 7 天。
 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天的是“短时脉冲”，其余都不符合的是“上涨形态不稳定”，都不算爆火。
 <b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)。</li>
-<li><b>爆火的附加标签</b>：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}；
-大促 = 上涨期间与大促日期重叠。对比期里大部分天没有销量、而更早时卖得和现在差不多的是“断货恢复”，不算爆火。</li>
+<li><b>爆火的附加标签</b>：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
+对比期里 ≥7 天（且 ≥25%）没有销量、而更早之前卖得和现在差不多的是“断货恢复”，不算爆火。</li>
 <li><b>外观与工艺依据</b>：材质只有“主材质”一种口径，每个商品一类（铁木 / 实木 / 板材 / 金属…），依次取亚马逊商品详情的 Material 属性、
 标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色有两种依据——
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组），
@@ -582,7 +598,7 @@ def _method(cfg: dict) -> str:
 <li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
 累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体多的商品评论为父体共享，不算评论/销量比；
-评论暴增且父体/变体变化的标“变体合并”、短时脉冲落在大促里的标“大促脉冲”、抽查评论里 Vine 评论 ≥30% 的标“Vine 评论多”，这三项不计分。</li>
+评论暴增且父体/变体变化的标“变体合并”、短时脉冲落在大促日的标“大促脉冲”、抽查评论里 Vine 评论 ≥30% 的标“Vine 评论多”，这三项不计分。</li>
 <li><b>与上期对比</b>：每个商品只出现一次。“依旧爆火”= 上期、本期都在突然爆火板块；“新进入「某板块」”= 本期在该板块、上期不在，
 上期在别的板块的在括号里注明；“不再爆火”= 上期爆火、本期留在追踪里但不在任何板块。</li>
 <li>阈值都可以在仓库的 config.yaml 中调整。</li></ul></details>"""
@@ -604,6 +620,9 @@ def render(ctx: dict) -> str:
         facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
     if counts.get("low"):
         facts.append(f"评分不达标未上榜 {counts['low']} 个")
+    spans = (ctx.get("events") or {}).get("spans") or []
+    if spans:
+        facts.append("大促日（不参与比较）：" + "、".join(events.span_text(sp) for sp in spans))
     facts += [f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次",
               f"本期要点：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"]
     history = ""

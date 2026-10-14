@@ -14,7 +14,7 @@ from collections import Counter
 import httpx
 
 from . import log
-from .detect.design import DESIGN_DIMENSIONS, LEXICON
+from .detect.design import DESIGN_DIMENSIONS, LEXICON, brand_key
 
 
 def _vocab() -> str:
@@ -137,7 +137,8 @@ def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim:
                 continue
             share = n / len(f_tagged)
             ref_share = cr.get(label, 0) / len(r_tagged) if r_tagged else None
-            rows.append({"label": label, "focus": n, "focus_share": round(share, 3),
+            brands = len({brand_key(item) for item, v in f_tagged if label in set(v["tags"].get(dim, []))})
+            rows.append({"label": label, "focus": n, "focus_share": round(share, 3), "brands": brands,
                          "reference": cr.get(label, 0),
                          "reference_share": None if ref_share is None else round(ref_share, 3),
                          # 增长商品里比持续热销对照组多 min_gap 以上的，才算增长商品特有的外观（留浮点误差余量）

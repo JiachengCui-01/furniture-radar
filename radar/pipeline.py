@@ -200,7 +200,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"]}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
-                       coverage=coverage, today=today)
+                       coverage=coverage, today=today, events=result.get("events"))
     key_text = ctx["key_text"]
     sec = ctx["sections"]
 
@@ -278,8 +278,9 @@ def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict
 
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
-                 prev_run: dict | None, coverage: dict, today) -> dict:
-    """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。"""
+                 prev_run: dict | None, coverage: dict, today, events: dict | None = None) -> dict:
+    """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
+    events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”。"""
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
     trait = analyze.compute_traits(items, disc, state, today, cfg)
 
@@ -320,6 +321,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
         "cfg": cfg,
         "top_n": int(cfg["report"]["top_n"]),
+        "events": events or {},
     }
     ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
     ctx["history"] = [{"id": old_id, "href": f"{old_id}.html#k={crypto.report_key_text(master, old_id)}"}
@@ -375,7 +377,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     disc = state.get("discovery")
     today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()
     extra_rows = tracking.fresh_rows(state)
-    items = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows)["items"]
+    result = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows)
+    items = result["items"]
     coverage = last.get("coverage") or {}
     if not coverage:
         month = (last.get("date") or "")[:7]
@@ -386,7 +389,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),
                                                                             cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
                        prev_run=state["runs"][-2] if len(state["runs"]) >= 2 else None, coverage=coverage,
-                       today=today)
+                       today=today, events=result.get("events"))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)

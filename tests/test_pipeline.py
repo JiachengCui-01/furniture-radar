@@ -62,8 +62,9 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
     _world, _secrets, site, _first, _second = world_run
     state = store.load(site, crypto.parse_master_key(master_key))
     last = state["runs"][-1]
-    items = analyze.analyze(state, state["discovery"], list(last["labels"]), cfg, clock.parse_day(last["date"]),
-                            tracking.fresh_rows(state))["items"]
+    result = analyze.analyze(state, state["discovery"], list(last["labels"]), cfg, clock.parse_day(last["date"]),
+                             tracking.fresh_rows(state))
+    items, event_days = result["items"], result["events"]["days"]
     th, s = cfg["thresholds"], cfg["thresholds"]["surge"]
     checked = set()
     for item in items:
@@ -72,8 +73,9 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
         checked.add(item["label"])
         assert item["fake"]["score"] < th["fake"]["suspect_score"]
         assert not low_rating(item["rating"], item["ratings"], th)
-        d = Daily.from_record(state["asins"][item["asin"]]["series"])
-        mom = momentum(d, d.index_of(d.as_of()), th["momentum"])
+        full = Daily.from_record(state["asins"][item["asin"]]["series"])
+        d = full.without(event_days)  # 判定用的是去掉大促日的日数据
+        mom = momentum(d, full.index_of(full.as_of()), th["momentum"])
         if item["label"] in ("surge", "potential"):
             assert not mom["fading"], item["asin"]
         if item["label"] == "surge":

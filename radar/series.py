@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from . import clock
@@ -20,6 +20,7 @@ class Daily:
     bsr: list
     sales: list
     price: list
+    masked: frozenset = field(default_factory=frozenset)  # 去掉的日子（大促日）的下标，见 without()
 
     @classmethod
     def from_record(cls, series: dict | None) -> "Daily | None":
@@ -57,9 +58,31 @@ class Daily:
         return [v for v in values[lo:end + 1] if v is not None]
 
     def raw_window(self, name: str, end: int, length: int) -> list:
+        """[end-length+1, end] 区间内的值，缺失日保留为 None（断货），去掉的日子（masked）不在里面。"""
         values = getattr(self, name)
         lo = max(0, end - length + 1)
-        return values[lo:end + 1]
+        return [v for i, v in enumerate(values[lo:end + 1], lo) if i not in self.masked]
+
+    def in_stock_window(self, name: str, end: int, length: int, oos_bsr: float | None) -> list:
+        """同 window()，但跳过断货的日子：BSR 缺失或 ≥ oos_bsr（断货 / 停售 / 还没开卖，BSR 会飙到几百万）。
+        对比期用它：没在卖的日子不能当“之前的水平”。oos_bsr 为空时等于 window()。"""
+        if not oos_bsr:
+            return self.window(name, end, length)
+        values = getattr(self, name)
+        lo = max(0, end - length + 1)
+        return [v for i, v in enumerate(values[lo:end + 1], lo)
+                if v is not None and self.bsr[i] is not None and self.bsr[i] < oos_bsr]
+
+    def without(self, days) -> "Daily":
+        """去掉这些日子（置为缺失）后的副本，原序列不变。用于大促日：均值、中位数、形态都跳过它们。"""
+        idx = {self.index_of(day) for day in days} & set(range(len(self.bsr)))
+        if not idx:
+            return self
+
+        def blank(values: list) -> list:
+            return [None if i in idx else v for i, v in enumerate(values)]
+
+        return Daily(self.start, blank(self.bsr), blank(self.sales), blank(self.price), frozenset(idx) | self.masked)
 
 
 def build_daily(items: list[dict], keep_days: int = 420) -> dict | None:
@@ -151,16 +174,17 @@ def daily_avg_of_month(key: str, sales: float) -> float:
 
 # ---------------------------------------------------------------- 暴涨 ----
 
-def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int) -> dict | None:
-    """近 window 天对比之前 base_days 天。"""
+def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
+                  oos_bsr: float | None = None) -> dict | None:
+    """近 window 天对比之前 base_days 天。对比期里断货的日子（BSR ≥ oos_bsr 或缺失）不算。"""
     if as_of_idx is None or as_of_idx + 1 < window + 7:
         return None
     recent_end = as_of_idx
     base_end = as_of_idx - window
     recent_bsr = median(d.window("bsr", recent_end, window))
-    base_bsr = median(d.window("bsr", base_end, base_days))
+    base_bsr = median(d.in_stock_window("bsr", base_end, base_days, oos_bsr))
     recent_sales = d.window("sales", recent_end, window)
-    base_sales = d.window("sales", base_end, base_days)
+    base_sales = d.in_stock_window("sales", base_end, base_days, oos_bsr)
     recent_avg = mean(recent_sales)
     base_avg = mean(base_sales)
     if recent_avg is None:

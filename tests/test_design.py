@@ -62,7 +62,7 @@ def test_vision_tags_are_cached(cfg):
     assert vision.tag_items(items, state, cfg, "key", client=client) == 0  # 图片没变：不再调用
     assert calls == {"img": 2, "llm": 2}
     summary = vision.summarize(items, [], state)
-    assert summary["dimensions"]["材质"][0] == {"label": "泰迪绒/羊羔绒", "focus": 2, "focus_share": 1.0,
+    assert summary["dimensions"]["材质"][0] == {"label": "泰迪绒/羊羔绒", "focus": 2, "focus_share": 1.0, "brands": 2,
                                               "reference": 0, "reference_share": None, "distinct": False}
     # 有持续热销对照时，“比热销多见”的特征排前面并标出
     state["asins"]["H1"] = {"vision": {"image": "x", "summary": "", "tags": {"材质": ["人造板"], "造型": ["弧形曲线"]}}}
@@ -172,8 +172,8 @@ def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
     from radar.detect import directions
 
     def item(asin, node, title, label="surge", material="板材", price=100.0):
-        return {"asin": asin, "node_cn": node, "node_name": "", "title": title, "brand": "B", "label": label,
-                "material": material, "price": price, "look": ""}
+        return {"asin": asin, "node_cn": node, "node_name": "", "title": title, "brand": f"Brand{asin}",
+                "label": label, "material": material, "price": price, "look": ""}
 
     focus = [
         item("V1", "梳妆台", "Vanity Desk with Mirror and LED Lights, Glass Doors, White", price=160),
@@ -198,3 +198,45 @@ def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
     assert directions.headline(v) == "梳妆台：板材，玻璃门，白色，LED 灯，$160–$228"
     assert [f["label"] for f in out[1]["features"]["造型"]] == ["窄小省空间"] and out[1]["materials"] == [
         {"label": "板材", "count": 2}]
+
+
+def test_directions_count_brands_and_skip_flagged_references(cfg):
+    """同一品牌的多条链接只算一个品牌：一家的产品线撑不起“白色 / LED”这样的方向；
+    只有一个品牌的子类目不出方向；有异常信号的商品不当参考，两个参考来自不同品牌。"""
+    from radar.detect import directions
+
+    def item(asin, node, title, brand, score=0):
+        return {"asin": asin, "node_cn": node, "node_name": "", "title": title, "brand": brand, "label": "surge",
+                "material": "板材", "price": 100.0, "look": "", "fake": {"score": score}}
+
+    focus = [
+        item("F1", "梳妆台", "Vanity Desk with LED Lights, White", "FIONESO"),
+        item("F2", "梳妆台", "Makeup Vanity with LED Lights, White", "FIONESO"),
+        item("F3", "梳妆台", "Vanity Table with LED Lights, White", "fioneso "),
+        item("K1", "梳妆台", "Vanity Table, Black", "King Oasis"),
+        item("N1", "床头柜", "Nightstand with Charging Station", "VASAGLE"),
+        item("N2", "床头柜", "Nightstand with Charging Station, Drawers", "VASAGLE"),
+        item("S1", "书架", "Narrow Bookshelf, Black", "TUTOTAK", score=2),
+        item("S2", "书架", "Narrow Bookshelf, Walnut", "OOOK"),
+        item("S3", "书架", "Narrow Bookcase, Walnut", "OOOK"),
+    ]
+    out = directions.compute(focus, {"asins": {}}, {}, cfg)
+    assert [d["node"] for d in out] == ["梳妆台", "书架"]  # 床头柜只有 VASAGLE 一个品牌
+    v = out[0]
+    assert (v["n"], v["n_brands"], v["need"]) == (4, 2, 2)
+    assert v["features"]["颜色"] == [] and v["features"]["功能卖点"] == []  # 白色、LED 只有 FIONESO 一家有
+    assert v["materials"] == [{"label": "板材", "count": 2}]
+    shelf = out[1]
+    assert [f["label"] for f in shelf["features"]["造型"]] == ["窄小省空间"]
+    assert [r["asin"] for r in shelf["refs"]] == ["S2"]  # S1 有异常信号；S3 和 S2 同一品牌
+
+
+def test_appearance_needs_two_brands_and_keywords_drop_brand_names(cfg):
+    """“比对照组更多”的特征要来自至少 2 个品牌；标题高频词不出现品牌名。"""
+    t = lambda label, n, brands: {"label": label, "count": n, "share": 0.3, "baseline_share": 0.05, "brands": brands}
+    tr = {"design": {"工艺": [dict(t("凹槽竖纹", 3, 1), lift=4.0), dict(t("玻璃门", 3, 2), lift=4.0)]},
+          "title_shares": {"工艺": {"凹槽竖纹": t("凹槽竖纹", 3, 1), "玻璃门": t("玻璃门", 3, 2)}}}
+    out = traits.merge_appearance(tr, {}, cfg)
+    assert [f["label"] for f in out["工艺"]["more"]] == ["玻璃门"]  # 凹槽竖纹只有一个品牌
+    assert "vasagle" not in traits.title_tokens("VASAGLE Nightstand with Charging Station", "VASAGLE")
+    assert "nightstand" in traits.title_tokens("VASAGLE Nightstand with Charging Station", "VASAGLE")

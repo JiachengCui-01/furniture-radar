@@ -7,7 +7,7 @@
 | +2 | 新品（≤90 天）累计评论数 / 累计销量 ≥ 10% | ✓ |
 | +2 | 两期之间新增评论 / 新增销量 ≥ 15%（或几乎无销量却涨评论） | 第 2 期起 |
 | +1 | 45 天内评分上升 ≥0.2 且评论数 ≥50 | 第 2 期起 |
-| +1 | 1~3 天脉冲后迅速回落（不在大促窗口内） | ✓ |
+| +1 | 1~3 天脉冲后迅速回落（不在大促日，见 events.py） | ✓ |
 | +2 | 评论核查：近 60 天评论 ≥30% 集中在 3 天 | ✓（需额外调用） |
 | +1 | 评论核查：非验证购买占比 ≥50% | ✓（需额外调用） |
 | 标签 | 评论数暴增 ≥30% 且父体/变体数变化 → 变体合并（不计分） | 第 2 期起 |
@@ -20,7 +20,6 @@ from datetime import date, timedelta
 
 from .. import clock
 from ..series import Daily, find_pulses, sum_sales_between
-from .rules import deal_overlap
 
 
 def _variations_ok(rec: dict, cfg: dict) -> bool | None:
@@ -63,7 +62,8 @@ def merge_detected(rec: dict, disc_row: dict | None) -> bool:
 
 
 def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
-          node_median_rate: float | None, cfg: dict, deal_windows: list[dict]) -> dict:
+          node_median_rate: float | None, cfg: dict, event_days=()) -> dict:
+    """d 是完整的日数据（不去掉大促日）；event_days：大促日（events.detect），落在大促日的脉冲不计分。"""
     signals: list[dict] = []
     tags: list[str] = []
 
@@ -131,8 +131,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     # 5. 短时脉冲
     for pulse in find_pulses(d, as_of_idx, 30, cfg["pulse_mult"], cfg["pulse_min_sales"], cfg["pulse_revert"]):
         day = clock.parse_day(pulse["day"])
-        deal = deal_overlap(day, day + timedelta(days=pulse["length"] - 1), deal_windows)
-        if deal:
+        if any(day + timedelta(days=k) in event_days for k in range(pulse["length"])):
             if "大促脉冲" not in tags:
                 tags.append("大促脉冲")
             continue

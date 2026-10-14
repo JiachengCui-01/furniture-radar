@@ -26,9 +26,13 @@ def fixture(tool: str) -> dict:
 
 @pytest.fixture
 def cfg():
+    """config.yaml 的参数，但不带登记的大促日期：合成数据的日期是随便取的，不能撞上真实的大促。
+    需要大促日的测试自己写 deal_windows。"""
     from radar.config import load_config
 
-    return load_config()
+    out = load_config()
+    out["deal_windows"] = []
+    return out
 
 
 @pytest.fixture

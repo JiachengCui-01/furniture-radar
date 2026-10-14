@@ -27,7 +27,7 @@ def surge_cfg(cfg):
 
 def test_sustained_surge(cfg):
     d = make([5] * 110 + [18] * 10)
-    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg), [])
+    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg))
     assert s and s["kind"] == "稳在高位" and s["sales_ratio"] > 2.5 and not s["price_driven"]
 
 
@@ -35,19 +35,19 @@ def test_short_pulse_is_not_a_surge_but_scores_as_anomaly(cfg):
     sales = [6] * 120
     sales[-9] = sales[-8] = 40
     d = make(sales)
-    assert evaluate_surge(d, len(d) - 1, surge_cfg(cfg), []) is None  # BSR 中位数没动
+    assert evaluate_surge(d, len(d) - 1, surge_cfg(cfg)) is None  # BSR 中位数没动
     f = cfg["thresholds"]["fake"]
     assert find_pulses(d, len(d) - 1, 30, f["pulse_mult"], f["pulse_min_sales"], f["pulse_revert"])
 
 
 def test_small_base_noise_is_ignored(cfg):
     d = make([0, 1] * 55 + [2, 3] * 5)  # 从 0.5 涨到 2.5，但绝对量太小
-    assert evaluate_surge(d, len(d) - 1, surge_cfg(cfg), []) is None
+    assert evaluate_surge(d, len(d) - 1, surge_cfg(cfg)) is None
 
 
 def test_price_driven_surge(cfg):
     d = make([5] * 110 + [16] * 10, prices=[200.0] * 110 + [140.0] * 10)
-    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg), [])
+    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg))
     assert s and s["price_driven"]
 
 
@@ -56,19 +56,85 @@ def test_seasonal_surge(cfg):
     for i in list(range(420 - 10, 420)) + list(range(420 - 10 - 364, 420 - 364)):
         sales[i] = 18
     d = make(sales)
-    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg), [])
+    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg))
     assert s and s["seasonal"]
 
 
-def test_deal_window_is_tagged(cfg):
-    d = make([5] * 110 + [18] * 10)
-    deals = [{"name": "黑五", "start": (END - timedelta(days=3)).isoformat(), "end": END.isoformat()}]
-    assert evaluate_surge(d, len(d) - 1, surge_cfg(cfg), deals)["deal"] == "黑五"
+def test_event_days_are_detected_from_many_items_jumping_together(cfg):
+    """大促日：同一天 ≥30% 的商品销量翻到自己前 14 天中位数的 1.8 倍；相连的、≥15% 的日子也算。"""
+    from radar.detect import events
+
+    ev_cfg = cfg["thresholds"]["events"]
+    e = 100  # 第 100、101 天：35/50 个商品翻倍；第 99 天：10/50 个；第 95 天：5/50 个（平时的波动）
+    dailies = []
+    for k in range(50):
+        sales = [10] * 120
+        if k < 35:
+            sales[e] = sales[e + 1] = 25
+        elif k < 45:
+            sales[e - 1] = 20
+        if k < 5:
+            sales[95] = 20
+        dailies.append(make(sales))
+    day = dailies[0].day
+    found = events.detect(dailies, ev_cfg, [])
+    assert found["days"] == {day(e - 1), day(e), day(e + 1)}
+    assert found["spans"] == [{"start": day(e - 1).isoformat(), "end": day(e + 1).isoformat(),
+                               "name": "自动识别", "auto": True}]
+    # 登记的大促日期：数据里那天也冲高（≥15%）的算；数据显示没冲高的不算；够格的商品不足 min_items 个、看不出来时照登记的算
+    deals = [{"name": "黑五", "start": day(e).isoformat(), "end": day(e + 1).isoformat()},
+             {"name": "没体现的大促", "start": day(30).isoformat(), "end": day(31).isoformat()}]
+    named = events.detect(dailies, ev_cfg, deals)
+    assert named["days"] == {day(e - 1), day(e), day(e + 1)} and named["spans"][0]["name"] == "黑五"
+    few = events.detect(dailies[:20], ev_cfg, deals)
+    assert few["days"] == {day(30), day(31), day(e), day(e + 1)} and few["spans"][0]["name"] == "没体现的大促"
+
+
+def test_growth_made_of_event_days_is_not_a_surge(cfg):
+    """大促 4 天销量翻 8 倍、之后回到原样：算上大促日像“仍在上涨”，去掉后没有增长 → 不算爆火，标“大促拉动”。
+    大促日没冲高的商品不标；大促日也不让平稳的商品显得在回落。"""
+    lifted = [5] * 115 + [40, 40, 40, 40, 5]
+    assert evaluate_surge(make(lifted), 119, surge_cfg(cfg))["kind"] == "仍在上涨"  # 不去掉大促日时
+    state = {"asins": {"B0": _rec(lifted, 4.5), "C0": _rec([10] * 120, 4.5)}}
+    for k in range(50):  # 其他追踪商品在同样 4 天里翻倍
+        state["asins"][f"X{k}"] = _rec([10] * 115 + [20, 20, 20, 20, 10], 4.5)
+    result = analyze.analyze(state, None, list(state["asins"]), cfg, END)
+    assert result["events"]["days"] == {END - timedelta(days=k) for k in (1, 2, 3, 4)}
+    by_asin = {i["asin"]: i for i in result["items"]}
+    assert by_asin["B0"]["label"] == "watch" and "大促拉动（去掉大促日后不达标）" in by_asin["B0"]["tags"]
+    assert by_asin["C0"]["label"] == "watch" and by_asin["C0"]["tags"] == []
+    assert not any(t.startswith("最近回落") for i in result["items"] for t in i["tags"])
+
+
+def test_out_of_stock_days_are_not_the_baseline(cfg):
+    """实测形态：上架多年的商品停售一年（销量 0、BSR 850 万），重新开卖两周后翻了一倍。对比期一半是停售的日子，
+    旧规则拿它当“之前的水平”，判成“稳在高位”；断货的日子不算进对比期后，只和开卖后的两周比，不算爆火。"""
+    sales = [0] * 92 + [22] * 14 + [38] * 14
+    bsr = [8_500_000] * 92 + [50_000] * 14 + [29_000] * 14
+    d = Daily(END - timedelta(days=119), bsr, sales, [68.0] * 120)
+    assert evaluate_surge(d, 119, surge_cfg(cfg))["kind"] == "稳在高位"  # 不排除断货日时
+    assert evaluate_surge(d, 119, surge_cfg(cfg), cfg["thresholds"]["out_of_stock_bsr"]) is None
+    rec = {"series": {"start": d.start.isoformat(), "bsr": bsr, "sales": sales, "price": d.price},
+           "available": "2020-08-30", "obs": [{"date": END.isoformat(), "ratings": 154, "rating": 4.6}]}
+    item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["label"] == "watch" and not item["rising"]
+
+
+def test_stale_is_measured_from_the_latest_data_day(cfg):
+    """数据陈旧：比本期所有商品里最新的一天晚 stale_days 天以上（不和运行时的日期比，卖家精灵的日期按北京时间）。"""
+    surge = [5] * 110 + [18] * 10
+    late = _rec(surge[:-4], 4.5)
+    late["series"]["start"] = (END - timedelta(days=119)).isoformat()  # 最后 4 天没有数据
+    state = {"asins": {"A1": _rec(surge, 4.5), "A2": late}}
+    items = analyze.analyze(state, None, ["A1", "A2"], cfg, END - timedelta(days=1))["items"]
+    by_asin = {i["asin"]: i for i in items}
+    assert by_asin["A1"]["label"] == "surge" and not by_asin["A1"]["stale"]
+    assert by_asin["A2"]["stale"] and by_asin["A2"]["label"] != "surge" and "数据陈旧" in by_asin["A2"]["tags"]
 
 
 def test_new_listing_ramp_is_from_zero(cfg):
     d = make([0] * 113 + [6] * 7)
-    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg), [])
+    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg))
     assert s and s["kind"] == "新品爆发"
 
 
@@ -135,7 +201,7 @@ def test_potential_past_its_peak_is_dropped(cfg):
     assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
     item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
     assert item["label"] == "watch" and not item["potential"] and not item["rising"]
-    assert item["tags"][0] == "最近回落（近7天日均 6.1 件，近4周最高一周 17.1 件）"
+    assert item["tags"][0] == "最近回落（最近3天日均 5.0 件，再之前3天 6.3 件，近4周最高的3天 19.3 件；近7天中位数 6 件，再之前7天 13 件）"
     growing = _rec([round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)], 4.5,
                    available=(END - timedelta(days=114)).isoformat(), ratings=150)
     growing["months"] = _months([90, 200, 420])
@@ -154,7 +220,7 @@ def test_peaked_and_falling_is_not_sustained(cfg):
                           23, 28, 20, 21, 23, 19, 16, 30, 55, 64, 67, 94, 90, 94, 76, 65, 58, 48, 39, 32, 32]
     item = _surge_item(cfg, sales)
     assert item["label"] == "watch" and item["surge"] is None
-    assert item["tags"][0] == "最近回落（近7天日均 50.0 件，近4周最高一周 78.6 件；最近3天日均 34.3 件，近7天 50.0 件）"
+    assert item["tags"][0] == "最近回落（最近3天日均 34.3 件，再之前3天 57.0 件，近4周最高的3天 92.7 件；近7天中位数 48 件，再之前7天 67 件；近7天最高 76 件，之后 6 天没回升，最近一天 32 件）"
 
 
 def test_surge_shapes_match_their_definitions(cfg):
@@ -168,7 +234,29 @@ def test_surge_shapes_match_their_definitions(cfg):
     assert spike["label"] == "watch" and spike["tags"] == ["短时脉冲（不算爆火）"]  # 也不算上升中
     # 在高位但最近 3 天比近 7 天低 20% 以上：回落
     dipping = _surge_item(cfg, [5] * 113 + [20, 21, 20, 19, 13, 12, 12])
-    assert dipping["label"] == "watch" and dipping["tags"][0] == "最近回落（最近3天日均 12.3 件，近7天 16.7 件）"
+    assert dipping["label"] == "watch" and dipping["tags"][0] == "最近回落（最近3天日均 12.3 件，再之前3天 20.0 件，近4周最高的3天 20.3 件；近7天最高 21 件，之后 5 天没回升，最近一天 12 件）"
+
+
+def test_fading_means_past_the_peak_and_still_going_down(cfg):
+    """回落 = ① 最近 3 天比近 4 周最高的 3 天低 25% 以上，且比再之前 3 天低 10% 以上；或 ② 近 7 天中位数比再之前 7 天低 15% 以上；
+    或 ③ 近 7 天最高那天之后至少 3 天没回升，且最近一天比最高那天低 30% 以上。
+    实测形态（梳妆台，10-12 那期）：峰值就在近 7 天里，46 件后每天往下掉到 17 件，旧规则（比最高一周 / 比近 7 天）抓不到；
+    实测形态（衣帽架）：两周里从 60 件慢慢降到 35 件，最近 3 天略有回升，① 抓不到，② 抓到。
+    冲高两天后回到原来水平的、跌下来以后已经走平的，旧规则算回落，回测里它们之后两周并不比别人差，不算。"""
+    peak_inside_week = _surge_item(cfg, [12] * 110 + [13, 12, 16, 13, 13, 32, 46, 37, 26, 17])
+    assert peak_inside_week["label"] == "watch" and peak_inside_week["surge"] is None
+    assert peak_inside_week["tags"][0] == "最近回落（最近3天日均 26.7 件，再之前3天 30.3 件，近4周最高的3天 38.3 件；近7天最高 46 件，之后 3 天没回升，最近一天 17 件）"
+    back_to_level = _surge_item(cfg, [5] * 90 + [12] * 20 + [12, 12, 40, 38, 13, 12, 13, 12, 12, 13])
+    assert not any(t.startswith("最近回落") for t in back_to_level["tags"])
+    flat_after_drop = _surge_item(cfg, [5] * 92 + [30] * 14 + [12] * 14)
+    assert not any(t.startswith("最近回落") for t in flat_after_drop["tags"])
+    # 实测形态（餐边柜，10-12 那期）：4 天前冲到 405 件，之后 338、232、164，旧规则判“仍在上涨”（最近 3 天日均高于近 7 天）
+    spike = _surge_item(cfg, [48] * 106 + [119, 79, 54, 49, 49, 49, 45, 45, 43, 237, 405, 338, 232, 164])
+    assert spike["label"] == "watch" and spike["surge"] is None
+    assert spike["tags"][0] == "最近回落（近7天最高 405 件，之后 3 天没回升，最近一天 164 件）"
+    slow = _surge_item(cfg, [20] * 106 + [60, 59, 50, 48, 47, 48, 43, 42, 42, 33, 30, 36, 37, 35])
+    assert slow["label"] == "watch" and not slow["rising"]
+    assert slow["tags"][0] == "最近回落（近7天中位数 36 件，再之前7天 48 件）"
 
 
 def test_low_rated_potential_is_dropped(cfg):
@@ -255,7 +343,7 @@ def test_review_burst_summary():
 def test_restock_is_not_a_surge(cfg):
     """断货（日销 0、BSR 几百万）后恢复供货：看起来像暴涨，其实只是回到原来的水平。"""
     d = make([80] * 80 + [0] * 26 + [80] * 14)
-    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg), [])
+    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg))
     assert s and s["restock"] and s["kind"] == "断货恢复"
 
 
