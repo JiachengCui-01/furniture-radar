@@ -2,13 +2,14 @@
 
 默认用 DeepSeek 的视觉模型（与 AI工作台 相同），每张图约 300 tokens。
 结果按“ASIN + 图片地址”缓存在加密状态里，图片不变就不会重复调用。
-识别失败不影响报告，只是少了“主图识别”这一块。
+识别失败不影响报告，只是少了“主图识别”这一块；单张失败会重试，还不行就跳过这张，不影响其他图片。
 """
 from __future__ import annotations
 
 import base64
 import json
 import re
+import time
 from collections import Counter
 
 import httpx
@@ -81,14 +82,38 @@ def enabled(cfg: dict, api_key: str) -> bool:
     return bool(api_key) and flag not in ("false", "0", "no", "off")
 
 
+RETRY_WAITS = (2.0, 5.0)  # 单张失败后等几秒再试（共试 len+1 次）
+MAX_FAILED_IN_A_ROW = 3     # 连续这么多张都失败，多半是接口挂了，本期不再识别
+
+
+def _transient(exc: Exception) -> bool:
+    """网络中断、超时、限流和服务端错误可以重试；鉴权失败、请求格式错误重试也没用。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return isinstance(exc, httpx.TransportError)
+
+
+def _describe_with_retry(client: httpx.Client, cfg: dict, api_key: str, image_url: str) -> dict | None:
+    for wait in (*RETRY_WAITS, None):
+        try:
+            return _describe(client, cfg, api_key, image_url)
+        except Exception as exc:  # noqa: BLE001
+            if wait is None or not _transient(exc):
+                raise
+            time.sleep(wait)
+    return None
+
+
 def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
               client: httpx.Client | None = None) -> int:
-    """给 items 的主图打标签，写入 state["asins"][asin]["vision"]。返回新识别的张数。"""
+    """给 items 的主图打标签，写入 state["asins"][asin]["vision"]。返回新识别的张数。
+    单张失败先重试（网络中断、超时、限流、服务端错误），还不行就跳过这张、接着识别下一张；
+    鉴权失败或连续 MAX_FAILED_IN_A_ROW 张失败才停（实测：一次连接中断就停掉了整批，56 个增长商品有 19 个没识别）。"""
     if not enabled(cfg, api_key):
         return 0
     own = client is None
     client = client or httpx.Client()
-    done = 0
+    done = failed = in_a_row = 0
     try:
         for item in items:
             url = item.get("image")
@@ -99,16 +124,26 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
             if cached and cached.get("image") == url:
                 continue
             try:
-                result = _describe(client, cfg, api_key, url)
+                result = _describe_with_retry(client, cfg, api_key, url)
             except Exception as exc:  # noqa: BLE001 — 识别失败不影响报告
-                log.warn(f"主图识别失败，本期跳过剩余图片：{type(exc).__name__}")
-                break
+                failed += 1
+                in_a_row += 1
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 403):
+                    log.warn("主图识别失败：密钥无效或没有权限，本期跳过剩余图片")
+                    break
+                if in_a_row >= MAX_FAILED_IN_A_ROW:
+                    log.warn(f"主图识别连续 {in_a_row} 张失败（{type(exc).__name__}），本期跳过剩余图片")
+                    break
+                continue
+            in_a_row = 0
             if result:
                 rec["vision"] = {"image": url, **result}
                 done += 1
     finally:
         if own:
             client.close()
+    if failed:
+        log.warn(f"主图识别：{failed} 张失败已跳过")
     return done
 
 

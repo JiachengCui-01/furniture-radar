@@ -34,7 +34,10 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    某个维度没有列出的就略过；“主材质”是“未注明”“木质（未注明）”“其他”的不写；
    末尾可以加“参考 <品牌>的<一个外观细节>”，外观细节只能取该方向参考商品的“外观要点”，
    并且不能和这条已经写出的颜色、主材质矛盾（矛盾就换一个细节或不写参考）。
-8. “风险提醒”：异常信号只能说“疑似、需人工核实”，不要断言刷单；带季节性、降价驱动标签的增长提醒不要当成长期需求。
+8. “风险提醒”只写两类，每条都要点名 JSON 里的一个具体商品（品牌 + 简短品名）：
+   ① 带“异常信号”的商品（“异常信号”列表里的，或爆火 / 潜力商品自带的“异常信号”字段）：只能说“疑似、需人工核实”，不要断言刷单；
+   ② “标签”里有“季节性”或“降价驱动”的爆火 / 潜力商品：提醒不要当成长期需求。
+   不要根据功能卖点、外观、品类或价格自己推测风险；两类都没有就只写一条“本期没有需要特别提醒的风险”。
 9. 不要输出链接和长标题。“开发方向”每条不超过 80 字，其余每条不超过 60 字、一条只说一个特征或一个建议；
    总长度不超过 850 字，宁可少写几条趋势。"""
 
@@ -208,10 +211,52 @@ def template_summary(facts: dict) -> str:
     return "\n".join(lines)
 
 
+RISK_TAGS = ("季节性", "降价驱动")
+NO_RISK = "- 本期没有需要特别提醒的风险。"
+
+
+def risk_brands(facts: dict) -> set[str]:
+    """“风险提醒”可以点名的商品的品牌：带异常信号的，或标签有季节性 / 降价驱动的爆火、潜力商品。"""
+    out = {i["品牌"] for i in facts["异常信号"]}
+    out |= {i["品牌"] for i in facts["突然爆火"] + facts["潜力"]
+            if i.get("异常信号") or any(t in RISK_TAGS for t in i["标签"])}
+    return {b.strip() for b in out if b and b.strip()}
+
+
+def guard_risks(text: str, facts: dict) -> str:
+    """大模型写的“风险提醒”里，每条都要点名一个可以点名的商品（见 risk_brands），否则删掉这条
+    （实测：模型会自己推测“带充电/插座、LED 灯的需留意是否为短期促销”，数据里没有依据）。删完没有了就写 NO_RISK。"""
+    brands = [b.lower() for b in risk_brands(facts)]
+    out: list[str] = []
+    in_risk, kept, dropped = False, 0, 0
+
+    def close() -> None:
+        if in_risk and not kept:
+            out.append(NO_RISK)
+
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            close()
+            in_risk, kept = "风险提醒" in line, 0
+            out.append(line)
+        elif in_risk and line.lstrip().startswith("- "):
+            if any(b in line.lower() for b in brands):
+                out.append(line)
+                kept += 1
+            elif "没有需要特别提醒" not in line:
+                dropped += 1
+        else:
+            out.append(line)
+    close()
+    if dropped:
+        log.info(f"风险提醒：删掉 {dropped} 条没有点名具体商品依据的")
+    return "\n".join(out)
+
+
 def summary(ctx: dict, cfg: dict, api_key: str) -> tuple[str, str]:
-    """返回 (markdown 文本, 来源 'llm'|'template')。"""
+    """返回 (markdown 文本, 来源 'llm'|'template')。大模型写的“风险提醒”会再按 guard_risks 核对一遍。"""
     facts = build_facts(ctx)
     text = llm_summary(facts, cfg, api_key)
     if text:
-        return text, "llm"
+        return guard_risks(text, facts), "llm"
     return template_summary(facts), "template"

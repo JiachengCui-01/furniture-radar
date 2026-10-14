@@ -240,3 +240,57 @@ def test_appearance_needs_two_brands_and_keywords_drop_brand_names(cfg):
     assert [f["label"] for f in out["工艺"]["more"]] == ["玻璃门"]  # 凹槽竖纹只有一个品牌
     assert "vasagle" not in traits.title_tokens("VASAGLE Nightstand with Charging Station", "VASAGLE")
     assert "nightstand" in traits.title_tokens("VASAGLE Nightstand with Charging Station", "VASAGLE")
+
+
+def test_vision_retries_and_skips_a_bad_image(cfg, monkeypatch):
+    """连接中断先重试；某张一直失败就跳过它，后面的照常识别；密钥无效才整批停（实测一次中断停掉整批，19 个增长商品没识别）。"""
+    monkeypatch.setattr(vision, "RETRY_WAITS", (0, 0))
+    gets = {"a": 0, "b": 0, "c": 0}
+
+    def handler(request: httpx.Request):
+        if request.method == "GET":
+            name = request.url.path.split("/")[-1][0]
+            gets[name] += 1
+            if name == "b" or (name == "a" and gets["a"] == 1):
+                raise httpx.RemoteProtocolError("Server disconnected", request=request)
+            return httpx.Response(200, content=b"\xff\xd8fake", headers={"content-type": "image/jpeg"})
+        content = '{"风格":["现代"],"材质":[],"造型":[],"工艺":[],"颜色":[],"外观要点":"x"}'
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    state = {"asins": {k: {} for k in ("A", "B", "C")}}
+    items = [{"asin": k, "image": f"https://x/{k.lower()}._AC_US600_.jpg"} for k in ("A", "B", "C")]
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert vision.tag_items(items, state, cfg, "key", client=client) == 2
+    assert gets == {"a": 2, "b": 3, "c": 1}  # A 第二次成功；B 试了 3 次后跳过；C 照常
+    assert "vision" in state["asins"]["A"] and "vision" not in state["asins"]["B"] and "vision" in state["asins"]["C"]
+
+    calls = {"n": 0}
+
+    def unauthorized(request: httpx.Request):
+        calls["n"] += 1
+        if request.method == "GET":
+            return httpx.Response(200, content=b"\xff\xd8fake", headers={"content-type": "image/jpeg"})
+        return httpx.Response(401, json={"error": "bad key"})
+
+    fresh = {"asins": {k: {} for k in ("A", "B", "C")}}
+    auth_client = httpx.Client(transport=httpx.MockTransport(unauthorized))
+    assert vision.tag_items(items, fresh, cfg, "key", client=auth_client) == 0
+    assert calls["n"] == 2  # 第一张：取图 + 识别 401，之后不再继续
+
+
+def test_risk_bullets_must_name_a_flagged_product():
+    """风险提醒只能点名带异常信号、或标签有季节性 / 降价驱动的商品；模型自己推测的删掉，删完写“没有需要特别提醒的风险”。"""
+    from radar import narrative
+
+    facts = {"异常信号": [{"品牌": "COMHOMA", "标签": []}],
+             "突然爆火": [{"品牌": "TUTOTAK", "标签": [], "异常信号": ["评论集中"]}, {"品牌": "VASAGLE", "标签": ["稳在高位"]}],
+             "潜力": [{"品牌": "OOOK", "标签": ["季节性"]}]}
+    text = ("### 开发方向\n- 开发书架：现代\n### 风险提醒\n- TUTOTAK 书架评论集中，疑似异常，需人工核实。\n"
+            "- COMHOMA 梳妆台留评率异常，需人工核实。\n- 部分增长商品带充电/插座，需留意是否为短期促销。\n"
+            "- VASAGLE 咖啡桌涨得太快。\n- OOOK 旋转书架有季节性，不要当成长期需求。")
+    out = narrative.guard_risks(text, facts)
+    assert out.splitlines() == ["### 开发方向", "- 开发书架：现代", "### 风险提醒",
+                                "- TUTOTAK 书架评论集中，疑似异常，需人工核实。", "- COMHOMA 梳妆台留评率异常，需人工核实。",
+                                "- OOOK 旋转书架有季节性，不要当成长期需求。"]
+    only_guess = "### 风险提醒\n- 部分增长商品带 LED 灯，需留意季节性。"
+    assert narrative.guard_risks(only_guess, facts).splitlines() == ["### 风险提醒", narrative.NO_RISK]
