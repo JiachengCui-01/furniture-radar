@@ -184,7 +184,8 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
       title：标题统计，增长商品 vs 全部头部商品
       image：主图识别，增长商品里势头最强的若干个 vs 持续热销对照组
     更多：标题里占比 ≥ title_min_share 且是全部头部商品的 title_min_lift 倍以上，或主图里比对照组多 image_min_gap 以上；
-          任何一种算数的依据说“更少”，就是依据冲突，不列。按“比对照组多出的占比”排序，每个维度最多 per_dim 个。
+          任何一种算数的依据说“更少”，就是依据冲突，哪一档都不列（放进“常见/也有”就成了“不比对照组多”，
+          和说“更多”的那种依据矛盾）。按“比对照组多出的占比”排序，每个维度最多 per_dim 个。
     常见：不在“更多”里、增长商品中占比 ≥ common_share 的（有主图识别看主图，没有看标题），不代表比对照组多。
     也有：不在上面两档、增长商品中占比 ≥ also_share 的（同样要 min_count 个、min_brands 个品牌），只说明有，不代表趋势。
     颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图：标题里的颜色常是把可选变体都列出来，不代表商品本身。"""
@@ -212,7 +213,9 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
             i_less = i_gap is not None and i_gap < 0
             row = {"label": label, "title": t, "image": i}
             share = i["focus_share"] if i else t["share"]
-            if (t_more or i_more) and not (t_less or i_less):
+            if (t_more or i_more) and (t_less or i_less):
+                continue  # 依据冲突：既不能说更多，也不能说“不比对照组多”，哪一档都不列
+            if t_more or i_more:
                 more.append(row)
             elif share >= float(a["common_share"]) - 1e-9:
                 common.append(row)

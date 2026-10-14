@@ -199,15 +199,32 @@ def test_appearance_lists_more_and_common_features(cfg):
           "title_shares": {"工艺": {"凹槽竖纹": t("凹槽竖纹", 3, 0.15, 0.07)},
                            "风格": {"现代": t("现代", 4, 0.2, 0.13), "农舍风": t("农舍风", 2, 0.1, 0.09)},
                            "颜色": {"黑色": t("黑色", 3, 0.15, 0.2)}}}
+    tr["title_shares"]["功能卖点"] = {"带储物/抽屉": t("带储物/抽屉", 9, 0.48, 0.52)}
     vision = {"n_focus": 20, "n_reference": 10, "dimensions": {
         "风格": [i("现代", 16, 9), i("农舍风", 3, 0)],
         "工艺": [i("锥形/外八腿", 6, 1)],
-        "颜色": [i("黑色", 11, 8)]}}
+        "颜色": [i("黑色", 11, 8)],
+        "功能卖点": [i("带储物/抽屉", 16, 4)]}}
     out = traits.merge_appearance(tr, vision, cfg)
     assert [f["label"] for f in out["工艺"]["more"]] == ["锥形/外八腿", "凹槽竖纹"]  # 30% − 10% 正好 20 个百分点
-    assert [f["label"] for f in out["风格"]["more"]] == ["农舍风"]  # 现代：标题说更多、主图说更少 → 冲突
-    assert [f["label"] for f in out["风格"]["common"]] == ["现代"]
+    # 依据冲突的哪一档都不列：现代（标题说更多、主图说更少）；带储物（主图 80% vs 40%、标题 48% vs 52%），
+    # 放进“常见但不比对照组多”就和显示的主图数字矛盾（实测 2026-10-14 报告：40/50 · 对照 17/40）
+    assert [f["label"] for f in out["风格"]["more"]] == ["农舍风"] and out["风格"]["common"] == []
+    assert "功能卖点" not in out
     assert out["颜色"]["more"] == [] and [f["label"] for f in out["颜色"]["common"]] == ["黑色"]
+
+
+def test_reference_group_excludes_growth_products(cfg):
+    """持续热销里带“上升中”的也是增长商品：只算增长商品，不进对照组，空出的位置按月销量往下补。"""
+    def item(asin, label, avg, rising=None):
+        return {"asin": asin, "label": label, "hot": {"avg_monthly": avg}, "rising": rising}
+
+    items = [item("H1", "hot", 900), item("H2", "hot", 800, rising={"ratio": 1.5}), item("H3", "hot", 700),
+             item("H4", "hot", 600), item("W1", "watch", 0, rising={"ratio": 2.0})]
+    cfg["llm"].update(vision_focus=50, vision_reference=3)
+    focus, reference = pipeline.analysis_groups(items, cfg)
+    assert [i["asin"] for i in focus] == ["W1", "H2"]
+    assert [i["asin"] for i in reference] == ["H1", "H3", "H4"]
 
 
 

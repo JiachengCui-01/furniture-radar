@@ -238,4 +238,4 @@ llm:
   vision: auto                       # auto = 有 key 才启用；false = 关闭
   vision_model: deepseek-v4-flash-vision-exp
   vision_focus: 50                   # 识别增长商品里势头最强的 N 个（识别过的缓存，之后只识别新商品）
-  vision_reference: 40               # 持续热销对照组：月销量最高的 N 个（主图识别和主材质都和它比；20 个时一个商品就是 5 个百分点，太敏感）
+  vision_reference: 40               # 持续热销对照组：不在增长商品里的、月销量最高的 N 个（主图识别和主材质都和它比；20 个时一个商品就是 5 个百分点，太敏感）

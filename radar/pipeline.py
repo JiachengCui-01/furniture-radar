@@ -269,10 +269,14 @@ def refresh_similar(vendor: Vendor, cfg: dict, state: dict, disc: dict, run_seq:
 
 
 def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict]]:
-    """外观/材质分析的两组：增长商品（按势头）和持续热销对照组（按月销量）。"""
+    """外观/材质分析的两组：增长商品（按势头）和持续热销对照组（按月销量）。
+    持续热销里带“上升中”的也是增长商品，不进对照组：同一个商品两边都算，会把两组的差距抹小。"""
     llm = cfg["llm"]
-    focus = analyze.focus_items(items)[: int(llm.get("vision_focus", 20))]
-    reference = analyze.sections(items, 10_000)["hot"][: int(llm.get("vision_reference", 10))]
+    growth = analyze.focus_items(items)
+    focus = growth[: int(llm.get("vision_focus", 20))]
+    taken = {i["asin"] for i in growth}
+    reference = [i for i in analyze.sections(items, 10_000)["hot"]
+                 if i["asin"] not in taken][: int(llm.get("vision_reference", 10))]
     return focus, reference
 
 
