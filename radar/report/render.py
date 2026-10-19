@@ -12,7 +12,7 @@ import re
 from ..analyze import display_name
 from ..detect import directions, events
 from ..tracking import REASON_CN
-from .sparkline import bars, sparkline
+from .sparkline import HOVER_JS, bars, sparkline
 
 LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
                "low": "muted", "rising": "accent"}
@@ -151,10 +151,17 @@ overflow:hidden}
 .signals{margin:4px 0 0;padding-left:18px;font-size:13px}
 .signals li{margin:2px 0}
 .score{display:inline-block;font-weight:700;color:var(--fake);margin-right:6px}
-.spark{display:block;width:100%;max-width:260px;height:auto;margin-top:4px}
-.spark-line{fill:none;stroke:var(--spark);stroke-width:1.6}
+.chart{margin:6px 0 0;max-width:280px}
+.chart figcaption{font-size:12px;line-height:1.4;color:var(--muted)}
+.spark{display:block;width:100%;height:auto;margin-top:2px;overflow:visible}
+.spark .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.spark .ax{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.spark-line{fill:none;stroke:var(--spark);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .spark-area{fill:var(--spark);opacity:.10}.spark-hl{fill:var(--hl)}
 .bar{fill:var(--spark);opacity:.75}
+.hov line{stroke:var(--muted);stroke-width:1;vector-effect:non-scaling-stroke}
+.hov circle{fill:var(--spark);stroke:var(--card);stroke-width:2}
+.hov text{fill:var(--text);font-size:11px;font-weight:600}
 .empty{color:var(--muted);font-size:14px;padding:6px 0}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -305,7 +312,8 @@ def card(item: dict, kind: str, group: str = "") -> str:
     if kind in ("hot", "fake", "rising") and item.get("recent_avg28") is not None:
         kv.append(f"<span><em>近28天日均</em> {fmt_num(item['recent_avg28'])} 件</span>")
 
-    chart = bars(item["monthly"][-12:]) if kind == "hot" else sparkline(item.get("spark") or [])
+    chart = bars(item["monthly"][-12:]) if kind == "hot" else \
+        sparkline(item.get("spark") or [], start=item.get("spark_start"))
     look = f'<div class="look"><em>外观</em>{esc(item["look"])}</div>' if item.get("look") else ""
     signals = ""
     if item["fake"]["signals"] and kind in ("fake", "surge", "potential", "rising"):
@@ -681,4 +689,4 @@ def render(ctx: dict) -> str:
 <p class="sub">{' · '.join(esc(x) for x in facts)}</p>
 <p class="sub"><a href="#" data-pop="all">查看全部 {counts['total']} 个追踪商品</a></p>{_method(cfg)}</section>
 <footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 报告已加密，仅持有链接的人可查看</footer>
-</div>{pops}{POPUP}</body></html>"""
+</div>{pops}{POPUP}{HOVER_JS}</body></html>"""
