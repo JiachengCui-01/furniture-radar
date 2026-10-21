@@ -14,9 +14,9 @@ import urllib.parse
 import httpx
 
 from .. import log
-from ..analyze import display_name, season_reasons
+from ..analyze import display_name
 from ..detect.directions import headline, money_text
-from ..report.render import growth_text, season_reason_text
+from ..report.render import growth_text, season_text
 from ..narrative import top_design_labels
 
 
@@ -114,11 +114,10 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         for item in sec["potential"][:max_items]:
             lines.append(item_line(item, " " + growth_text(item)))
         lines.append("")
-    if sec.get("seasonal"):  # 不是板块：判断和季节有关的商品再列一遍，仍算在各自的板块里
-        lines.append(f"**🍂 季节性商品 {c.get('seasonal', len(sec['seasonal']))} 个**（仍算在各自的板块里）")
+    if sec.get("seasonal"):  # 不是板块：每年固定一段时间卖得特别好的商品，离旺季近的在前
+        lines.append(f"**🍂 季节性商品 {c.get('seasonal', len(sec['seasonal']))} 个**（每年固定时间卖得特别好）")
         for item in sec["seasonal"][:max_items]:
-            why = "；".join(season_reason_text(item, code) for code in season_reasons(item))
-            lines.append(item_line(item, f" {why}"))
+            lines.append(item_line(item, f" {season_text(item)}"))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:

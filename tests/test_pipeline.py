@@ -1,5 +1,7 @@
 """端到端：用模拟世界连续跑两期，检查报告、加密、对比、预算、日志脱敏和钉钉推送。"""
+import itertools
 import json
+import statistics
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -56,6 +58,7 @@ def test_two_runs_classify_each_archetype(world_run, master_key):
 def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
     """每个上榜商品都必须符合报告里写的定义，概念之间不能互相矛盾。"""
     from radar import analyze, clock, tracking
+    from radar.detect import seasonality
     from radar.detect.rules import low_rating, momentum
     from radar.series import Daily
 
@@ -99,20 +102,33 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
             h = item["hot"]
             assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]
     assert checked == {"surge", "potential", "hot"}
-    # 季节性商品：满足小窗里写的三条之一的都列出来，列出来的都仍在自己的板块里
+    # 季节性商品：小窗里写的四条，从每个商品的每月日均重新核对；符合的（异常信号、评分不达标除外）都列出来
     sc = th["seasonality"]
     listed = {i["asin"] for i in analyze.sections(items, 0)["seasonal"]}
     for item in items:
-        own = item["label"] == "surge" and item["surge"]["seasonal"]
-        category = item["category_season"] is not None
-        adjusted = item["label"] == "hot" and item["hot"]["adjusted"]
-        assert (item["asin"] in listed) == (item["label"] not in ("fake", "low") and (own or category or adjusted))
-        if own:
-            assert item["surge"]["last_year_ratio"] >= s["seasonal_ratio"] and "季节性" in item["tags"]
-        if category:
-            assert item["label"] in ("surge", "potential") or item["rising"]
-            assert item["category_season"] >= sc["tag_ratio"] and any(t.startswith("品类季节性") for t in item["tags"])
-    assert listed  # 演示数据：书架有一个今年、去年同期都在涨的商品
+        s_ = item["item_season"]
+        tagged = any(t.startswith("季节性（") for t in item["tags"])
+        assert tagged == bool(s_ and s_["seasonal"])
+        assert (item["asin"] in listed) == (tagged and item["label"] not in ("fake", "low"))
+        if not tagged:
+            continue
+        prof = result["profiles"][item["node"]]
+        assert prof["seasonal"] and s_["peak_months"] == prof["peak_months"]  # ① 品类每年同样的月份高
+        keys = [k for k, _, _ in s_["months"]]
+        assert len(keys) >= sc["item_min_months"]  # ② 连续 12 个月以上
+        assert all(seasonality._add_months(a, 1) == b for a, b in zip(keys, keys[1:]))
+        runs = [(peak, [v for _, v, _ in grp]) for peak, grp in itertools.groupby(s_["months"], key=lambda m: m[2])]
+        peak_levels = [statistics.mean(v) for peak, v in runs if peak]
+        sides = set()
+        for j, (peak, values) in enumerate(runs):  # ③ 每段旺季 ≥ 前后淡季的 2 倍，涨上去、掉下来都看得到
+            for nb in (j - 1, j + 1):
+                if peak and 0 <= nb < len(runs):
+                    assert statistics.mean(values) >= sc["item_ratio"] * statistics.mean(runs[nb][1]) - 1e-6
+                    sides.add(nb > j)
+        assert sides == {True, False}
+        assert all(v <= sc["item_off_max"] * min(peak_levels) + 1e-6 for _, v, peak in s_["months"] if not peak)  # ④
+    seasonal_demo = {p.asin for p in _world.products if p.kind == "seasonal"}
+    assert seasonal_demo and seasonal_demo <= listed  # 演示数据：餐边柜有一个每年 11~12 月卖得特别好的商品
     max_vars = th["fake"]["max_variations_for_ratio"]
     for item in items:  # 变体多的不算留评率；老品换链接不算新品评论/销量比
         codes = {sig["code"] for sig in item["fake"]["signals"]}

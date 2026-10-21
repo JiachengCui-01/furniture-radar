@@ -158,8 +158,6 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         tags.append(f"{few}评分 {rating} 低于 {floor}")
     if surge:
         tags.append(surge["kind"])
-        if surge["seasonal"]:
-            tags.append("季节性")
         if surge["price_driven"]:
             tags.append("降价驱动")
     if rising and label in ("watch", "hot"):
@@ -297,8 +295,9 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     items = [evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"],
                       season=hot_season(rec), threshold_month=threshold_month)
              for asin, rec in recs]
-    for item in items:
+    for item, (_, rec) in zip(items, recs):
         _season_tag(item, profiles.get(item.get("node")), sc)
+        _item_season(item, rec, profiles.get(item.get("node")), ev["days"], sc, th.get("out_of_stock_bsr"))
     seasons = ({path: seasonality.outlook(prof, data_date, sc) for path, prof in profiles.items()}
                if sc and data_date else {})
     return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date, "seasons": seasons,
@@ -307,9 +306,8 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
 
 def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
     """季节性品类里的商品：item["season28"] = 按往年规律近 28 天品类是之前 28 天的几倍（开发方向扣除季节用）；
-    增长商品的对比窗口里品类本来就会涨 ≥ tag_ratio 倍的，标“品类季节性”，写明扣除季节后的倍数
-    （item["category_season"] = 那个季节倍数，季节性商品清单用）。"""
-    item["season28"] = item["category_season"] = None
+    增长商品的对比窗口里品类本来就会涨 ≥ tag_ratio 倍的，标“品类季节性”，写明扣除季节后的倍数。"""
+    item["season28"] = None
     as_of = clock.parse_day(item.get("as_of"))
     if not sc or not prof or not prof.get("seasonal") or as_of is None:
         return
@@ -328,9 +326,25 @@ def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
     else:
         return
     if expect is not None and expect >= float(sc["tag_ratio"]) - 1e-9:
-        item["category_season"] = expect
         rest = f"，扣除后 ×{ratio / expect:.1f}" if ratio else ""
         item["tags"].append(f"品类季节性（按往年规律，这段时间品类本来就是之前的 {expect:.1f} 倍{rest}）")
+
+
+def _item_season(item: dict, rec: dict, prof: dict | None, events, sc: dict | None, oos: float | None) -> None:
+    """季节性商品（seasonality.item_season）：item["item_season"] = 判断结果（季节性品类里有一整年数据的才有），
+    是的标“季节性（每年 X 月旺…）”。"""
+    d = Daily.from_record(rec.get("series"))
+    s = seasonality.item_season(d.without(events) if d is not None else None, prof, sc, oos) if sc else None
+    item["item_season"] = s
+    if s and s["seasonal"]:
+        item["tags"].append(f"季节性（每年 {seasonality.months_text(s['peak_months'])}旺，"
+                            f"旺季日均至少是前后淡季的 {s['ratio']:.1f} 倍）")
+
+
+def is_seasonal(item: dict) -> bool:
+    """季节性商品清单（不是板块：不论在哪个板块、还是只在观察，都再列一遍）：seasonality.item_season 的四条都满足的，
+    异常信号、评分偏低的不列（它们不进任何榜单）。"""
+    return item["label"] not in UNLISTED and bool((item.get("item_season") or {}).get("seasonal"))
 
 
 def _growth(item: dict) -> float:
@@ -340,27 +354,9 @@ def _growth(item: dict) -> float:
     return (p.get("recent_ratio") or 1) - 1
 
 
-def season_reasons(item: dict) -> list[str]:
-    """季节性商品清单（不是板块：商品仍在自己的板块里，这里再列一遍）= 本期的判断和季节有关的，任一：
-      own：突然爆火，且这个商品自己去年同期同样的窗口也涨了 ≥ surge.seasonal_ratio 倍（标签“季节性”）；
-      category：增长商品，所在季节性品类按往年规律这段时间本来就会涨 ≥ seasonality.tag_ratio 倍（标签“品类季节性”）；
-      hot_adjusted：持续热销，原始销量不达标、按品类季节调整后才达标（卡片注明“已按品类季节调整”）。
-    异常信号、评分偏低的不列（它们不进任何榜单）。"""
-    if item["label"] in UNLISTED:
-        return []
-    out = []
-    if item["label"] == "surge" and (item.get("surge") or {}).get("seasonal"):
-        out.append("own")
-    if item.get("category_season"):
-        out.append("category")
-    if item["label"] == "hot" and (item.get("hot") or {}).get("adjusted"):
-        out.append("hot_adjusted")
-    return out
-
-
 def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     """每个板块按排序；top_n ≤ 0 时全部列出（报告小窗默认如此，免得顶部数字和小窗里的个数对不上）。
-    seasonal：季节性商品清单（season_reasons），按 突然爆火 → 潜力 → 上升中 → 持续热销、各自板块里的顺序排。"""
+    seasonal：季节性商品清单（is_seasonal），离旺季近的排前面（正在旺季的最前），同样近的按旺季日均从大到小。"""
     def cut(rows: list[dict]) -> list[dict]:
         return rows if top_n <= 0 else rows[:top_n]
 
@@ -369,18 +365,19 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
     potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: -_growth(i))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
-    # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
-    rising = sorted((i for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
-                    key=lambda i: -i["rising"]["ratio"])
-    seasonal, seen = [], set()
-    for i in surge + potential + rising + hot:  # 上升中的持续热销两边都有，只列一次
-        if i["asin"] not in seen and season_reasons(i):
-            seen.add(i["asin"])
-            seasonal.append(i)
+
+    def season_key(i: dict) -> tuple:
+        as_of = clock.parse_day(i.get("as_of"))
+        s = i["item_season"]
+        return (seasonality.months_to_peak(as_of, s["peak_months"]) if as_of else 12, -s["peak_avg"])
+
+    seasonal = sorted((i for i in items if is_seasonal(i)), key=season_key)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot),
             "seasonal": cut(seasonal),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
-                       "rising": len(rising), "seasonal": len(seasonal),
+                       # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
+                       "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
+                       "seasonal": len(seasonal),
                        "low": sum(1 for i in items if i["label"] == "low"), "total": len(items)}}
 
 

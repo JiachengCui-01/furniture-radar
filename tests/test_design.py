@@ -136,11 +136,13 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     for kind in ("surge", "potential", "hot", "fake", "seasonal", "growth", "season", "all"):
         assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
     assert plain.count('class="pop-src"') == 8 and 'id="pop"' in plain
-    # 季节性商品：演示数据里书架有一个今年、去年同期都在涨的商品；它仍在突然爆火小窗里
+    # 季节性商品：演示数据里餐边柜有一个每年 11~12 月卖得特别好的商品，10 月是淡季，不在任何板块（卡片写“观察”）；
+    # 卡片上是每月日均的柱状图（旺季月深色）
     seasonal = plain.split('id="pop-seasonal"')[1].split('<div class="pop-src"')[0]
-    shelf = next(p.asin for p in SyntheticWorld(date(2026, 10, 5)).products if p.kind == "seasonal")
-    surge = plain.split('id="pop-surge"')[1].split('<div class="pop-src"')[0]
-    assert shelf in seasonal and shelf in surge and "自己去年同期也涨了 ×" in seasonal and "<em>品类</em>" in seasonal
+    winter = next(p.asin for p in SyntheticWorld(date(2026, 10, 5)).products if p.kind == "seasonal")
+    assert winter in seasonal and '<span class="grp">观察</span>' in seasonal and 'class="bar hi"' in seasonal
+    assert "每年 11~12 月旺，旺季日均至少是前后淡季的" in seasonal and "离旺季还有 1 个月" in seasonal
+    assert "<em>品类</em>季节性品类：旺季 11~12 月" in seasonal and "季节性（每年 11~12 月旺" in seasonal
     # 主体里不放商品卡片：所有卡片都在隐藏的小窗内容里
     body = plain.split('<div class="pop-src"')[0]
     assert '<article class="card"' not in body and '<article class="card"' in plain

@@ -6,8 +6,8 @@ import math
 from datetime import date
 
 from .. import clock
-from ..series import (Daily, closed_months, cv, daily_avg_of_month, log_growth, mean, median,
-                      same_window_last_year, surge_metrics, surge_shape)
+from ..series import (Daily, closed_months, cv, daily_avg_of_month, log_growth, mean, median, surge_metrics,
+                      surge_shape)
 
 
 def current_rating(rec: dict | None, row: dict | None) -> tuple[float | None, float | None]:
@@ -154,8 +154,7 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
 
     restock = _restock(d, as_of_idx, best, cfg)
     if restock:
-        return {**best, "kind": "断货恢复", "restock": True, **restock, "seasonal": False,
-                "last_year_ratio": None, "price_driven": False,
+        return {**best, "kind": "断货恢复", "restock": True, **restock, "price_driven": False,
                 "days_elevated": 0, "top2_share": 0.0}
 
     # 形态：依次判断，每种都有自己的条件。增量集中在 ≤2 天的是“短时脉冲”，不算爆火；
@@ -175,7 +174,6 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
     else:
         kind = None
 
-    seasonal_ratio = same_window_last_year(d, as_of_idx, best["window"], cfg["base_days"])
     price_driven = best["price_change"] is not None and best["price_change"] <= -cfg["price_drop"]
     return {
         **best,
@@ -187,8 +185,6 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
         "last3_ratio": None if last3 is None else round(last3, 3),
         "week_ratio": None if week is None else round(week, 3),
         "base_days": cfg["base_days"],
-        "seasonal": seasonal_ratio is not None and seasonal_ratio >= cfg["seasonal_ratio"],
-        "last_year_ratio": seasonal_ratio,
         "price_driven": price_driven,
     }
 

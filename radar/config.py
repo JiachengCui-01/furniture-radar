@@ -74,7 +74,7 @@ DEFAULTS: dict = {
             "windows": [7, 14], "base_days": 28, "bsr_ratio": 0.5, "sales_ratio": 2.0,
             "min_daily_sales": 3, "sustained_mult": 1.5, "sustained_days": 5, "steady_band": 0.15,
             "climb_ratio": 1.15,
-            "pulse_share": 0.6, "seasonal_ratio": 1.5, "price_drop": 0.15, "restock_ratio": 0.5,
+            "pulse_share": 0.6, "price_drop": 0.15, "restock_ratio": 0.5,
             "new_listing_min_daily": 30, "new_listing_node_share": 0.25,
         },
         "hot": {
@@ -96,7 +96,8 @@ DEFAULTS: dict = {
                         "min_amplitude": 1.3, "max_error": 0.25, "peak_month": 1.15, "low_month": 0.87,
                         "tag_ratio": 1.15, "ratio_shrink": 0.6, "calibrate_min_pairs": 30,
                         "calibrate_min_months": 24, "lead_days": 120,
-                        "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2, "quieter": 0.8},
+                        "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2, "quieter": 0.8,
+                        "item_min_months": 12, "item_min_days": 14, "item_ratio": 2.0, "item_off_max": 0.8},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,

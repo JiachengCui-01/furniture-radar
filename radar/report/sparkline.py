@@ -104,8 +104,9 @@ def sparkline(values: list, *, start: str | None = None, highlight_last: int = 7
     return _figure(caption, svg)
 
 
-def bars(values: list[tuple[str, float]]) -> str:
-    """月销量柱状图。values：[(YYYY-MM, 件数)]。"""
+def bars(values: list[tuple[str, float]], *, highlight=(), caption: str = "", unit: str = "件") -> str:
+    """月销量柱状图。values：[(YYYY-MM, 件数)]；highlight：用深色画的月份（季节性商品的旺季月）；
+    caption / unit：图题和读数单位（默认按月销量）。"""
     if not values:
         return ""
     n = len(values)
@@ -121,12 +122,12 @@ def bars(values: list[tuple[str, float]]) -> str:
         # 顶端圆角、底部方角
         rects.append(f'<path d="M{x:.1f},{base} V{y + r:.1f} Q{x:.1f},{y:.1f} {x + r:.1f},{y:.1f} '
                      f'H{x + bar_w - r:.1f} Q{x + bar_w:.1f},{y:.1f} {x + bar_w:.1f},{y + r:.1f} V{base} Z" '
-                     f'class="bar"/>')
-    caption = f"月销量（件）· 近 {n} 个月"
-    summary = f"{caption}；最高 {_num(peak)} 件，最近一个月 {_num(values[-1][1])} 件"
+                     f'class="bar{(" hi" if values[k][0] in highlight else " lo") if highlight else ""}"/>')
+    caption = caption or f"月销量（件）· 近 {n} 个月"
+    summary = f"{caption}；最高 {_num(peak)} {unit}，最近一个月 {_num(values[-1][1])} {unit}"
     svg = (f'<svg class="spark" viewBox="0 0 {W} {H}" role="img" aria-label="{summary}" data-k="bar" '
            f'data-v="{",".join(_raw(v) for _, v in values)}" data-m="{",".join(m for m, _ in values)}" '
-           f'data-g="{left},{width},{T},{PLOT_H},{_raw(top)}" data-u="件">'
+           f'data-g="{left},{width},{T},{PLOT_H},{_raw(top)}" data-u="{unit}">'
            f'{frame}{"".join(rects)}{_hover_layer(left)}</svg>')
     return _figure(caption, svg)
 

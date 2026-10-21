@@ -9,8 +9,8 @@ from __future__ import annotations
 import html
 import re
 
-from .. import shipping
-from ..analyze import display_name, season_reasons
+from .. import clock, shipping
+from ..analyze import display_name
 from ..detect import directions, events, seasonality
 from ..tracking import REASON_CN
 from .sparkline import HOVER_JS, bars, sparkline
@@ -160,7 +160,7 @@ overflow:hidden}
 .spark .ax{fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 .spark-line{fill:none;stroke:var(--spark);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .spark-area{fill:var(--spark);opacity:.10}.spark-hl{fill:var(--hl)}
-.bar{fill:var(--spark);opacity:.75}
+.bar{fill:var(--spark);opacity:.75}.bar.hi{fill:var(--seasonal);opacity:.95}.bar.lo{fill:var(--muted);opacity:.45}
 .hov line{stroke:var(--muted);stroke-width:1;vector-effect:non-scaling-stroke}
 .hov circle{fill:var(--spark);stroke:var(--card);stroke-width:2}
 .hov text{fill:var(--text);font-size:11px;font-weight:600}
@@ -257,6 +257,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode==
 })();</script>"""
 
 GROUP_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
+SEASON_GROUP = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销"}
 
 
 def _tags(item: dict) -> str:
@@ -299,8 +300,6 @@ def card(item: dict, kind: str, group: str = "", notes: list[tuple[str, str]] = 
                   f"（{ratio}）</span>")
         if s.get("base_bsr") and s.get("recent_bsr"):
             kv.append(f"<span><em>BSR 中位数</em> {fmt_int(s['base_bsr'])} → <b>{fmt_int(s['recent_bsr'])}</b></span>")
-        if s.get("last_year_ratio"):
-            kv.append(f"<span><em>去年同期</em> ×{s['last_year_ratio']:.1f}</span>")
     if kind == "potential" and item.get("potential"):
         p = item["potential"]
         if p.get("growth") is not None:
@@ -321,11 +320,21 @@ def card(item: dict, kind: str, group: str = "", notes: list[tuple[str, str]] = 
     if kind == "fake":
         level = "高度疑似" if item["fake"]["level"] == "high" else "疑似"
         kv.insert(0, f'<span><span class="score">异常分 {item["fake"]["score"]}</span>{level}</span>')
-    if kind in ("hot", "fake", "rising") and item.get("recent_avg28") is not None:
+    season = item.get("item_season") if kind == "seasonal" else None
+    if season:
+        kv.append(f"<span><em>旺季（{esc(seasonality.months_text(season['peak_months']))}）日均</em> "
+                  f"<b>{fmt_num(season['peak_avg'])}</b> 件</span>")
+        kv.append(f"<span><em>淡季日均</em> {fmt_num(season['off_avg'])} 件</span>")
+    if kind in ("hot", "fake", "rising", "seasonal") and item.get("recent_avg28") is not None:
         kv.append(f"<span><em>近28天日均</em> {fmt_num(item['recent_avg28'])} 件</span>")
 
-    chart = bars(item["monthly"][-12:]) if kind == "hot" else \
-        sparkline(item.get("spark") or [], start=item.get("spark_start"))
+    if season:
+        chart = bars([(k, v) for k, v, _ in season["months"]], highlight={k for k, _, peak in season["months"] if peak},
+                     caption="每月日均销量（件/天），深色 = 品类旺季月", unit="件/天")
+    elif kind == "hot":
+        chart = bars(item["monthly"][-12:])
+    else:
+        chart = sparkline(item.get("spark") or [], start=item.get("spark_start"))
     look = f'<div class="look"><em>外观</em>{esc(item["look"])}</div>' if item.get("look") else ""
     look += "".join(f'<div class="look"><em>{esc(head)}</em>{esc(text)}</div>' for head, text in notes)
     signals = ""
@@ -355,25 +364,33 @@ def _growth_pop(focus: list[dict], hint: str) -> str:
     return _pop_src("growth", "增长商品", "potential", f'<p class="hint">{esc(hint)}</p><div class="cards">{body}</div>')
 
 
-def season_reason_text(item: dict, code: str) -> str:
-    """季节性商品清单里每条依据的文字（analyze.season_reasons），报告卡片和钉钉消息共用。"""
-    if code == "own":
-        return f"自己去年同期也涨了 ×{item['surge']['last_year_ratio']:.1f}"
-    if code == "category":
-        return f"所在品类按往年规律这段时间本来就会涨 ×{item['category_season']:.1f}"
-    return "原始销量不达标，按品类季节调整后才算持续热销"
+def season_text(item: dict) -> str:
+    """季节性商品的一句话（报告卡片和钉钉消息共用）：旺季月份、旺季比淡季高几倍、现在离旺季多远。"""
+    s = item["item_season"]
+    as_of = clock.parse_day(item.get("as_of"))
+    gap = seasonality.months_to_peak(as_of, s["peak_months"]) if as_of else None
+    when = "" if gap is None else "，现在是旺季" if gap == 0 else f"，离旺季还有 {gap} 个月"
+    return f"每年 {seasonality.months_text(s['peak_months'])}旺，旺季日均至少是前后淡季的 {s['ratio']:.1f} 倍{when}"
 
 
 def _seasonal_pop(items: list[dict], seasons: dict, hint: str, total: int) -> str:
-    """季节性商品：每张卡片仍按它所在的板块展示（左上角写板块），下面写为什么列在这里、所在品类的季节。"""
+    """季节性商品：卡片左上角写它本期所在的板块（不在任何板块的写“观察”），下面是每月日均（深色 = 品类旺季月）、
+    这句季节结论和所在品类的季节（“每年”的依据）。"""
     cards = []
     for i in items:
-        kind = i["label"] if i["label"] in ("surge", "potential") else "rising" if i.get("rising") else "hot"
-        why = "；".join(season_reason_text(i, code) for code in season_reasons(i))
+        group = SEASON_GROUP.get(i["label"], "观察")
+        if i["label"] in ("watch", "hot") and i.get("rising"):
+            group = "上升中"
         cat = seasonality.verdicts(seasons.get(i.get("node"))) or ["还没有这个子类目的类目历史"]
-        cards.append(card(i, kind, GROUP_CN.get(kind, "持续热销"), [("季节", why), ("品类", cat[0])]))
+        cards.append(card(i, "seasonal", group, [("季节", season_text(i)), ("品类", cat[0])]))
     more = f"（共 {total} 个，展示前 {len(items)} 个）" if total > len(items) else ""
-    body = "".join(cards) or '<div class="empty">本期没有判断和季节有关的商品。</div>'
+    if cards:
+        body = "".join(cards)
+    elif not any((o or {}).get("ready") for o in seasons.values()):
+        body = ('<div class="empty">类目历史还不够，认不出季节性品类，也就认不出季节性商品'
+                '（每期用剩余预算补类目月度销量，补齐后自动出现）。</div>')
+    else:
+        body = '<div class="empty">本期没有符合条件的季节性商品。</div>'
     link = '<p class="sub"><a href="#" data-pop="season">查看季节日历（全部子类目的旺季、淡季和接下来 6 个月）</a></p>'
     return _pop_src("seasonal", "季节性商品", LABEL_COLOR["seasonal"],
                     f'<p class="hint">{esc(hint)}{more}</p>{link}<div class="cards">{body}</div>')
@@ -689,6 +706,16 @@ def _all_table(items: list[dict]) -> str:
             "<th class=n>异常分</th><th>标签</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
 
 
+def season_rule(sc: dict) -> str:
+    """季节性商品的四条（seasonality.item_season），小窗顶部和“判定方法”共用。"""
+    return ("每个商品的日数据只有约 400 天，自己看不出“每年都这样”，所以“每年”由所在品类 3 年的类目销量证明，"
+            "这个商品自己这一年要跟着走，四条都满足：① 所在子类目是季节性品类，旺季 = 品类的旺季月；"
+            f"② 最近连续 {sc['item_min_months']} 个月每月都在卖（每月 ≥{sc['item_min_days']} 天，只算在卖的日子，去掉大促日和断货日）；"
+            f"③ 每一段旺季的日均 ≥ 紧挨着它的前一段、后一段淡季日均的 {sc['item_ratio']:g} 倍，"
+            "而且看得到一次从淡季涨上去、一次从旺季掉下来（一直在涨或一直在跌的只有一边低，不算）；"
+            f"④ 淡季里每个月的日均都 ≤ 旺季日均的 {sc['item_off_max']:g} 倍（淡季里冲高过的不算）。")
+
+
 def section_hints(cfg: dict) -> dict[str, str]:
     """每个小窗顶部的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。共用概念见 _method。"""
     th = cfg["thresholds"]
@@ -713,12 +740,11 @@ def section_hints(cfg: dict) -> dict[str, str]:
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
                   f"且 ≥{r['min_daily_sales']} 件、没有回落。“外观与工艺依据”就是从这些商品统计的。按势头排序。"
                   f"季节性品类里、按往年规律对比期间品类本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍的，标“品类季节性”并写明扣除季节后的倍数（见“数据说明”）。",
-        "seasonal": f"不是单独的板块：每个商品仍在自己的板块里（卡片左上角），这里把本期判断和季节有关的再列一遍，任一："
-                    f"① 突然爆火，且这个商品自己去年同期同样的窗口也涨了 ≥{s['seasonal_ratio']:g} 倍（标签“季节性”，要上架满一年才看得到）；"
-                    f"② 突然爆火 / 潜力 / 上升中，所在季节性品类按往年规律这段时间本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍（标签“品类季节性”）；"
-                    "③ 持续热销里原始销量不达标、按品类季节调整后才达标的（卡片注明“已按品类季节调整”）。"
-                    "异常信号和评分不达标的不列。按 突然爆火 → 潜力 → 上升中 → 持续热销 排，同一板块里的顺序和板块一样；"
-                    "“品类”一行是所在子类目的季节结论（季节性品类的定义见“季节日历”）。",
+        "seasonal": "每年固定一段时间卖得特别好、其他时间反而不行的商品。不是板块：不论它本期在哪个板块、还是只在观察"
+                    "（卡片左上角），都在这里再列一遍。" + season_rule(sc) +
+                    "异常信号和评分不达标的不列。离旺季近的排前面（正在旺季的最前）。柱状图是这个商品每个月的日均，"
+                    "深色是品类的旺季月；“品类”一行是所在子类目的季节结论（季节性品类的定义见“季节日历”）。"
+                    "带“品类季节性”标签、或按季节调整后才算持续热销的，说的是品类，不等于商品自己是季节性的。",
         "all": "本期追踪的全部商品。“板块”是本期归入的板块（观察 = 不属于任何板块），“来源”是它被选进追踪的原因。",
     }
 
@@ -761,7 +787,7 @@ def _method(cfg: dict) -> str:
 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天的是“短时脉冲”，其余都不符合的是“上涨形态不稳定”，都不算爆火。
 老品换链接的“从零起量”只是新子体开始卖，不算新品爆发、也不标新品起量。
 <b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)。</li>
-<li><b>爆火的附加标签</b>：季节性 = 这个商品自己去年同期也涨了 ≥{s['seasonal_ratio']} 倍（要上架满一年才看得到）；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
+<li><b>爆火的附加标签</b>：降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
 对比期里 ≥7 天（且 ≥25%）没有销量、而更早之前卖得和现在差不多的是“断货恢复”，不算爆火。</li>
 <li><b>数据来源</b>：所有判定的数据都来自卖家精灵（月度名单、近 30 天榜单、每个商品的日数据、子类目月度销量），
 不用人工填的日期或系数；大促日也只从日数据里认，config.yaml 的 deal_windows 只给认出来的日子起名字。</li>
@@ -775,8 +801,8 @@ def _method(cfg: dict) -> str:
 这种 28 天的短窗口，季节倍数 = (季节指数之比)^k：月度指数摊到 28 天会夸大，k 每期用卖家精灵数据现算（过去一年，季节性品类的指数之比 vs
 该子类目追踪商品实际 28 天变化的中位数，k = ln(实际) ÷ ln(指数之比) 的中位数，只用季节起伏 ≥5% 的样本），本期的 k 写在上面。
 只是标签，不影响上榜。回测：去年 12 月判出的突然爆火只有 52% 四周后还保持住，6~8 月是 84~86%。</li>
-<li><b>季节性商品</b>：顶部的“季节性商品”不是板块，商品不从原板块移走：带“季节性”的突然爆火、带“品类季节性”的增长商品、
-按品类季节调整后才达标的持续热销，在这里再列一遍，方便单独看。条件见点开后小窗顶部。</li>
+<li><b>季节性商品</b>（标签“季节性”，顶部的“季节性商品”小窗列出全部）：每年固定一段时间卖得特别好、其他时间反而不行。
+{esc(season_rule(th['seasonality']))}不是板块，只是标签，不影响上榜。</li>
 <li><b>老品换链接</b>：上架 ≤{th['relist']['max_age_days']} 天，且评论数 ≥ 这个 ASIN 自己累计销量（日数据里卖出的全部件数）的 {th['relist']['review_share']:.0%}，
 或评论数 ≥ 累计销量的 {th['relist']['review_share_fast']:.0%} 且第一周（从第一天卖出东西算起）日均 ≥ 近 7 天日均的 {th['relist']['fast_share']:.0%}（且 ≥{th['relist']['fast_min_daily']} 件）。
 多是新子体挂进老父体、或老品换了新 ASIN，继承了评论和排名，上架天数不代表商品是新的（正常留评率 1~3%，Vine 最多 30 条）。

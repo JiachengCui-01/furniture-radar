@@ -28,6 +28,15 @@
   按月的预测（开发方向的“到货前高峰”“上架后”、持续热销的调整）不打折，那是按月回测过的。
 预测 = 最近 3 个月按季节指数还原后的平均水平 × 目标月份的季节指数。回测（2026-10，28 个子类目，
   预测起点 2025-09~2026-03、提前 1~6 个月）误差中位数 10~12%，按现在水平外推是 12~16%；每个子类目给出自己的回测误差。
+季节性商品（item_season）= 每年固定一段时间卖得特别好、其他时间反而不行的商品。每个商品的日数据只有约 400 天（一整年），
+  自己看不出“每年都这样”，所以“每年”由所在品类的 3 年类目销量证明，商品自己这一年要跟着这个规律走，四条都满足：
+  ① 所在子类目是季节性品类，旺季 = 品类的旺季月；
+  ② 这个商品最近连续 item_min_months 个月每月都在卖（每月 ≥ item_min_days 天，只算在卖的日子：去掉大促日、断货日）；
+  ③ 每一段旺季（时间上连着的旺季月份）的日均 ≥ 紧挨着它的前一段、后一段淡季日均的 item_ratio 倍，
+     而且看得到至少一次从淡季涨上去、一次从旺季掉下来（只有一边低的是一直在涨或一直在跌）；
+  ④ 淡季里每个月的日均都 ≤ 旺季日均的 item_off_max 倍（其他时间反而不行：淡季里冲高过的不算）。
+  2026-10 的数据（13 个季节性品类里有一整年数据的 81 个商品）：只要 ③ 时 8 个，加上 ④ 剩 6 个（2 个梳妆台、4 个衣帽架），
+  去掉的两个衣帽架淡季的 8~9 月比冬天还高。
 """
 from __future__ import annotations
 
@@ -274,6 +283,72 @@ def outlook(prof: dict | None, as_of: date, cfg: dict) -> dict | None:
                          else "quieter" if launch <= float(cfg["quieter"]) + 1e-9 else "same"),
         "curve": curve, "lead_days": lead, "launch_days": launch_days,
     }
+
+
+def item_months(d, oos_bsr: float | None, min_days: int) -> list[list]:
+    """这个商品每个月的日均销量 [[YYYY-MM, 日均]]：只算在卖的日子（d 已去掉大促日；BSR ≥ oos_bsr 或缺失的断货日不算），
+    取最近一段连续的、每月在卖 ≥ min_days 天的月份（当月不够天数时从上个月往前数）。"""
+    by: dict[str, list[float]] = {}
+    for i, s in enumerate(d.sales):
+        b = d.bsr[i] if i < len(d.bsr) else None
+        if i in d.masked or s is None or b is None or (oos_bsr is not None and b >= oos_bsr):
+            continue
+        by.setdefault(month_key(d.day(i)), []).append(s)
+    ok = sorted(k for k, v in by.items() if len(v) >= min_days)
+    run: list[str] = []
+    for key in reversed(ok):
+        if run and key != _add_months(run[-1], -1):
+            break
+        run.append(key)
+    return [[k, round(statistics.mean(by[k]), 2)] for k in reversed(run)]
+
+
+def item_season(d, prof: dict | None, cfg: dict, oos_bsr: float | None = None) -> dict | None:
+    """季节性商品（模块说明的四条）。d：这个商品的日数据（已去掉大促日）。所在子类目不是季节性品类、
+    或这个商品没有连续 item_min_months 个月的数据时返回 None；否则返回
+    {"seasonal", "peak_months", "months": [[YYYY-MM, 日均, 是否旺季]], "ratio"（各段旺季 ÷ 前后淡季的最小倍数）,
+     "peak_avg", "off_avg", "off_max"（淡季最高那个月 ÷ 最低那段旺季）}。"""
+    if d is None or not prof or not prof.get("seasonal"):
+        return None
+    months = item_months(d, oos_bsr, int(cfg["item_min_days"]))
+    if len(months) < int(cfg["item_min_months"]):
+        return None
+    peaks = set(prof["peak_months"])
+    segs: list[tuple[bool, list[float]]] = []  # 时间上连着的旺季 / 淡季月份，各成一段
+    for key, avg in months:
+        flag = int(key[5:]) in peaks
+        if segs and segs[-1][0] == flag:
+            segs[-1][1].append(avg)
+        else:
+            segs.append((flag, [avg]))
+    ratios, rise, fall = [], False, False
+    for j, (flag, values) in enumerate(segs):
+        if not flag:
+            continue
+        level = statistics.mean(values)
+        for nb in (j - 1, j + 1):
+            if 0 <= nb < len(segs):
+                off = statistics.mean(segs[nb][1])
+                ratios.append(level / off if off > 0 else math.inf)
+                rise, fall = rise or nb < j, fall or nb > j
+    peak_levels = [statistics.mean(v) for f, v in segs if f]
+    off_values = [v for f, vs in segs if not f for v in vs]
+    if not ratios or not off_values:
+        return None
+    ratio = min(ratios)
+    off_max = max(off_values) / min(peak_levels) if min(peak_levels) > 0 else math.inf
+    seasonal = (rise and fall and ratio >= float(cfg["item_ratio"]) - 1e-9
+                and off_max <= float(cfg["item_off_max"]) + 1e-9)
+    return {"seasonal": seasonal, "peak_months": sorted(peaks),
+            "months": [[k, v, int(k[5:]) in peaks] for k, v in months],
+            "ratio": round(ratio, 2), "off_max": round(off_max, 2),
+            "peak_avg": round(statistics.mean(v for f, vs in segs if f for v in vs), 1),
+            "off_avg": round(statistics.mean(off_values), 1)}
+
+
+def months_to_peak(as_of: date, peak_months: list[int]) -> int:
+    """离下一个旺季月还有几个月（这个月就是旺季月 = 0）。"""
+    return min(((m - as_of.month) % 12 for m in peak_months), default=12)
 
 
 def hot_levels(prof: dict | None, as_of: date, months: int = 8) -> dict | None:

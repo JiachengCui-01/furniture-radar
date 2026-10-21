@@ -51,13 +51,44 @@ def test_price_driven_surge(cfg):
     assert s and s["price_driven"]
 
 
-def test_seasonal_surge(cfg):
-    sales = [5] * 420
-    for i in list(range(420 - 10, 420)) + list(range(420 - 10 - 364, 420 - 364)):
-        sales[i] = 18
-    d = make(sales)
-    s = evaluate_surge(d, len(d) - 1, surge_cfg(cfg))
-    assert s and s["seasonal"]
+def _yearly(level, days=420):
+    """以 END 结尾的 days 天日销量，level(那一天) = 当天销量。"""
+    start = END - timedelta(days=days - 1)
+    return [level(start + timedelta(days=k)) for k in range(days)]
+
+
+WINTER = {"seasonal": True, "peak_months": [11, 12]}  # 品类旺季 11~12 月
+
+
+def _seasonal(d, cfg) -> bool:
+    from radar.detect import seasonality
+
+    s = seasonality.item_season(d, WINTER, cfg["thresholds"]["seasonality"], cfg["thresholds"]["out_of_stock_bsr"])
+    return bool(s and s["seasonal"])
+
+
+def test_seasonal_product_sells_well_only_in_its_season(cfg):
+    """季节性商品：每年固定一段时间卖得特别好、其他时间反而不行（每段旺季 ≥ 前后淡季的 2 倍、淡季没有冲高过）。"""
+    from radar.detect import seasonality
+
+    sc, oos = cfg["thresholds"]["seasonality"], cfg["thresholds"]["out_of_stock_bsr"]
+    winter = make(_yearly(lambda d: 30 if d.month in (11, 12) else 10))
+    s = seasonality.item_season(winter, WINTER, sc, oos)
+    assert s["seasonal"] and s["ratio"] == 3.0 and s["peak_avg"] == 30 and s["off_avg"] == 10
+    assert s["months"][0][0] == "2025-08" and s["months"][-1][0] == "2026-09"  # 10 月只有 6 天，不算
+    # 一直在跌：去年 11~12 月比之后高，但和之前的 8~10 月一样高 → 只有一边低，不算
+    assert not _seasonal(make(_yearly(lambda d: 30 if (d.year, d.month) <= (2025, 12) else 10)), cfg)
+    # 一直在涨：今年的淡季比去年旺季还高
+    assert not _seasonal(make(_yearly(lambda d: 5 + 2 * ((d.year - 2025) * 12 + d.month))), cfg)
+    # 淡季的 8 月冲到和旺季一样高：“其他时间反而不行”不成立
+    assert not _seasonal(make(_yearly(lambda d: 30 if d.month in (11, 12) or (d.year, d.month) == (2026, 8) else 10)),
+                         cfg)
+    # 旺季只比淡季高 50%：不够“特别好”
+    assert not _seasonal(make(_yearly(lambda d: 15 if d.month in (11, 12) else 10)), cfg)
+    # 不是季节性品类、或没有一整年数据（上架才半年）：不判断
+    assert seasonality.item_season(winter, {"seasonal": False}, sc, oos) is None
+    young = make(_yearly(lambda d: 30 if d.month in (11, 12) else 10, days=200))
+    assert seasonality.item_season(young, WINTER, sc, oos) is None
 
 
 def test_event_days_are_detected_from_many_items_jumping_together(cfg):
@@ -516,38 +547,26 @@ def test_hot_counts_raw_or_seasonally_adjusted_sales(cfg):
     assert b["label"] == "hot" and b["hot"]["adjusted"]
 
 
-def test_seasonal_items_are_listed_again_without_leaving_their_sections(cfg):
-    """季节性商品清单：自己去年同期也涨的突然爆火、带“品类季节性”的增长商品、按季节调整后才达标的持续热销再列一遍，
-    它们照样留在原板块；没有季节因素的、评分不达标的不列。"""
-    from radar.detect import seasonality
+def test_seasonal_products_are_listed_whatever_their_section(cfg):
+    """季节性商品清单：所在季节性品类每年 11~12 月高、商品自己这一年也是 → 标“季节性（每年 11~12 月旺…）”并列出，
+    不论在哪个板块（淡季里多半只在观察）；离旺季近的排前面、同样近的按旺季日均；评分不达标的照样标、但不列；
+    没有类目历史的子类目里同样形状的商品不判断。"""
     from radar.report import render
 
-    early_autumn = lambda m: 100 * {9: 1.6, 10: 2.2}.get(m, 1.0)
-    state = _with_history({"asins": {}}, "N1", _category_history(early_autumn))
-    rising = [10] * 92 + [20] * 28
-    yearly = [5] * 420  # 今年和去年同期都在最后 10 天涨到 18 件
-    for i in list(range(410, 420)) + list(range(46, 56)):
-        yearly[i] = 18
-    state["asins"] = {"CAT": {**_rec(rising, 4.5), "node": "N1"}, "FLAT": {**_rec(rising, 4.5), "node": "N2"},
-                      "OWN": {**_rec(yearly, 4.5), "node": "N2"}, "LOW": {**_rec(yearly, 3.5), "node": "N2"}}
-    items = analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]
-
-    th = cfg["thresholds"]
-    peak = lambda m: 100 * {7: 1.6, 8: 2.6, 9: 1.8}.get(m, 1.0)
-    season = seasonality.hot_levels(seasonality.profile(_category_history(peak), th["seasonality"]), END)
-    stats = {"N3": {"threshold": 900}}
-    wavy = {**_rec([60] * 120, 4.5), "node": "N3", "months": _months([1000 * x for x in (1.0, 1.0, 1.0, 1.6, 2.6, 1.8)])}
-    flat = {**_rec([40] * 120, 4.5), "node": "N3", "months": _months([1200] * 6)}
-    items += [analyze.evaluate(k, rec, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
-              for k, rec in (("ADJ", wavy), ("RAW", flat))]
-    by = {i["asin"]: i for i in items}
-    assert by["OWN"]["label"] == "surge" and by["LOW"]["label"] == "low" and by["CAT"]["rising"]
-    assert by["ADJ"]["hot"]["adjusted"] and by["RAW"]["label"] == "hot" and not by["RAW"]["hot"]["adjusted"]
-
-    sec = analyze.sections(items, 0)
-    assert [i["asin"] for i in sec["seasonal"]] == ["OWN", "CAT", "ADJ"] and sec["counts"]["seasonal"] == 3
-    assert {i["asin"] for i in sec["surge"]} == {"OWN"} and {i["asin"] for i in sec["hot"]} == {"ADJ", "RAW"}
-    assert [analyze.season_reasons(by[k]) for k in ("OWN", "CAT", "ADJ")] == [["own"], ["category"], ["hot_adjusted"]]
-    assert render.season_reason_text(by["OWN"], "own") == f"自己去年同期也涨了 ×{by['OWN']['surge']['last_year_ratio']:.1f}"
-    assert render.season_reason_text(by["CAT"], "category") == (
-        f"所在品类按往年规律这段时间本来就会涨 ×{by['CAT']['category_season']:.1f}")
+    winter = lambda m: 100 * {11: 2.2, 12: 2.8}.get(m, 1.0)
+    state = _with_history({"asins": {}}, "N1", _category_history(winter))
+    shape = lambda base: _yearly(lambda d: 3 * base if d.month in (11, 12) else base)
+    state["asins"] = {"SMALL": {**_rec(shape(10), 4.5), "node": "N1"}, "BIG": {**_rec(shape(40), 4.5), "node": "N1"},
+                      "LOW": {**_rec(shape(20), 3.5), "node": "N1"}, "NOHIST": {**_rec(shape(20), 4.5), "node": "N2"},
+                      "FLAT": {**_rec([20] * 420, 4.5), "node": "N1"}}
+    result = analyze.analyze(state, None, list(state["asins"]), cfg, END)
+    assert result["profiles"]["N1"]["seasonal"] and result["profiles"]["N1"]["peak_months"] == [11, 12]
+    by = {i["asin"]: i for i in result["items"]}
+    sec = analyze.sections(result["items"], 0)
+    assert [i["asin"] for i in sec["seasonal"]] == ["BIG", "SMALL"] and sec["counts"]["seasonal"] == 2
+    assert by["BIG"]["label"] == "watch" and by["LOW"]["label"] == "low"
+    ratio = by["SMALL"]["item_season"]["ratio"]
+    assert f"季节性（每年 11~12 月旺，旺季日均至少是前后淡季的 {ratio:.1f} 倍）" in by["SMALL"]["tags"]
+    assert any(t.startswith("季节性（") for t in by["LOW"]["tags"])
+    assert by["NOHIST"]["item_season"] is None and not by["FLAT"]["item_season"]["seasonal"]
+    assert render.season_text(by["SMALL"]) == f"每年 11~12 月旺，旺季日均至少是前后淡季的 {ratio:.1f} 倍，离旺季还有 1 个月"

@@ -100,7 +100,7 @@ class Product:
                      "fake_new": 0.0, "review_burst": rng.uniform(10, 14), "merge": rng.uniform(12, 16),
                      "declining": rng.uniform(30, 40), "noise": rng.lognormvariate(1.0, 0.7),
                      "upholstered": rng.uniform(30, 40)}[kind]
-        age = {"potential": 115, "fake_new": 70}.get(kind, rng.randint(250, 900))
+        age = {"potential": 115, "fake_new": 70, "seasonal": 800}.get(kind, rng.randint(250, 900))  # 随机数照样抽
         self.available = today - timedelta(days=age)
         self.variations = {"merge": 3, "fake_new": 2, "review_burst": 2}.get(kind, rng.choice([1, 2, 3, 6, 12]))
         self.review_rate = {"fake_new": 0.16}.get(kind, rng.uniform(0.01, 0.025))
@@ -124,8 +124,8 @@ class Product:
             v = b * (3.2 if days_ago <= 9 else 1)
         elif k == "pulse":
             v = b * (6 if days_ago in (10, 11) else 1)
-        elif k == "seasonal":  # 今年和去年同期都在涨
-            v = b * (3.5 if days_ago <= 9 or 364 <= days_ago <= 373 else 1)
+        elif k == "seasonal":  # 季节性商品：和餐边柜品类一样每年 11~12 月卖得特别好（11 月中到年底 3 倍），其他月份平平
+            v = b * (3.0 if (day.month == 11 and day.day >= 10) or day.month == 12 else 1)
         elif k in ("potential", "fake_new"):
             age = (day - self.available).days
             v = (1.2 * math.exp(age / 38) if k == "potential" else 4.5)
@@ -180,8 +180,9 @@ class SyntheticWorld:
             "电视柜": ["steady", "surge", "merge", "noise", "declining", "noise"],
             "床架": ["steady", "potential", "pulse", "upholstered", "steady", "noise"],
             "家庭办公桌": ["steady", "price_surge", "fake_new", "noise", "steady", "noise"],
-            "餐边柜": ["steady", "surge", "potential", "review_burst", "noise"],
-            "书架": ["seasonal", "steady", "potential", "noise"],
+            # 季节性商品放在餐边柜最后、书架去掉一个：下标和随机数的顺序都不变
+            "餐边柜": ["steady", "surge", "potential", "review_burst", "noise", "seasonal"],
+            "书架": ["steady", "potential", "noise"],
             "沙发": ["steady", "surge", "noise"],
             "计算机工作站": ["steady", "surge", "fake_new", "potential", "noise"],
             "办公椅": ["steady", "surge", "noise"],

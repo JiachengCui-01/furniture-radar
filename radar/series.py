@@ -224,18 +224,6 @@ def surge_shape(d: Daily, as_of_idx: int, base_avg: float, mult: float) -> dict:
             "week_ratio": (avg7 / prev7) if avg7 is not None and prev7 else None}
 
 
-def same_window_last_year(d: Daily, as_of_idx: int, window: int, base_days: int) -> float | None:
-    """去年同期（往前 364 天，星期对齐）同样窗口的销量倍数。"""
-    shifted = as_of_idx - 364
-    if shifted - window - base_days < 0:
-        return None
-    recent = mean(d.window("sales", shifted, window))
-    base = mean(d.window("sales", shifted - window, base_days))
-    if recent is None or not base:
-        return None
-    return recent / base
-
-
 def find_pulses(d: Daily, as_of_idx: int, lookback: int, mult: float, min_sales: float,
                 revert: float) -> list[dict]:
     """近 lookback 天内 1~3 天的尖峰：冲到基线 mult 倍以上，随后 7 天内回落到 revert 倍以下。"""
