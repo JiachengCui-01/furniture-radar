@@ -34,7 +34,7 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    品类就是该方向的子类目（可以说得更口语，如“梳妆台”），增量照抄该方向“销售额”里的增量；
    特征只能用该方向“比头部多”里列出的，不得添加、替换或挪用别的方向的，也不要写“基本款”里的；
    “比头部多”为空时写“外观没有比同类头部更多的特征”；“主材质”是“未注明”“木质（未注明）”“其他”的不写；
-   季节提醒只能用该方向“季节”里的一条：有“到货前品类会先冲高”就写它，否则有“本期增长有季节因素”就写它，都没有就不写；
+   季节提醒照抄该方向的“季节提醒”，它是空的就不写，不要写别的季节信息（例如“类目历史不够”“没有固定季节”都不写）；
    末尾可以加“参考 [<品牌 简称>](<ASIN>) 的<一个外观细节>”，外观细节只能取该方向参考商品的“外观要点”，
    并且不能和这条已经写出的颜色、主材质矛盾（矛盾就换一个细节或不写参考）。
 8. “风险提醒”只写两类，每条都要点名 JSON 里的一个具体商品（写法见第 10 条）：
@@ -152,17 +152,19 @@ def direction_facts(tr: dict) -> list[dict]:
                "基本款": feats("base"),
                "价格区间": directions.price_text(d["price"]),
                "包装": shipping.summary_text(d.get("pkg")) or "没有数据",
-               "季节": seasonality.verdicts(season) or ["还没有这个子类目的类目历史"],
+               # 只给要写进要点的那一条（规则见 season_note），完整的季节结论在报告的开发方向依据里
+               "季节提醒": season_note(seasonality.verdicts(season)),
                "参考商品": [{"品牌": r["brand"], "品名": r["name"][:60], "外观要点": r["look"], "ASIN": r["asin"]}
                         for r in d["refs"]]}
         out.append(row)
     return out
 
 
-def season_note(d: dict) -> str:
-    """开发方向那一条末尾的季节提醒（模板用，规则同提示词第 7 条）：优先“到货前会先冲高”，其次“有季节因素”。"""
+def season_note(verdicts: list[str]) -> str:
+    """开发方向那一条末尾的季节提醒：优先“到货前会先冲高”，其次“本期增长有季节因素”，都没有就是空的
+    （“类目历史不够”“没有固定季节”这类不写进要点，实测大模型会照抄到每一条后面）。"""
     for prefix in ("到货前品类会先冲高", "本期增长有季节因素"):
-        for line in d.get("季节") or []:
+        for line in verdicts or []:
             if line.startswith(prefix):
                 return line
     return ""
@@ -239,7 +241,7 @@ def template_summary(facts: dict) -> str:
     lines.append("### 开发方向")
     for d in facts["开发方向"]:
         ref = (d.get("参考商品") or [None])[0]
-        note = season_note(d)
+        note = d.get("季节提醒") or ""
         head, node = d["画像"], d.get("子类目")
         if node and d.get("增量"):
             head = head.replace(f"{node}：", f"{node}（月增量约 {d['增量']}）：", 1)

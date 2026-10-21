@@ -588,12 +588,17 @@ def test_summary_product_mentions_become_amazon_links():
     facts = {"共性特点": {}, "突然爆火": [item], "潜力": [], "异常信号": [item],
              "开发方向": [{"画像": "玄关桌：窄小省空间", "参考商品": [{"品名": item["品名"], "ASIN": "B0H2XKVQ5L"}]},
                       {"画像": "衣帽架：实木，$24–$120", "子类目": "衣帽架", "增量": "$26 万",
-                       "季节": ["去年同期品类没有明显上涨（1.1 倍）", "到货前品类会先冲高：去年 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上"],
+                       "季节提醒": narrative.season_note([
+                           "近 28 天季节变化不大：按往年规律，品类是之前 28 天的 1.1 倍",
+                           "到货前品类会先冲高：按往年规律 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上"]),
                        "参考商品": []}]}
     text = narrative.template_summary(facts)
     assert "[Huuger 63.4-78.3'' Extendable Behind…](B0H2XKVQ5L)" in text
     assert "- 开发玄关桌：窄小省空间，参考 [Huuger" in text
-    assert "- 开发衣帽架（月增量约 $26 万）：实木，$24–$120；到货前品类会先冲高：去年 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上\n" in text
+    assert ("- 开发衣帽架（月增量约 $26 万）：实木，$24–$120；到货前品类会先冲高：按往年规律 12 月是现在的 2.5 倍，"
+            "按开发周期 4 个月赶不上\n") in text
+    # 类目历史不够、没有固定季节这类结论不写进要点（实测大模型会照抄到每一条后面）
+    assert narrative.season_note(["类目历史只有 0 个月，还看不出季节"]) == ""
 
 
 def test_short_window_shrink_is_fitted_from_data():
