@@ -208,7 +208,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
-                       seasons=result.get("seasons"))
+                       seasons=result.get("seasons"), calibration=result.get("season_calibration"))
     key_text = ctx["key_text"]
     sec = ctx["sections"]
 
@@ -291,7 +291,7 @@ def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
                  prev_run: dict | None, coverage: dict, today, events: dict | None = None,
-                 seasons: dict | None = None) -> dict:
+                 seasons: dict | None = None, calibration: dict | None = None) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
     events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；seasons：各子类目的品类季节（同上）。"""
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
@@ -343,6 +343,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "top_n": int(cfg["report"]["top_n"]),
         "events": events or {},
         "seasons": seasons or {},
+        "season_calibration": calibration,
         "season_nodes": (disc or {}).get("nodes") or [],
     }
     ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
@@ -411,7 +412,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),
                                                                             cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
                        prev_run=state["runs"][-2] if len(state["runs"]) >= 2 else None, coverage=coverage,
-                       today=today, events=result.get("events"), seasons=result.get("seasons"))
+                       today=today, events=result.get("events"), seasons=result.get("seasons"),
+                       calibration=result.get("season_calibration"))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)

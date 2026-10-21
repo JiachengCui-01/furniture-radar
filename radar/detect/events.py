@@ -4,14 +4,14 @@
 全部商品的销量合计也翻倍，第二天就回到原来水平；回放当时的判定，大促刚过时冒出一批“上升中”，
 之后两三周每期有 12~26 个商品被判成“最近回落”（平时约 3 个，去掉大促日后 3~8 个），真正在涨的反而看不出来。
 
-两个来源，取并集：
-  config.yaml 的 deal_windows：人工登记的大促日期，也要数据印证——那天 ≥ edge_share 的商品冲高才算；
-  够格的商品不足 min_items 个、看不出来时照登记的算（实测 2026-10-06/07 Prime Big Deal Days 当天冲高的商品不到 6%，
-  和平时一样，这时去掉那两天反而让前后几天的 3 天窗口错位）；
+大促日只从卖家精灵的日数据里认（所有判定的数据都来自卖家精灵）：
   自动识别：某一天，追踪商品里 ≥ core_share 的商品当天销量达到自己前 base_days 天中位数的 jump 倍
   （只看那段中位数 ≥ min_base_daily 件的商品，而且这样的商品要有 ≥ min_items 个）；
   和这样的日子相连、比例 ≥ edge_share 的日子也算（大促前后常各带一天）。
 平时这个比例中位数约 4%，最高约 26%（黑五前一周），所以 core_share 默认 30%。
+config.yaml 的 deal_windows 只用来给认出来的日子起名字，以及数据里那天也有 ≥ edge_share 的商品冲高时补上
+（实测 2026-10-06/07 Prime Big Deal Days 当天冲高的商品不到 6%，和平时一样，不算大促日）；
+数据看不出来的日子（够格的商品不足 min_items 个）不按登记的算。
 """
 from __future__ import annotations
 
@@ -67,8 +67,8 @@ def detect(dailies: list[Daily], cfg: dict, deal_windows: list[dict]) -> dict:
     edge = float(cfg["edge_share"])
     if cfg.get("auto", True) and dailies:
         shares = daily_shares(dailies, cfg)
-        # 登记的日期：数据里那天没有一起冲高的不去掉；看不出来（不在 shares 里）的照登记的算
-        named = {day: name for day, name in named.items() if shares.get(day, 1.0) >= edge - 1e-9}
+        # 登记的日期只在数据里那天也冲高时才算；数据看不出来（不在 shares 里）的不算
+        named = {day: name for day, name in named.items() if shares.get(day, 0.0) >= edge - 1e-9}
         core = {day for day, share in shares.items() if share >= float(cfg["core_share"]) - 1e-9}
         auto = set(core)
         for day in sorted(core):

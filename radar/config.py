@@ -93,9 +93,10 @@ DEFAULTS: dict = {
         "relist": {"max_age_days": 180, "review_share": 0.5, "review_share_fast": 0.15, "fast_share": 0.5,
                    "fast_min_daily": 5},
         "seasonality": {"history_months": 36, "max_pages": 4, "min_months": 36, "min_consistency": 0.5,
-                        "min_amplitude": 1.3, "max_error": 0.25, "event_uplift": 2.0, "peak_month": 1.15, "low_month": 0.87,
-                        "tag_ratio": 1.15, "ratio_shrink": 0.75, "lead_days": 120, "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2,
-                        "quieter": 0.8},
+                        "min_amplitude": 1.3, "max_error": 0.25, "peak_month": 1.15, "low_month": 0.87,
+                        "tag_ratio": 1.15, "ratio_shrink": 0.6, "calibrate_min_pairs": 30,
+                        "calibrate_min_months": 24, "lead_days": 120,
+                        "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2, "quieter": 0.8},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,

@@ -4,11 +4,12 @@
 以前用追踪商品的日数据（只有 13 个月、都是现在还在追踪的商品）当季节曲线，季节和品类自己的涨跌分不开；
 拿它调整持续热销，不含旺季的窗口平白少了 12 个、含旺季的窗口只找回 3~4 个，所以换成类目历史。
 
+所有数字都来自卖家精灵：类目月度销量、追踪商品的日数据，不用人工填的日期或系数。
+  （试过按公开的往年 Prime Day / 黑五日期把大促从月销量里扣掉，检验误差只从 0.106 降到 0.103，不值得为它引入非卖家精灵的数据；
+  卖家精灵的 keepa_info 每日 BSR 历史也认不准往年大促日：圣诞后一周、1 月中旬的排名波动和大促一样大。
+  所以季节指数里含着每年固定时间的大促；Prime Day 的月份会变（2023~2025 年 7 月、2026 年 6 月），7 月的指数可能偏高。）
 季节指数（每个子类目、每个月份一个数，12 个月平均 = 1）：
-  先扣掉大促：有大促日的月份，月销量 ÷ (1 + 大促天数 × (event_uplift − 1) ÷ 当月天数)（大促当天按平时的 event_uplift 倍算）。
-  Prime Day 的月份每年会变（2023~2025 年 7 月、2026 年 6 月），不扣的话那个月会被当成旺季，按“往年 7 月旺季”去比今年 7 月就偏高
-  （实测床头柜：模型说 7 月下旬是之前 28 天的 1.50 倍，追踪商品实际只有 1.03 倍）；商品的日数据对比也都去掉了大促日，口径一致。
-  然后每个月的日均销量 ÷ 以它为中心的 12 个月移动平均（2×12 中心化，去掉品类自己这几年的涨跌），
+  每个月的日均销量 ÷ 以它为中心的 12 个月移动平均（2×12 中心化，去掉品类自己这几年的涨跌），
   同一个月份各年的比值取中位数，再归一到 12 个月平均为 1。
 季节性品类（三条都满足）：
   ① 类目历史 ≥ min_months 个月；
@@ -20,9 +21,10 @@
   不是季节性品类的子类目不做任何季节判断、不调整。
 旺季月 = 季节指数 ≥ peak_month；淡季月 = 季节指数 ≤ low_month。
 某一天的指数 = 相邻两个月中点之间线性插值；一段日子的指数 = 这些天的平均。
-按往年规律的倍数（28 天这样的短窗口用）= (这段日子的指数 ÷ 那段日子的指数) ^ ratio_shrink（只是季节，不含品类自己的涨跌）。
-  月度指数摊到 28 天会夸大：校准（2025-10~2026-03 的追踪商品）得 0.75，在 2026-04~09 检验，对数误差中位数
-  不打折 0.116 → 打折后 0.103（不考虑季节 0.121）；季节往上时尤其明显（不打折说 1.24 倍，商品实际中位数 1.11 倍）。
+按往年规律的倍数（28 天这样的短窗口用）= (这段日子的指数 ÷ 那段日子的指数) ^ k（只是季节，不含品类自己的涨跌）。
+  月度指数摊到 28 天会夸大，k 每期用卖家精灵数据现算（calibrate）：过去一年每 14 天一个日期，季节性品类的指数之比 vs
+  该子类目追踪商品实际的 28 天变化（中位数），k = ln(实际) ÷ ln(指数之比) 的中位数；样本不够时用 ratio_shrink。
+  2026-10 的数据：前半年拟合 k = 0.60，后半年检验对数误差中位数 不打折 0.116 → 0.106（不考虑季节 0.111）。
   按月的预测（开发方向的“到货前高峰”“上架后”、持续热销的调整）不打折，那是按月回测过的。
 预测 = 最近 3 个月按季节指数还原后的平均水平 × 目标月份的季节指数。回测（2026-10，28 个子类目，
   预测起点 2025-09~2026-03、提前 1~6 个月）误差中位数 10~12%，按现在水平外推是 12~16%；每个子类目给出自己的回测误差。
@@ -94,19 +96,9 @@ def consistency(units: dict[str, float]) -> tuple[float | None, int]:
     return (round(statistics.mean(pairs), 3) if pairs else None), len(years)
 
 
-def neutral(units: dict[str, float], event_days, uplift: float) -> dict[str, float]:
-    """扣掉大促的拉动（模块说明）：有大促日的月份 ÷ (1 + 大促天数 × (uplift − 1) ÷ 当月天数)。"""
-    per_month: dict[str, int] = {}
-    for day in event_days or ():
-        key = month_key(day)
-        per_month[key] = per_month.get(key, 0) + 1
-    return {k: v / (1 + per_month.get(k, 0) * (uplift - 1) / _month_days(k)) for k, v in units.items()}
-
-
-def profile(units: dict[str, float] | None, cfg: dict, events=()) -> dict:
-    """一个子类目的季节画像。cfg = thresholds.seasonality；events：大促日（扣掉它们的拉动再算）。"""
+def profile(units: dict[str, float] | None, cfg: dict) -> dict:
+    """一个子类目的季节画像。cfg = thresholds.seasonality。"""
     units = {k: v for k, v in (units or {}).items() if v}
-    units = neutral(units, events, float(cfg.get("event_uplift", 1.0)))
     out = {"months": len(units), "seasonal": False}
     if len(units) < int(cfg["min_months"]):
         return out
@@ -129,6 +121,50 @@ def profile(units: dict[str, float] | None, cfg: dict, events=()) -> dict:
         "shrink": float(cfg.get("ratio_shrink", 1.0)),
     })
     return out
+
+
+def calibrate(histories: dict[str, dict[str, float]], dailies: dict[str, list], as_of: date, cfg: dict,
+              steps: int = 26, every: int = 14) -> dict:
+    """现算 28 天季节倍数的折扣 k（模块说明）。histories：子类目 → {月份: 月销量}；dailies：子类目 → 追踪商品的日数据
+    （已去掉大促日）。过去 steps 个日期（每 every 天一个），每个日期只用它之前 history_months 个月的类目历史判断季节性品类；
+    实际 = 该子类目追踪商品 近 28 天日均 ÷ 之前 28 天日均 的中位数（之前日均 ≥3 件、≥4 个商品）。
+    k = 各样本 ln(实际) ÷ ln(指数之比) 的中位数（只用指数之比 ≥1.05 或 ≤1/1.05 的样本），限制在 0~1。
+    返回 {"k", "n"（样本数）, "fitted"（样本够不够、是不是现算的）}。"""
+    pairs = []
+    # 只用每个日期以前的类目历史（不偷看未来）；线上只保留 history_months 个月，一年前的日期以前只有 24~35 个月，
+    # 所以校准时季节性品类的门槛放到 calibrate_min_months（报告里判季节性品类仍要 min_months）
+    cal_cfg = {**cfg, "min_months": int(cfg.get("calibrate_min_months", 24))}
+    for j in range(1, steps + 1):
+        d0 = as_of - timedelta(days=every * j)
+        first = date(d0.year, d0.month, 1)
+        keep = {_add_months(month_key(first), -k) for k in range(1, int(cfg["history_months"]) + 1)}
+        for path, units in histories.items():
+            items = dailies.get(path) or []
+            if len(items) < 4:
+                continue
+            prof = profile({m: v for m, v in units.items() if m in keep}, cal_cfg)
+            if not prof.get("seasonal"):
+                continue
+            recent = (d0 - timedelta(days=27), d0)
+            base = (d0 - timedelta(days=55), d0 - timedelta(days=28))
+            e = window_index(prof["index"], *recent) / window_index(prof["index"], *base)
+            ratios = []
+            for d in items:
+                i = d.index_of(d0)
+                if i < 55 or i >= len(d.sales):
+                    continue
+                now = [v for v in d.sales[i - 27:i + 1] if v is not None]
+                before = [v for v in d.sales[i - 55:i - 27] if v is not None]
+                if now and before and statistics.mean(before) >= 3:
+                    ratios.append(statistics.mean(now) / statistics.mean(before))
+            if len(ratios) >= 4 and e > 0:
+                pairs.append((e, statistics.median(ratios)))
+    # 只用季节确实有起伏的样本（指数之比 ≥1.05 或 ≤1/1.05）：大半年指数之比≈1，那些样本对任何 k 误差都≈0，拟合不出东西
+    slopes = [math.log(a) / math.log(e) for e, a in pairs if a > 0 and abs(math.log(e)) >= math.log(1.05)]
+    if len(slopes) < int(cfg.get("calibrate_min_pairs", 30)):
+        return {"k": float(cfg["ratio_shrink"]), "n": len(slopes), "fitted": False}
+    k = min(1.0, max(0.0, statistics.median(slopes)))
+    return {"k": round(k, 2), "n": len(slopes), "fitted": True}
 
 
 def day_index(idx: dict[int, float], day: date) -> float:

@@ -81,13 +81,13 @@ def test_event_days_are_detected_from_many_items_jumping_together(cfg):
     assert found["days"] == {day(e - 1), day(e), day(e + 1)}
     assert found["spans"] == [{"start": day(e - 1).isoformat(), "end": day(e + 1).isoformat(),
                                "name": "自动识别", "auto": True}]
-    # 登记的大促日期：数据里那天也冲高（≥15%）的算；数据显示没冲高的不算；够格的商品不足 min_items 个、看不出来时照登记的算
+    # 登记的大促日期：数据里那天也冲高（≥15%）的算；数据显示没冲高的不算；够格的商品不足 min_items 个、数据看不出来时也不算
     deals = [{"name": "黑五", "start": day(e).isoformat(), "end": day(e + 1).isoformat()},
              {"name": "没体现的大促", "start": day(30).isoformat(), "end": day(31).isoformat()}]
     named = events.detect(dailies, ev_cfg, deals)
     assert named["days"] == {day(e - 1), day(e), day(e + 1)} and named["spans"][0]["name"] == "黑五"
     few = events.detect(dailies[:20], ev_cfg, deals)
-    assert few["days"] == {day(30), day(31), day(e), day(e + 1)} and few["spans"][0]["name"] == "没体现的大促"
+    assert few["days"] == frozenset() and few["spans"] == []  # 只认卖家精灵数据，不按登记的日期硬算
 
 
 def test_growth_made_of_event_days_is_not_a_surge(cfg):

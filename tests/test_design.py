@@ -371,8 +371,9 @@ def test_universal_feature_is_base_not_more(cfg):
 
 
 SEASON_CFG = {"history_months": 36, "max_pages": 4, "min_months": 24, "min_consistency": 0.5, "min_amplitude": 1.3,
-              "max_error": 0.25, "peak_month": 1.15, "low_month": 0.87, "tag_ratio": 1.15, "lead_days": 120,
-              "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2, "quieter": 0.8}
+              "max_error": 0.25, "peak_month": 1.15, "low_month": 0.87, "tag_ratio": 1.15, "ratio_shrink": 0.6,
+              "calibrate_min_pairs": 30, "lead_days": 120, "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2,
+              "quieter": 0.8}
 
 
 def _history(daily, months=36, end=(2026, 9)):
@@ -593,3 +594,32 @@ def test_summary_product_mentions_become_amazon_links():
     assert "[Huuger 63.4-78.3'' Extendable Behind…](B0H2XKVQ5L)" in text
     assert "- 开发玄关桌：窄小省空间，参考 [Huuger" in text
     assert "- 开发衣帽架（月增量约 $26 万）：实木，$24–$120；到货前品类会先冲高：去年 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上\n" in text
+
+
+def test_short_window_shrink_is_fitted_from_data():
+    """28 天季节倍数的折扣 k 每期用数据现算：商品实际只跟到季节起伏的一半时（指数之比 e，商品变化 ≈ e^0.5），拟合出 k≈0.5；
+    样本不够时用 ratio_shrink。"""
+    import calendar
+    from datetime import date, timedelta
+    from radar.detect import seasonality as S
+    from radar.series import Daily
+
+    def history(y0=2023, m0=10, months=36):
+        out, y, m = {}, 2026, 9
+        for _ in range(months):
+            out[f"{y}-{m:02d}"] = 100 * {11: 2.0, 12: 3.0, 1: 1.6}.get(m, 1.0) * calendar.monthrange(y, m)[1]
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+        return out
+
+    hist = history()
+    prof = S.profile(hist, SEASON_CFG)
+    start = date(2025, 9, 1)
+    days = 415
+    level = [S.day_index(prof["index"], start + timedelta(days=k)) ** 0.5 * 20 for k in range(days)]
+    items = [Daily(start, [1000.0] * days, list(level), [100.0] * days) for _ in range(5)]
+    cal = S.calibrate({"N": hist}, {"N": items}, date(2026, 10, 19), {**SEASON_CFG, "calibrate_min_pairs": 10})
+    assert cal["fitted"] and abs(cal["k"] - 0.5) <= 0.1 and cal["n"] >= 10
+    few = S.calibrate({"N": hist}, {"N": items[:3]}, date(2026, 10, 19), {**SEASON_CFG, "ratio_shrink": 0.6})
+    assert few == {"k": 0.6, "n": 0, "fitted": False}

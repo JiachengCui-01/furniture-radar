@@ -730,6 +730,8 @@ def _method(cfg: dict) -> str:
 <b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)。</li>
 <li><b>爆火的附加标签</b>：季节性 = 这个商品自己去年同期也涨了 ≥{s['seasonal_ratio']} 倍（要上架满一年才看得到）；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
 对比期里 ≥7 天（且 ≥25%）没有销量、而更早之前卖得和现在差不多的是“断货恢复”，不算爆火。</li>
+<li><b>数据来源</b>：所有判定的数据都来自卖家精灵（月度名单、近 30 天榜单、每个商品的日数据、子类目月度销量），
+不用人工填的日期或系数；大促日也只从日数据里认，config.yaml 的 deal_windows 只给认出来的日子起名字。</li>
 <li><b>季节性品类</b>：用卖家精灵的子类目月度销量合计（整个子类目所有商品，最近 {th['seasonality']['history_months']} 个月）算季节指数
 （每个月的日均 ÷ 以它为中心的 12 个月移动平均，同一月份各年取中位数，12 个月平均为 1）。四条都满足才算季节性品类：
 历史 ≥{th['seasonality']['min_months']} 个月；每 12 个月切一段，各段形状两两相关平均 ≥{th['seasonality']['min_consistency']:g}（每年都是同样的月份高）；
@@ -737,6 +739,8 @@ def _method(cfg: dict) -> str:
 不是季节性品类的不做任何季节判断。全部子类目见开发方向下面的“季节日历”。</li>
 <li><b>品类季节性</b>：季节性品类里的突然爆火、潜力、上升中，按往年规律它的对比期间品类本来就会涨 ≥{th['seasonality']['tag_ratio']:g} 倍的
 （爆火看它自己的近 7 / 14 天 vs 之前 28 天，潜力和上升中看近 28 天 vs 之前 28 天），标“品类季节性”，写明季节倍数和扣除后的倍数。
+这种 28 天的短窗口，季节倍数 = (季节指数之比)^k：月度指数摊到 28 天会夸大，k 每期用卖家精灵数据现算（过去一年，季节性品类的指数之比 vs
+该子类目追踪商品实际 28 天变化的中位数，k = ln(实际) ÷ ln(指数之比) 的中位数，只用季节起伏 ≥5% 的样本），本期的 k 写在上面。
 只是标签，不影响上榜。回测：去年 12 月判出的突然爆火只有 52% 四周后还保持住，6~8 月是 84~86%。</li>
 <li><b>老品换链接</b>：上架 ≤{th['relist']['max_age_days']} 天，且评论数 ≥ 这个 ASIN 自己累计销量（日数据里卖出的全部件数）的 {th['relist']['review_share']:.0%}，
 或评论数 ≥ 累计销量的 {th['relist']['review_share_fast']:.0%} 且第一周（从第一天卖出东西算起）日均 ≥ 近 7 天日均的 {th['relist']['fast_share']:.0%}（且 ≥{th['relist']['fast_min_daily']} 件）。
@@ -781,6 +785,10 @@ def render(ctx: dict) -> str:
     spans = (ctx.get("events") or {}).get("spans") or []
     if spans:
         facts.append("大促日（不参与比较）：" + "、".join(events.span_text(sp) for sp in spans))
+    cal = ctx.get("season_calibration")
+    if cal:
+        facts.append(f"28 天季节倍数折扣 k={cal['k']:.2f}（" + (f"本期用 {cal['n']} 个样本现算" if cal["fitted"]
+                     else f"样本只有 {cal['n']} 个，用默认值") + "）")
     facts += [f"卖家精灵调用 {fmt_int(cov.get('calls'))} 次",
               f"本期要点：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"]
     history = ""

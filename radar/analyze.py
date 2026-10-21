@@ -273,10 +273,19 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     sc = th.get("seasonality")
     # 品类季节（detect/seasonality.py）：每个子类目一份画像，数据是类目月度历史（category_history.py）
     paths = {rec.get("node") for _, rec in recs} | {n["path"] for n in (disc or {}).get("nodes") or []}
-    # 大促日：日数据里识别出的 + config.yaml 登记的（含往年），类目月销量先扣掉它们的拉动
-    season_events = set(ev["days"]) | set(events_mod.configured_days(cfg.get("deal_windows") or []))
-    profiles = ({path: seasonality.profile(category_history.series(state, path), sc, season_events)
-                 for path in paths if path} if sc else {})
+    histories = {path: category_history.series(state, path) for path in paths if path}
+    profiles = {path: seasonality.profile(units, sc) for path, units in histories.items()} if sc else {}
+    calibration = None
+    if sc and data_date:
+        # 28 天季节倍数的折扣 k：每期用本期的卖家精灵数据现算（类目历史 vs 追踪商品的日数据，去掉大促日）
+        node_dailies: dict[str, list[Daily]] = {}
+        for _, rec in recs:
+            d = Daily.from_record(rec["series"])
+            if d is not None and rec.get("node"):
+                node_dailies.setdefault(rec["node"], []).append(d.without(ev["days"]))
+        calibration = seasonality.calibrate(histories, node_dailies, data_date, sc)
+        for prof in profiles.values():
+            prof["shrink"] = calibration["k"]
     period = str((disc or {}).get("period") or "")
     threshold_month = f"{period[:4]}-{period[4:6]}" if len(period) == 6 else None
 
@@ -293,7 +302,7 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     seasons = ({path: seasonality.outlook(prof, data_date, sc) for path, prof in profiles.items()}
                if sc and data_date else {})
     return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date, "seasons": seasons,
-            "profiles": profiles}
+            "profiles": profiles, "season_calibration": calibration}
 
 
 def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
