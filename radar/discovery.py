@@ -17,7 +17,7 @@ import json
 import re
 from datetime import datetime, timezone
 
-from . import clock, log
+from . import clock, log, shipping
 from .vendor import BudgetExhausted, Vendor, request
 
 
@@ -134,7 +134,7 @@ def normalize_product(row: dict, node: dict, source: str, rank: int) -> dict | N
     if not asin:
         return None
     available = clock.ms_to_day(row.get("availableDate"))
-    return {
+    out = {
         "asin": asin,
         "parent": str(row.get("parent") or "").strip() or None,
         "title": clean_text(row.get("title")),
@@ -162,6 +162,10 @@ def normalize_product(row: dict, node: dict, source: str, rank: int) -> dict | N
         "sources": [source],
         "rank": rank,
     }
+    pkg = shipping.from_row(row)
+    if pkg:  # 没有包装数据的不写这个键：和别的行合并时不会盖掉有数据的那一行
+        out["pkg"] = pkg
+    return out
 
 
 def _add(products: dict, item: dict | None) -> None:

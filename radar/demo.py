@@ -59,6 +59,17 @@ def _ms(day: date) -> int:
     return int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000)
 
 
+def category_season(cn: str, month_start: date) -> float:
+    """子类目月度销量的季节（market_research 用）：餐边柜每年 11~12 月是旺季（和普通商品的 12 月高峰一致），
+    书架每年 7~8 月小高峰、但幅度每年不同（演示“起伏不一致，不算季节性品类”），其余全年平稳。"""
+    m = month_start.month
+    if cn == "餐边柜":
+        return {11: 1.9, 12: 2.4, 1: 1.2}.get(m, 0.85)
+    if cn == "书架":
+        return 1 + (0.5 if m == 7 + month_start.year % 3 else 0)
+    return 1.0
+
+
 def _bsr(sales: float) -> int:
     return int(250000 / (max(sales, 0) + 0.3) ** 0.9)
 
@@ -125,7 +136,24 @@ class Product:
             v = b * (1 + 0.6 * math.sin(day.toordinal() / 30 + self.idx))
         else:
             v = b
-        return max(0.0, v * weekly * noise)
+        return max(0.0, v * weekly * noise * self.season(day))
+
+    def season(self, day: date) -> float:
+        """品类季节：餐边柜的普通商品每年 12 月前后卖得最好（演示“开发方向”的季节判断），其余品类全年平稳。"""
+        if self.cn != "餐边柜" or self.kind != "noise":
+            return 1.0
+        peak = date(day.year if day.month > 6 else day.year - 1, 12, 15)
+        return 1 + 1.6 * math.exp(-(((day - peak).days / 25) ** 2))
+
+    def package(self) -> dict:
+        """包装尺寸 / 重量 / FBA 配送费（卖家精灵 product_research 的字段），按品类给个大概，不占随机数。"""
+        size = {"电视柜": (62, 18, 8), "床架": (78, 16, 7), "家庭办公桌": (50, 22, 6), "餐边柜": (48, 18, 10),
+                "书架": (60, 14, 6), "沙发": (80, 36, 30), "计算机工作站": (46, 20, 6), "办公椅": (28, 24, 14)}[self.cn]
+        k = 1 + (self.idx % 5) * 0.05
+        dims = [round(v * k, 1) for v in size]
+        weight = round(dims[0] * dims[1] * dims[2] / 1728 * 11, 1)
+        return {"pkgDimensions": " x ".join(f"{v:g}" for v in dims) + " inches", "pkgWeight": f"{weight:g} pounds",
+                "fba": round(18 + weight * 0.55, 2)}
 
     def price_on(self, day: date, today: date) -> float:
         if self.kind == "price_surge" and (today - day).days <= 9:
@@ -232,7 +260,7 @@ class SyntheticWorld:
             "ratingsRate": round(ratings_cv / units * 100, 2) if units else 0, "rating": p.rating,
             "availableDate": _ms(p.available),
             "fulfillment": p.fulfillment, "variations": p.variations, "sellers": 1,
-            "sellerNation": p.nation,
+            "sellerNation": p.nation, **p.package(),
         }
 
     def __call__(self, tool: str, arguments: dict) -> str:
@@ -243,12 +271,15 @@ class SyntheticWorld:
             first, last = self._month_bounds(req["month"])
             if last >= self.today:
                 return self._ok(self._page([]))  # 未结束的月份没有数据
+            if first < self.today - timedelta(days=40 * 30):
+                return self._ok(self._page([]))  # 卖家精灵的类目历史大约 3 年多
             rows = [{"nodeIdPath": root, "nodeLabelPath": root, "totalProducts": 99999, "totalUnits": 1}]
             for r, path, label, cn, products in NODES:
                 if r == root:
+                    k = category_season(cn, first)
                     rows.append({"nodeIdPath": path, "nodeLabelPath": label, "nodeLabelLocale": cn,
-                                 "totalProducts": products, "totalUnits": products * 3,
-                                 "totalRevenue": products * 900})
+                                 "totalProducts": products, "totalUnits": round(products * 3 * k),
+                                 "totalRevenue": round(products * 900 * k)})
             return self._ok(self._page(rows))
         if tool == "product_research":
             node, period = req["nodeIdPath"], req.get("month")

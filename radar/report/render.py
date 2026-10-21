@@ -9,8 +9,9 @@ from __future__ import annotations
 import html
 import re
 
+from .. import shipping
 from ..analyze import display_name
-from ..detect import directions, events
+from ..detect import directions, events, seasonality
 from ..tracking import REASON_CN
 from .sparkline import HOVER_JS, bars, sparkline
 
@@ -223,6 +224,13 @@ details.rules{margin:0 0 6px;font-size:12.5px}details.rules ul{margin:4px 0;padd
 .spec dt{color:var(--muted);font-size:12px}.spec dd{margin:0;min-width:0}
 .spec .none{color:var(--muted);font-size:12px}
 .chips2 .up{color:var(--potential);font-weight:700;margin-left:2px}
+.chips2 span.more{border-color:var(--potential);border-width:1.5px;font-weight:600}
+.chips2 span.more em{font-weight:400}
+.chips2 span.base{color:var(--muted)}
+.dsale{margin:-4px 0 4px;font-size:13px;font-weight:600}
+.dbasis{margin:0 0 8px;font-size:12px;color:var(--muted)}
+ul.season{margin:0;padding-left:16px;font-size:12.5px}ul.season li{margin:1px 0}
+.curve{font-size:11.5px;color:var(--muted);margin-top:2px}
 .refs{margin:0;padding-left:18px;font-size:12.5px}.refs li{margin:3px 0}.refs em{font-style:normal;color:var(--muted)}
 """
 
@@ -256,7 +264,7 @@ def _tags(item: dict) -> str:
         cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定",
                                                "拉动")) else \
             "good" if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith("上升中") else \
-            "info" if any(k in tag for k in ("季节", "大促", "头部", "变体")) else ""
+            "info" if any(k in tag for k in ("季节", "大促", "头部", "变体", "换链接")) else ""
         out.append(f'<span class="tag {cls}">{esc(tag)}</span>')
     return f'<div class="tags">{"".join(out)}</div>' if out else ""
 
@@ -304,6 +312,8 @@ def card(item: dict, kind: str, group: str = "") -> str:
         kv.append(f"<span><em>近6月月均</em> <b>{fmt_int(h['avg_monthly'])}</b> 件</span>")
         kv.append(f"<span><em>达标</em> {h['months_hit']}/{h['lookback']} 个月</span>")
         kv.append(f"<span><em>波动系数</em> {h['cv']:.2f}</span>")
+        if h.get("adjusted"):
+            kv.append(f"<span><em>已按品类季节调整</em>（{h['season_n']} 年类目历史）</span>")
         if h.get("trend") is not None:
             kv.append(f"<span><em>近3月趋势</em> {fmt_pct(h['trend'])}/月</span>")
     if kind == "fake":
@@ -445,17 +455,74 @@ def _clip(text: str, limit: int) -> str:
     return cut + "…"
 
 
-def _direction_box(d: dict) -> str:
-    """一个开发方向：每个维度入选的特征（几个品牌有 / 该子类目增长商品的品牌数）、价格、参考商品。"""
-    n = d.get("n_brands", d["n"])
+def _curve_text(o: dict) -> str:
+    return " · ".join(f"{seasonality.month_cn(m)} {r:.1f}" for m, r in o.get("curve") or [])
 
-    def chips(rows: list[dict]) -> str:
-        if not rows:
-            return '<span class="none">不统一</span>'
-        return '<div class="chips2">' + "".join(
-            f'<span>{esc(r["label"])}'
-            + ('<b class="up" title="在全部增长商品里也比对照组更多">↑</b>' if r.get("trend") else "")
-            + f'<em>{r["count"]}/{n}</em></span>' for r in rows) + "</div>"
+
+def _season_row(o: dict | None, cfg: dict) -> str:
+    if o is None:
+        return '<dt>季节</dt><dd><span class="none">还没有这个子类目的类目历史</span></dd>'
+    lines = "".join(f"<li>{esc(v)}</li>" for v in seasonality.verdicts(o))
+    curve = _curve_text(o) if o.get("seasonal") else ""
+    body = (f'<ul class="season">{lines}</ul>'
+            + (f'<div class="curve">按往年规律，接下来各月是现在（近 28 天）的：{esc(curve)}</div>' if curve else ""))
+    return f"<dt>季节</dt><dd>{body}</dd>"
+
+
+def _season_pop(ctx: dict) -> str:
+    """季节日历：全部追踪子类目的季节画像和接下来 6 个月（按往年规律，相对现在）。"""
+    seasons = ctx.get("seasons") or {}
+    nodes = ctx.get("season_nodes") or []
+    rows = []
+    for node in nodes:
+        o = seasons.get(node["path"])
+        name = esc(node.get("name_cn") or node.get("name") or node["path"])
+        if not o or not o.get("ready"):
+            rows.append((2, 0, f"<tr><td>{name}</td><td colspan=6 class=\"sub\">类目历史 {(o or {}).get('months', 0)} 个月，还不够</td></tr>"))
+            continue
+        cons = "—" if o.get("consistency") is None else f"{o['consistency']:.2f}"
+        err = "—" if o.get("error") is None else f"{o['error']:.0%}"
+        if not o.get("seasonal"):
+            rows.append((1, 0, f"<tr><td>{name}</td><td>没有固定季节</td><td colspan=2 class=\"sub\">{esc(o.get('why') or '')}</td>"
+                               f"<td>{cons}</td><td></td><td>{err}</td></tr>"))
+            continue
+        rows.append((0, -(o.get("amplitude") or 0),
+                     f"<tr><td>{name}</td><td><b>季节性</b></td><td>{esc(seasonality.months_text(o['peak_months']))}</td>"
+                     f"<td>{esc(seasonality.months_text(o['low_months']))}</td><td>{cons}</td>"
+                     f"<td>{esc(_curve_text(o))}</td><td>{err}</td></tr>"))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    sc = ctx["cfg"]["thresholds"]["seasonality"]
+    hint = (f"数据：卖家精灵每个子类目的月度销量合计（整个子类目所有商品，最近 {sc['history_months']} 个月）。"
+            "季节指数 = 每个月的日均销量 ÷ 以它为中心的 12 个月移动平均，同一月份各年取中位数，归一到 12 个月平均为 1。"
+            f"季节性品类 = 历史 ≥{sc['min_months']} 个月、每 12 个月一段的形状两两相关平均 ≥{sc['min_consistency']:g}、"
+            f"最高月 ≥ 最低月的 {sc['min_amplitude']:g} 倍、按规律回测预测 1~6 个月后的误差中位数 ≤{sc['max_error']:.0%}。"
+            f"旺季 = 指数 ≥{sc['peak_month']:g} 的月份，淡季 = ≤{sc['low_month']:g}。"
+            "“接下来 6 个月”= 按往年规律（只是季节，不含品类自己的涨跌）各月是现在（近 28 天）的几倍；"
+            "预测误差 = 只用当时以前的数据、按“最近 3 个月水平 × 季节指数”预测之后 1~6 个月，和实际比的误差中位数。")
+    table = ("<table><thead><tr><th>子类目</th><th>季节</th><th>旺季</th><th>淡季</th><th>每年形状相关</th>"
+             "<th>接下来 6 个月（÷ 现在）</th><th>预测误差</th></tr></thead><tbody>"
+             + "".join(r[2] for r in rows) + "</tbody></table>")
+    return _pop_src("season", "季节日历", "muted", f'<p class="hint">{esc(hint)}</p><div class=tbl>{table}</div>')
+
+
+def _direction_box(d: dict, cfg: dict) -> str:
+    """一个开发方向：每个维度“比头部多”和“基本款”两档特征（几个品牌有 / 品牌数 · 头部里的占比）、
+    价格、包装、季节、参考商品。"""
+    n = d.get("n_brands", d["n"])
+    compared = bool((d.get("compare") or {}).get("mode"))
+
+    def chip(r: dict, tier: str) -> str:
+        head = f" · 头部 {r['head_share']:.0%}" if r.get("head_share") is not None else ""
+        up = '<b class="up" title="在全部增长商品里也比对照组更多">↑</b>' if r.get("trend") else ""
+        return f'<span class="{tier}">{esc(r["label"])}{up}<em>{r["count"]}/{n}{head}</em></span>'
+
+    def chips(f) -> str:
+        rows = f if isinstance(f, list) else None
+        if rows is not None:  # 主材质：只有一档
+            body = "".join(chip(r, "base") for r in rows)
+        else:
+            body = "".join(chip(r, "more") for r in f["more"]) + "".join(chip(r, "base") for r in f["base"])
+        return f'<div class="chips2">{body}</div>' if body else '<span class="none">不统一</span>'
 
     spec = "".join(f"<dt>{label}</dt><dd>{chips(d['materials'] if dim is None else d['features'][dim])}</dd>"
                    for label, dim in DIRECTION_ROWS)
@@ -463,28 +530,58 @@ def _direction_box(d: dict) -> str:
     if price:
         median = f"，中位 ${price['median']:,.0f}" if price.get("median") is not None else ""
         spec += f"<dt>价格</dt><dd>{esc(directions.price_text(price))}{median}</dd>"
+    pkg = shipping.summary_text(d.get("pkg"))
+    no_pkg = '<span class="none">这些增长商品还没有包装数据</span>'
+    spec += f"<dt>包装</dt><dd>{esc(pkg) if pkg else no_pkg}</dd>"
+    spec += _season_row(d.get("season"), cfg)
     refs = "".join(
         f'<li><a href="https://www.amazon.com/dp/{esc(r["asin"])}" target="_blank" rel="noopener noreferrer">'
-        f'{esc(_clip(r["name"], 48))}</a> <em>{fmt_price(r.get("price"))}</em>'
+        f'{esc(_clip(r["name"], 48))}</a> <em>{fmt_price(r.get("price"))}'
+        + (f" · {esc(shipping.text(r.get('pkg'), r.get('price')))}" if r.get("pkg") else "") + "</em>"
         + (f"：{esc(r['look'])}" if r.get("look") else "") + "</li>" for r in d["refs"])
     surge = f"，其中突然爆火 {d['n_surge']} 个" if d["n_surge"] else ""
     refs = (f'<ul class="refs">{refs}</ul>' if refs
             else '<p class="none">势头靠前的都有异常信号，不列参考商品</p>')
+    sales = d.get("sales") or {}
+    money = (f'<p class="dsale">月销售额约 {esc(directions.money_text(sales.get("monthly")))}，'
+             f'比之前 28 天多约 {esc(directions.money_text(sales.get("increment")))}</p>') if sales else ""
+    cmp = d.get("compare") or {}
+    if compared:
+        src = "标题 + 主图" if cmp["mode"] == "image" else "只看标题"
+        basis = f"对比同子类目头部商品 {cmp['n_head']} 个（{src}）"
+    else:
+        basis = f"同子类目头部商品只有 {cmp.get('n_head_all', 0)} 个，没有对比，只列共同特征"
     return (f'<div class="dbox dir"><h4>{esc(d["node"])}<span class="sub">增长商品 {d["n"]} 个、{n} 个品牌{surge}</span></h4>'
+            f'{money}<p class="dbasis">{esc(basis)}</p>'
             f'<dl class="spec">{spec}</dl><div class="grp-h">参考商品</div>{refs}</div>')
 
 
 def _directions(tr: dict, cfg: dict) -> str:
-    c = cfg["thresholds"]["directions"]
-    rule = (f"增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目，按品牌数（同数时看增长商品个数、"
-            f"突然爆火个数、势头）取前 {c['max']} 个，没有任何共同主材质或特征的跳过。按品牌计数，同一品牌的多个商品只算一次：每一项列出该子类目里至少 "
-            f"{c['feature_min_share']:.0%}（且不少于 2 个）品牌具备的主材质和特征（该品牌任一增长商品的标题或主图识别有就算，"
-            f"每项最多 {c['per_dim']} 个），数字 = 具备的品牌数 / 该子类目增长商品的品牌数，"
-            "“不统一”= 没有达到这个比例的；↑ = 这个特征在全部增长商品里也比对照组更多；"
-            "价格 = 最低价 ~ 最高价（3 个以上给中位数）；参考商品 = 该子类目势头最强、没有任何异常信号的两个，来自不同品牌。")
-    boxes = "".join(_direction_box(d) for d in tr.get("directions") or [])
+    c, sc = cfg["thresholds"]["directions"], cfg["thresholds"]["seasonality"]
+    rule = (f"增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目，按增量销售额从大到小"
+            f"（同额时看品牌数、增长商品个数、突然爆火个数、势头）取前 {c['max']} 个，没有任何主材质或特征的跳过。"
+            "月销售额 = 每个增长商品的近 28 天日均 × 当前售价 × 30 的合计；增量 = （近 28 天日均 − 之前 28 天在卖日子的日均 × 季节倍数）"
+            "× 售价 × 30 的合计，之前没在卖的按 0、老品换链接之前没在卖的增量按 0（销量是卖家精灵按 BSR 估算的，大促日不算）。"
+            "特征按品牌计数，同一品牌的多个商品只算一次（该品牌任一增长商品的标题或主图有就算），数字 = 具备的品牌数 / 品牌数，"
+            "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里的，按月销量取前 "
+            f"{c.get('head_max', 30)} 个；有主图识别的 ≥{c.get('head_min', 10)} 个时两边都看标题 + 主图，头部只算识别过的，"
+            f"否则两边都只看标题；头部不足 {c.get('head_min', 10)} 个时不对比）。"
+            f"绿框 = 比头部多：≥2 个品牌有，占比比头部高 {c.get('head_min_gap', 0.2) * 100:.0f} 个百分点以上、"
+            f"是头部的 {c.get('head_min_lift', 1.5):g} 倍以上；灰框 = 基本款：≥{c['feature_min_share']:.0%}（且 ≥2 个）品牌有，但不比头部多，"
+            f"说明这个品类本来就都这样做；每档最多 {c['per_dim']} 个；主材质只看 ≥{c['feature_min_share']:.0%} 品牌，不和头部比；"
+            "“不统一”= 两档都没有；↑ = 这个特征在全部增长商品里也比对照组更多。"
+            "价格 = 最低价 ~ 最高价（3 个以上给中位数）；包装 = 有数据的增长商品的包装体积（卖家精灵给的包装长宽高换算）、"
+            "包装重量、FBA 配送费（卖家精灵估算）的中位数。"
+            f"季节：用卖家精灵的子类目月度销量（最近 {sc['history_months']} 个月）算季节指数，只对季节性品类下结论（定义见“季节日历”）："
+            f"按往年规律近 28 天品类本来就是之前 28 天的 ≥{sc['tag_ratio']:g} 倍 = 本期增长有季节因素；"
+            f"按开发周期 {sc['lead_days']} 天，到货前有哪个月按往年规律 ≥ 现在的 {sc['peak_ratio']:g} 倍 = 品类会先冲高、赶不上；"
+            f"上架后 {sc['launch_days']} 天 ≥{sc['busier']:g} 倍更旺、≤{sc['quieter']:g} 倍转淡、之间差不多；"
+            "增量里扣除季节：之前 28 天日均先乘以这个季节倍数再相减（不是季节性品类的倍数为 1）。"
+            "参考商品 = 该子类目势头最强、没有任何异常信号的两个，来自不同品牌。")
+    boxes = "".join(_direction_box(d, cfg) for d in tr.get("directions") or [])
     body = f'<div class="dgrid dirs">{boxes}</div>' if boxes else '<p class="empty">本期没有增长商品数达到门槛的子类目。</p>'
-    return f'<h3>开发方向依据</h3><p class="hint">{esc(rule)}</p>{body}'
+    link = '<p class="sub"><a href="#" data-pop="season">查看季节日历（全部子类目的旺季、淡季和接下来 6 个月）</a></p>'
+    return f'<h3>开发方向依据</h3><p class="hint">{esc(rule)}</p>{link}{body}'
 
 
 def _traits(tr: dict, counts: dict, cfg: dict) -> str:
@@ -569,21 +666,26 @@ def section_hints(cfg: dict) -> dict[str, str]:
     """每个小窗顶部的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。共用概念见 _method。"""
     th = cfg["thresholds"]
     s, h, p, f, r = th["surge"], th["hot"], th["potential"], th["fake"], th["rising"]
+    sc = th.get("seasonality") or {}
     windows = " 或 ".join(map(str, s["windows"]))
+    adjust = ("。季节性品类（见“季节日历”）的商品，原始销量不达标的，再按季节调整后判一次：每个月的销量（和近 28 天、门槛线）"
+              "乘以 这 6 个月季节指数的平均 ÷ 当月的指数，调整后达标的也算，卡片上注明“已按品类季节调整”"
+              if h.get("deseasonalize") and sc else "")
     return {
         "surge": f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
                  f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 稳在高位 / 仍在上涨之一；"
                  f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。按爆发强度排序。",
-        "potential": f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条；近 28 天日均 ≥{p['min_daily_sales']} 件、"
+        "potential": f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
                      f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
                      f"没有回落；异常分 <{f['suspect_score']}。按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平；"
                f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
-               f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}。按近 6 个月月均销量排序。",
+               f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}{adjust}。按近 6 个月月均销量排序。",
         "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
                 f"仅为数据异常提示，需人工核实。按异常分排序。",
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
-                  f"且 ≥{r['min_daily_sales']} 件、没有回落。“外观与工艺依据”就是从这些商品统计的。按势头排序。",
+                  f"且 ≥{r['min_daily_sales']} 件、没有回落。“外观与工艺依据”就是从这些商品统计的。按势头排序。"
+                  f"季节性品类里、按往年规律对比期间品类本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍的，标“品类季节性”并写明扣除季节后的倍数（见“数据说明”）。",
         "all": "本期追踪的全部商品。“板块”是本期归入的板块（观察 = 不属于任何板块），“来源”是它被选进追踪的原因。",
     }
 
@@ -624,18 +726,36 @@ def _method(cfg: dict) -> str:
 <b>稳在高位</b> = 近 7 天里 ≥{s['sustained_days']} 天达到之前水平的 {s['sustained_mult']} 倍，且最近 3 天日均与近 7 天相差 ≤{s['steady_band']:.0%}；
 <b>仍在上涨</b> = 近 7 天日均比前 7 天高 ≥{s['climb_ratio'] - 1:.0%}，且最近 3 天日均高于近 7 天。
 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天的是“短时脉冲”，其余都不符合的是“上涨形态不稳定”，都不算爆火。
+老品换链接的“从零起量”只是新子体开始卖，不算新品爆发、也不标新品起量。
 <b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)。</li>
-<li><b>爆火的附加标签</b>：季节性 = 去年同期也涨了 ≥{s['seasonal_ratio']} 倍；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
+<li><b>爆火的附加标签</b>：季节性 = 这个商品自己去年同期也涨了 ≥{s['seasonal_ratio']} 倍（要上架满一年才看得到）；降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
 对比期里 ≥7 天（且 ≥25%）没有销量、而更早之前卖得和现在差不多的是“断货恢复”，不算爆火。</li>
+<li><b>季节性品类</b>：用卖家精灵的子类目月度销量合计（整个子类目所有商品，最近 {th['seasonality']['history_months']} 个月）算季节指数
+（每个月的日均 ÷ 以它为中心的 12 个月移动平均，同一月份各年取中位数，12 个月平均为 1）。四条都满足才算季节性品类：
+历史 ≥{th['seasonality']['min_months']} 个月；每 12 个月切一段，各段形状两两相关平均 ≥{th['seasonality']['min_consistency']:g}（每年都是同样的月份高）；
+最高月 ≥ 最低月的 {th['seasonality']['min_amplitude']:g} 倍；按“最近 3 个月水平 × 季节指数”回测预测 1~6 个月后，误差中位数 ≤{th['seasonality']['max_error']:.0%}。
+不是季节性品类的不做任何季节判断。全部子类目见开发方向下面的“季节日历”。</li>
+<li><b>品类季节性</b>：季节性品类里的突然爆火、潜力、上升中，按往年规律它的对比期间品类本来就会涨 ≥{th['seasonality']['tag_ratio']:g} 倍的
+（爆火看它自己的近 7 / 14 天 vs 之前 28 天，潜力和上升中看近 28 天 vs 之前 28 天），标“品类季节性”，写明季节倍数和扣除后的倍数。
+只是标签，不影响上榜。回测：去年 12 月判出的突然爆火只有 52% 四周后还保持住，6~8 月是 84~86%。</li>
+<li><b>老品换链接</b>：上架 ≤{th['relist']['max_age_days']} 天，且评论数 ≥ 这个 ASIN 自己累计销量（日数据里卖出的全部件数）的 {th['relist']['review_share']:.0%}，
+或评论数 ≥ 累计销量的 {th['relist']['review_share_fast']:.0%} 且第一周（从第一天卖出东西算起）日均 ≥ 近 7 天日均的 {th['relist']['fast_share']:.0%}（且 ≥{th['relist']['fast_min_daily']} 件）。
+多是新子体挂进老父体、或老品换了新 ASIN，继承了评论和排名，上架天数不代表商品是新的（正常留评率 1~3%，Vine 最多 30 条）。
+这类商品不算潜力、新品爆发、新品起量，不计“新品评论/销量比”异常分；还可以是稳在高位、仍在上涨、上升中（这几个是和它自己之前比）；
+开发方向里，它之前 28 天没在卖时增量按 0（销量是从老链接转过来的）。</li>
 <li><b>外观与工艺依据</b>：材质只有“主材质”一种口径，每个商品一类（铁木 / 实木 / 板材 / 金属…），依次取亚马逊商品详情的 Material 属性、
 标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色、功能卖点有两种依据（功能只认图里看得见的，颜色以主图为准）——
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组，
 对照组不含增长商品），同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的哪一档都不列；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
-<li><b>开发方向</b>：增长商品最多的几个子类目，各给一个产品画像（主材质、风格、造型、工艺、颜色、功能、价格），
-只用该子类目自己的增长商品统计；每项的入选比例和商品数写在“开发方向依据”里。</li>
+<li><b>开发方向</b>：增长商品带来的增量销售额最大的几个子类目（增量 = （近 28 天日均 − 之前 28 天日均）× 售价 × 30 的合计），
+各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
+“基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）；
+季节（同子类目一年前就在卖的老链接去年怎么走：本期增长有没有季节因素、按开发周期 {th['seasonality']['lead_days']} 天到货前会不会先冲高、
+上架后是更旺还是转淡）。每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
 <li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
-累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体多的商品评论为父体共享，不算评论/销量比；
+累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体超过 {f['max_variations_for_ratio']} 个的商品评论为父体共享，
+不算留评率、也不算评论/销量比（子类目的留评率中位数也只用变体不超过 {f['max_variations_for_ratio']} 个的商品算）；老品换链接不算新品评论/销量比；
 评论暴增且父体/变体变化的标“变体合并”、短时脉冲落在大促日的标“大促脉冲”、抽查评论里 Vine 评论 ≥30% 的标“Vine 评论多”，这三项不计分。</li>
 <li><b>与上期对比</b>：每个商品只出现一次。“依旧爆火”= 上期、本期都在突然爆火板块；“新进入「某板块」”= 本期在该板块、上期不在，
 上期在别的板块的在括号里注明；“不再爆火”= 上期爆火、本期留在追踪里但不在任何板块。</li>
@@ -672,6 +792,7 @@ def render(ctx: dict) -> str:
         _section_pop("hot", "持续热销", hints["hot"], sec["hot"], counts["hot"]),
         _section_pop("fake", "异常信号", hints["fake"], sec["fake"], counts["fake"]),
         _growth_pop(ctx.get("focus") or [], hints["growth"]),
+        _season_pop(ctx),
         _pop_src("all", f"全部追踪商品（{counts['total']} 个）", "muted",
                  f'<p class="hint">{esc(hints["all"])}</p>{_all_table(ctx["items"])}'),
     ])

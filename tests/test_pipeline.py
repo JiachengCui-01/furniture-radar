@@ -88,16 +88,78 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
             elif kind == "仍在上涨":
                 assert g["week_ratio"] >= s["climb_ratio"] and g["last3_ratio"] > 1
             else:
-                assert kind == "新品爆发" and g["from_zero"]
+                assert kind == "新品爆发" and g["from_zero"] and not item["relist"]
             assert "持续热销" not in item["tags"]  # 同时符合热销条件的写“长期头部”，不和“突然爆火”矛盾
         if item["label"] == "potential":
             p = item["potential"]
+            assert not item["relist"]  # 老品换链接不算潜力
             assert th["potential"]["min_age_days"] <= p["age_days"] <= th["potential"]["max_age_days"]
             assert p["recent_ratio"] >= th["potential"]["min_recent_ratio"]
         if item["label"] == "hot":
             h = item["hot"]
             assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]
     assert checked == {"surge", "potential", "hot"}
+    max_vars = th["fake"]["max_variations_for_ratio"]
+    for item in items:  # 变体多的不算留评率；老品换链接不算新品评论/销量比
+        codes = {sig["code"] for sig in item["fake"]["signals"]}
+        if (item.get("variations") or 0) > max_vars:
+            assert "review_rate" not in codes, item["asin"]
+        if item["relist"]:
+            assert "new_listing_reviews" not in codes and not any(t.startswith("新品起量") for t in item["tags"])
+
+
+def test_directions_match_their_definition(world_run, master_key, cfg):
+    """开发方向：按增量销售额排序；“比头部多”“基本款”都符合报告里写的门槛，头部占比可以从头部商品的标题重算；
+    包装是增长商品包装数据的中位数；季节判断来自老链接（模拟世界里餐边柜 12 月是旺季）。"""
+    import statistics
+
+    from radar import analyze, clock, materials, shipping, tracking
+    from radar.detect import design, directions
+
+    _world, _secrets, site, _first, second = world_run
+    state = store.load(site, crypto.parse_master_key(master_key))
+    last, disc = state["runs"][-1], state["discovery"]
+    result = analyze.analyze(state, disc, list(last["labels"]), cfg, clock.parse_day(last["date"]),
+                             tracking.fresh_rows(state))
+    items = result["items"]
+    for item in items:
+        item["material"], _ = materials.best(state["asins"].get(item["asin"]), item["title"])
+    growth = analyze.focus_items(items)
+    out = directions.compute(growth, state, {}, cfg, disc=disc, seasons=result["seasons"])
+    c = cfg["thresholds"]["directions"]
+    assert out and len(out) <= c["max"]
+    incs = [d["sales"]["increment"] for d in out]
+    assert incs == sorted(incs, reverse=True)
+    for d in out:
+        rows = [i for i in growth if directions.node_of(i) == d["node"]]
+        assert d["sales"]["increment"] == round(sum(directions.increment(i) for i in rows))
+        heads = directions.heads(d["node"], disc, growth, cfg)
+        assert d["compare"] == {"mode": "title", "n_head": len(heads), "n_head_all": len(heads)}  # 测试里没有主图识别
+        assert not {h["asin"] for h in heads} & {i["asin"] for i in growth}
+        nb = d["n_brands"]
+        for dim, tiers in d["features"].items():
+            for f in tiers["more"]:
+                head = sum(1 for h in heads if f["label"] in design.extract(h["title"])[dim]) / len(heads)
+                assert f["head_share"] == round(head, 3)
+                assert f["count"] >= 2 and f["count"] / nb - head >= c["head_min_gap"] - 1e-9
+                assert f["count"] / nb >= c["head_min_lift"] * head - 1e-9
+            for f in tiers["base"]:
+                assert f["count"] >= d["need"]
+                more = f["count"] / nb - f["head_share"] >= c["head_min_gap"] - 1e-9 \
+                    and f["count"] / nb >= c["head_min_lift"] * f["head_share"] - 1e-9
+                assert not more, (d["node"], f)
+        volumes = [shipping.cubic_feet(i["pkg"]["dims"]) for i in rows if i.get("pkg")]
+        assert d["pkg"]["n"] == len(rows) and d["pkg"]["ft3"] == round(statistics.median(volumes), 1)
+    sideboard = next(d for d in out if d["node"] == "餐边柜")
+    s = sideboard["season"]  # 演示数据：餐边柜的类目销量每年 11~12 月是旺季
+    assert s["seasonal"] and s["peak_before"] and s["peak"]["month"].endswith("-12") and s["peak_months"] == [11, 12]
+    shelf = result["seasons"][next(n["path"] for n in disc["nodes"] if n["name_cn"] == "书架")]
+    assert shelf["ready"] and not shelf["seasonal"]  # 书架的小高峰每年在不同月份：不算季节性品类
+    plain = _decrypt_page((site / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8"),
+                          crypto.parse_master_key(master_key))
+    assert "比之前 28 天多约" in plain and "到货前品类会先冲高" in plain and "立方英尺" in plain
+    assert 'id="pop-season"' in plain and "季节性品类：旺季 11~12 月" in plain
+    assert "（月增量约 $" in plain  # 本期要点（模板）里的开发方向
 
 
 def test_report_is_encrypted_and_decryptable(world_run, master_key):

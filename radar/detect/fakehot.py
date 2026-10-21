@@ -12,7 +12,9 @@
 | +1 | 评论核查：非验证购买占比 ≥50% | ✓（需额外调用） |
 | 标签 | 评论数暴增 ≥30% 且父体/变体数变化 → 变体合并（不计分） | 第 2 期起 |
 
-评论数是整个父体共享的，而销量是单个子体的，所以变体多的商品不计算“评论/销量”比。
+评论数是整个父体共享的，而销量是单个子体的，所以变体多（> max_variations_for_ratio）的商品不算留评率，
+也不算两种“评论/销量”比（实测：留评率这一项曾经对 15、17 个变体的商品也计分，本期 8 个异常商品里 4 个靠它过线）。
+老品换链接（rules.relisted）的评论是从老链接继承来的，不算“新品评论/销量比”。
 """
 from __future__ import annotations
 
@@ -62,8 +64,9 @@ def merge_detected(rec: dict, disc_row: dict | None) -> bool:
 
 
 def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
-          node_median_rate: float | None, cfg: dict, event_days=()) -> dict:
-    """d 是完整的日数据（不去掉大促日）；event_days：大促日（events.detect），落在大促日的脉冲不计分。"""
+          node_median_rate: float | None, cfg: dict, event_days=(), *, relisted: bool = False) -> dict:
+    """d 是完整的日数据（不去掉大促日）；event_days：大促日（events.detect），落在大促日的脉冲不计分；
+    relisted：老品换链接，不算“新品评论/销量比”。"""
     signals: list[dict] = []
     tags: list[str] = []
 
@@ -72,8 +75,8 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
 
     var_ok = _variations_ok(rec, cfg)
 
-    # 1. 留评率（来自月度数据）
-    if disc_row and disc_row.get("ratings_rate") is not None:
+    # 1. 留评率（来自月度数据）：评论是父体共享的，变体多的不算
+    if disc_row and disc_row.get("ratings_rate") is not None and var_ok is not False:
         rate = disc_row["ratings_rate"]
         new_reviews = disc_row.get("ratings_cv") or 0
         bar = max(cfg["review_rate_floor"], cfg["review_rate_mult"] * (node_median_rate or 0))
@@ -91,7 +94,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     available = clock.parse_day(rec.get("available"))
     age = clock.days_between(available, as_of)
     if (age is not None and 0 <= age <= cfg["new_listing_days"] and ratings and ratings >= 20
-            and var_ok is not False):
+            and var_ok is not False and not relisted):
         launch = clock.month_key(available)
         units = sum((m[1] or 0) for m in rec.get("months") or [] if m[0] >= launch)
         if units > 0:

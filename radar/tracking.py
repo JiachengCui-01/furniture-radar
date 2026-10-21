@@ -229,7 +229,7 @@ def _meta_from_discovery(rec: dict, row: dict | None) -> None:
     if not row:
         return
     for key in ("title", "brand", "image", "node", "node_name", "node_cn", "parent", "variations",
-                "fulfillment", "seller_nation", "available", "price"):
+                "fulfillment", "seller_nation", "available", "price", "pkg"):
         if row.get(key) not in (None, ""):
             rec[key] = row[key]
 
@@ -291,10 +291,12 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
 def refresh(vendor: Vendor, plan: list[str], state: dict, disc: dict | None, cfg: dict,
             run_seq: int) -> int:
     """按计划刷新；预算用完时由调用方捕获 BudgetExhausted。返回成功刷新的个数。"""
-    products = {**fresh_rows(state), **((disc or {}).get("products") or {})}
+    fresh, monthly = fresh_rows(state), (disc or {}).get("products") or {}
     done = 0
     for i, asin in enumerate(plan, start=1):
-        if fetch_one(vendor, asin, state, cfg, run_seq, products.get(asin)):
+        # 月度名单优先；近 30 天行里有、月度行里没有的字段（例如月度名单还没带包装数据）也补上
+        row = {**(fresh.get(asin) or {}), **(monthly.get(asin) or {})} or None
+        if fetch_one(vendor, asin, state, cfg, run_seq, row):
             done += 1
         if i % 20 == 0:
             log.info(f"追踪：已刷新 {i}/{len(plan)}")

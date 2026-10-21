@@ -133,9 +133,9 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     _secrets, second = _two_runs(cfg, master_key, tmp_path)
     page = (tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
-    for kind in ("surge", "potential", "hot", "fake", "growth", "all"):
+    for kind in ("surge", "potential", "hot", "fake", "growth", "season", "all"):
         assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
-    assert plain.count('class="pop-src"') == 6 and 'id="pop"' in plain
+    assert plain.count('class="pop-src"') == 7 and 'id="pop"' in plain
     # 主体里不放商品卡片：所有卡片都在隐藏的小窗内容里
     body = plain.split('<div class="pop-src"')[0]
     assert '<article class="card"' not in body and '<article class="card"' in plain
@@ -251,13 +251,16 @@ def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
     v = out[0]
     assert v["n"] == 3 and v["need"] == 2 and v["n_surge"] == 2
     assert v["materials"] == [{"label": "板材", "count": 2}]
-    assert v["features"]["工艺"] == [{"label": "玻璃门", "count": 2, "trend": True}]  # 标题 1 个 + 主图 1 个
-    assert [f["label"] for f in v["features"]["功能卖点"]] == ["LED 灯"]  # 充电/插座、抽屉各只有 1 个
-    assert v["features"]["颜色"] == [{"label": "白色", "count": 2, "trend": False}]
+    # 没有月度名单（同子类目头部商品）时不对比，只列共同特征
+    assert v["compare"]["mode"] is None
+    assert v["features"]["工艺"] == {"more": [], "base": [{"label": "玻璃门", "count": 2, "trend": True,
+                                                           "head_share": None}]}  # 标题 1 个 + 主图 1 个
+    assert [f["label"] for f in v["features"]["功能卖点"]["base"]] == ["LED 灯"]  # 充电/插座、抽屉各只有 1 个
+    assert v["features"]["颜色"]["base"] == [{"label": "白色", "count": 2, "trend": False, "head_share": None}]
     assert v["price"] == {"min": 160, "max": 228, "median": 170}
     assert [r["asin"] for r in v["refs"]] == ["V1", "V2"]
-    assert directions.headline(v) == "梳妆台：板材，玻璃门，白色，LED 灯，$160–$228"
-    assert [f["label"] for f in out[1]["features"]["造型"]] == ["窄小省空间"] and out[1]["materials"] == [
+    assert directions.headline(v) == "梳妆台：板材，玻璃门、白色、LED 灯，$160–$228"
+    assert [f["label"] for f in out[1]["features"]["造型"]["base"]] == ["窄小省空间"] and out[1]["materials"] == [
         {"label": "板材", "count": 2}]
 
 
@@ -285,11 +288,220 @@ def test_directions_count_brands_and_skip_flagged_references(cfg):
     assert [d["node"] for d in out] == ["梳妆台", "书架"]  # 床头柜只有 VASAGLE 一个品牌
     v = out[0]
     assert (v["n"], v["n_brands"], v["need"]) == (4, 2, 2)
-    assert v["features"]["颜色"] == [] and v["features"]["功能卖点"] == []  # 白色、LED 只有 FIONESO 一家有
+    assert v["features"]["颜色"] == {"more": [], "base": []}  # 白色、LED 只有 FIONESO 一家有
+    assert v["features"]["功能卖点"] == {"more": [], "base": []}
     assert v["materials"] == [{"label": "板材", "count": 2}]
     shelf = out[1]
-    assert [f["label"] for f in shelf["features"]["造型"]] == ["窄小省空间"]
+    assert [f["label"] for f in shelf["features"]["造型"]["base"]] == ["窄小省空间"]
     assert [r["asin"] for r in shelf["refs"]] == ["S2"]  # S1 有异常信号；S3 和 S2 同一品牌
+
+
+def _dir_item(asin, node, title, brand, *, price=100.0, recent=10.0, prev=5.0, label="surge"):
+    return {"asin": asin, "node_cn": node, "node_name": "", "title": title, "brand": brand, "label": label,
+            "material": "板材", "price": price, "look": "", "fake": {"score": 0},
+            "recent_avg28": recent, "prev_avg28": prev}
+
+
+def _head_row(asin, node, title, units):
+    return {"asin": asin, "node_cn": node, "node_name": "", "title": title, "brand": f"H{asin}", "units": units,
+            "parent": None, "image": f"https://img/{asin}.jpg"}
+
+
+def test_directions_rank_by_increment_not_brand_count(cfg):
+    """按增量销售额排：3 个品牌、每个只多卖几件的便宜货，排在 2 个品牌、每个多卖很多的贵货后面。"""
+    from radar.detect import directions
+
+    focus = [
+        _dir_item("C1", "衣帽架", "Coat Rack", "A", price=30, recent=20, prev=15),
+        _dir_item("C2", "衣帽架", "Coat Rack", "B", price=30, recent=20, prev=15),
+        _dir_item("C3", "衣帽架", "Coat Rack", "C", price=30, recent=20, prev=15),
+        _dir_item("V1", "梳妆台", "Vanity with Mirror", "D", price=150, recent=40, prev=10),
+        _dir_item("V2", "梳妆台", "Vanity with Mirror", "E", price=150, recent=30, prev=None),  # 之前没在卖：按 0
+    ]
+    out = directions.compute(focus, {"asins": {}}, {}, cfg)
+    assert [d["node"] for d in out] == ["梳妆台", "衣帽架"]
+    assert out[0]["sales"] == {"monthly": round((40 + 30) * 150 * 30), "increment": round((30 + 30) * 150 * 30)}
+    assert out[1]["sales"]["increment"] == 3 * 5 * 30 * 30
+    assert directions.money_text(out[0]["sales"]["increment"]) == "$27 万"
+
+
+def test_directions_compare_with_heads_of_the_same_subcategory(cfg):
+    """比头部多 = ≥2 个品牌、比同子类目头部高 20 个百分点以上且是 1.5 倍以上；品类本来就都有的进“基本款”。
+    头部商品不在增长商品里；有主图识别的头部不到 10 个时两边都只看标题。"""
+    from radar.detect import directions
+
+    focus = [_dir_item(f"G{k}", "书架", "Fluted Bookshelf with Open Shelves, Walnut", f"B{k}") for k in range(4)]
+    heads = [_head_row(f"H{k:02d}", "书架", "Bookshelf with Open Shelves" + (", Fluted" if k == 0 else ""), 900 - k)
+             for k in range(14)]
+    heads.append(_head_row("G0", "书架", "Fluted Bookshelf", 5000))  # 自己是增长商品，不算头部
+    disc = {"products": {r["asin"]: r for r in heads}}
+    out = directions.compute(focus, {"asins": {}}, {}, cfg, disc=disc)
+    d = out[0]
+    assert d["compare"] == {"mode": "title", "n_head": 14, "n_head_all": 14}
+    assert [f["label"] for f in d["features"]["工艺"]["more"]] == ["凹槽竖纹"]  # 4/4 品牌 vs 头部 1/14
+    assert d["features"]["工艺"]["more"][0]["head_share"] == round(1 / 14, 3)
+    assert [f["label"] for f in d["features"]["造型"]["more"]] == []
+    assert "开放格" in [f["label"] for f in d["features"]["造型"]["base"]]  # 头部也都有
+    assert directions.headline(d).startswith("书架：板材，凹槽竖纹")
+
+    # 头部商品有主图识别（≥10 个）：两边都看标题 + 主图，头部只算识别过的
+    state = {"asins": {f"G{k}": {"vision": {"tags": {"颜色": ["胡桃色"]}}} for k in range(4)},
+             vision.EXTRA_KEY: {r["asin"]: {"vision": {"tags": {"颜色": ["黑色"]}}} for r in heads[:12]}}
+    d = directions.compute(focus, state, {}, cfg, disc=disc)[0]
+    assert d["compare"] == {"mode": "image", "n_head": 12, "n_head_all": 14}
+    assert [f["label"] for f in d["features"]["颜色"]["more"]] == ["胡桃色"]
+
+    # 头部商品不够 10 个：不对比
+    few = {"products": {r["asin"]: r for r in heads[:5]}}
+    d = directions.compute(focus, {"asins": {}}, {}, cfg, disc=few)[0]
+    assert d["compare"]["mode"] is None and d["features"]["工艺"]["more"] == []
+    assert [f["label"] for f in d["features"]["工艺"]["base"]] == ["凹槽竖纹"]
+
+
+def test_universal_feature_is_base_not_more(cfg):
+    """4 个品牌全有、头部 73% 有：差 27 个百分点但不到 1.5 倍，算基本款。"""
+    from radar.detect import directions
+
+    focus = [_dir_item(f"G{k}", "梳妆台", "Vanity with Drawers", f"B{k}") for k in range(4)]
+    heads = [_head_row(f"H{k:02d}", "梳妆台", "Vanity Table" + (" with Drawers" if k < 11 else ""), 900 - k)
+             for k in range(15)]
+    d = directions.compute(focus, {"asins": {}}, {}, cfg, disc={"products": {r["asin"]: r for r in heads}})[0]
+    assert d["features"]["功能卖点"]["more"] == []
+    assert [f["label"] for f in d["features"]["功能卖点"]["base"]] == ["带储物/抽屉"]
+
+
+SEASON_CFG = {"history_months": 36, "max_pages": 4, "min_months": 24, "min_consistency": 0.5, "min_amplitude": 1.3,
+              "max_error": 0.25, "peak_month": 1.15, "low_month": 0.87, "tag_ratio": 1.15, "lead_days": 120,
+              "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2, "quieter": 0.8}
+
+
+def _history(daily, months=36, end=(2026, 9)):
+    """{“YYYY-MM”: 月销量}，daily(年, 月, 第几个月) = 当月日均。"""
+    import calendar
+    out = {}
+    y, m = end
+    for k in range(months):
+        out[f"{y}-{m:02d}"] = daily(y, m, months - 1 - k) * calendar.monthrange(y, m)[1]
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return out
+
+
+def test_seasonal_category_from_three_years_of_category_sales():
+    """每年 11、12 月是平时的 2、3 倍：季节性品类，旺季 11~12 月；品类自己在涨（每月 +2%）也认得出；
+    按往年规律：近 28 天没什么季节变化，到货前 12 月是现在的 3 倍（赶不上），上架后和现在差不多。"""
+    from datetime import date
+    from radar.detect import seasonality as S
+
+    winter = lambda y, m, t: 100 * {11: 2.0, 12: 3.0}.get(m, 1.0) * 1.02 ** t
+    prof = S.profile(_history(winter), SEASON_CFG)
+    assert prof["seasonal"] and prof["consistency"] > 0.99 and prof["peak_months"] == [11, 12]
+    # 预测不带趋势项（实测加阻尼趋势也没更准），品类每月 +2% 时提前 1~6 个月的误差中位数约 9%
+    assert S.months_text(prof["low_months"]) == "1~10 月" and prof["error"] < 0.15
+    assert round(prof["index"][12] / prof["index"][6], 1) == 3.0  # 去掉了每月 2% 的增长
+    o = S.outlook(prof, date(2026, 10, 19), SEASON_CFG)
+    assert not o["growth_seasonal"] and o["peak_before"] and o["peak"]["month"] == "2026-12"
+    assert o["launch_state"] == "same" and [m for m, _ in o["curve"]][:3] == ["2026-11", "2026-12", "2027-01"]
+    v = S.verdicts(o)
+    assert v[0].startswith("季节性品类：旺季 11~12 月、淡季 1~10 月")
+    assert v[2].startswith("到货前品类会先冲高：按往年规律 12 月是现在的 3.0 倍，按开发周期 4 个月赶不上")
+    # 11 月中旬：近 28 天按往年规律本来就比之前 28 天高 → 本期增长有季节因素
+    o = S.outlook(prof, date(2026, 11, 20), SEASON_CFG)
+    assert o["growth_seasonal"] and S.verdicts(o)[1].startswith("本期增长有季节因素：按往年规律，近 28 天品类本来就是之前 28 天的")
+
+
+def test_not_every_category_is_seasonal():
+    """每年高峰在不同月份（形状不一致）、起伏不大、历史不够 2 年、预测不准：都不算季节性品类，不下季节结论。"""
+    from datetime import date
+    from radar.detect import seasonality as S
+
+    wandering = lambda y, m, t: 100 * (2.5 if m == 3 + (y % 3) * 4 else 1.0)
+    prof = S.profile(_history(wandering), SEASON_CFG)
+    assert not prof["seasonal"] and prof["consistency"] < 0.5
+    assert S.verdicts(S.outlook(prof, date(2026, 10, 19), SEASON_CFG))[0].startswith("没有固定的季节：每年的起伏不一致")
+    flat = S.profile(_history(lambda y, m, t: 100 * (1.1 if m == 12 else 1.0)), SEASON_CFG)
+    assert not flat["seasonal"] and "起伏不大" in S.outlook(flat, date(2026, 10, 19), SEASON_CFG)["why"]
+    short = S.profile(_history(lambda y, m, t: 100.0, months=20), SEASON_CFG)
+    assert not short["seasonal"] and S.verdicts(S.outlook(short, date(2026, 10, 19), SEASON_CFG)) == [
+        "类目历史只有 20 个月，还看不出季节"]
+    noisy = lambda y, m, t: 100 * {11: 2.0, 12: 3.0}.get(m, 1.0) * (1.3 if (t * 7) % 5 == 0 else 1.0)
+    strict = {**SEASON_CFG, "max_error": 0.0}
+    prof = S.profile(_history(noisy), strict)
+    assert prof["consistency"] > 0.5 and not prof["seasonal"]
+    assert "预测不准" in S.outlook(prof, date(2026, 10, 19), strict)["why"]
+
+
+def test_day_index_is_smooth_between_months():
+    from datetime import date
+    from radar.detect import seasonality as S
+
+    idx = {m: (2.0 if m == 12 else 1.0) for m in range(1, 13)}
+    assert abs(S.day_index(idx, date(2026, 12, 16)) - 2.0) < 0.05
+    assert 1.0 < S.day_index(idx, date(2026, 12, 3)) < S.day_index(idx, date(2026, 12, 10)) < 2.0
+    assert 1.0 < S.day_index(idx, date(2027, 1, 5)) < 2.0  # 跨年也连续
+    prof = {"seasonal": True, "index": idx}
+    r = S.expected_ratio(prof, (date(2026, 12, 3), date(2026, 12, 30)), (date(2026, 11, 5), date(2026, 12, 2)))
+    assert r > 1.3 and S.expected_ratio({"seasonal": False}, (date(2026, 12, 3), date(2026, 12, 30)),
+                                        (date(2026, 11, 5), date(2026, 12, 2))) is None
+
+
+def test_category_history_backfills_from_spare_budget(cfg):
+    """类目历史：近的月份先补，每期最多 limit 次；找齐子类目或翻完所有页就算补完；
+    月度发现查到的那个月直接记进来；太早的月份删掉。"""
+    from datetime import date
+    from radar import category_history as H
+    from radar.demo import NODES, SyntheticWorld
+    from radar.vendor import Budget, Vendor
+
+    world = SyntheticWorld(date(2026, 10, 5))
+    nodes = [{"path": path, "root": root, "name_cn": cn} for root, path, _label, cn, _n in NODES]
+    state = {}
+    disc = {"period": "202609", "nodes": [{**n, "units": 300.0} for n in nodes]}
+    H.record_discovery(state, disc)
+    assert H.series(state, nodes[0]["path"]) == {"2026-09": 300.0}
+    vendor = Vendor(world, Budget(100), live=False)
+    assert H.backfill(vendor, cfg, state, nodes, date(2026, 10, 5), limit=10) == 10
+    months = sorted(state[H.STATE_KEY]["months"])
+    assert months[-1] == "2026-09" and len(months) == 6  # 9 月已有；每月 2 个根类目各 1 次 → 又补了 5 个月
+    H.backfill(vendor, cfg, state, nodes, date(2026, 10, 5), limit=100)
+    assert len(state[H.STATE_KEY]["months"]) == 36 and vendor.billable_calls == 10 + 60
+    assert H.backfill(vendor, cfg, state, nodes, date(2026, 10, 5), limit=100) == 0  # 都齐了，不再调用
+    H.backfill(vendor, cfg, state, nodes, date(2026, 12, 5), limit=100)
+    assert "2023-10" not in state[H.STATE_KEY]["months"] and "2026-11" in state[H.STATE_KEY]["months"]
+
+
+def test_package_fields_are_parsed_from_product_rows():
+    """卖家精灵的包装尺寸 / 包装重量 / FBA 配送费：解析成英寸、磅、美元，体积换算成立方英尺和立方米。"""
+    from radar import discovery, shipping
+    from tests.conftest import fixture
+
+    row = fixture("product_research")["data"]["items"][0]
+    item = discovery.normalize_product(row, {"path": "x", "name": "Buffets & Sideboards"}, "top", 1)
+    assert item["pkg"] == {"dims": [38.4, 19.3, 9.8], "weight": 82.9, "fba": 62.43}
+    assert shipping.cubic_feet(item["pkg"]["dims"]) == 4.2
+    assert shipping.parse_weight("12 Ounces") == 0.75
+    assert shipping.parse_dims("100 x 50 x 20 cm") == [39.37, 19.69, 7.87]
+    assert shipping.parse_dims("15.7 x 32.7 inches") is None
+    assert "pkg" not in discovery.normalize_product({"asin": "B0X"}, {"path": "x", "name": "n"}, "top", 1)
+    item["price"] = 1019.99
+    s = shipping.summarize([item, {"pkg": {"dims": [20, 20, 20], "weight": 30, "fba": 30.0}, "price": 100}])
+    assert s["n"] == 2 and s["ft3"] == 4.4 and s["weight"] == 56.5 and s["fba"] == 46.22
+    assert shipping.text(item["pkg"], item["price"]) == "包装 4.2 立方英尺（0.12 m³） · 82.9 磅 · FBA $62.43（售价的 6%）"
+
+
+def test_vision_tags_untracked_heads_and_prunes_them(cfg, monkeypatch):
+    """同子类目头部商品不在追踪里：识别结果存在 state[vision.EXTRA_KEY]，不在月度名单里的会被删掉。"""
+    monkeypatch.setattr(vision, "_describe_with_retry",
+                        lambda client, cfg, key, url: {"tags": {"颜色": ["黑色"]}, "summary": ""})
+    state = {"asins": {}}
+    rows = [{"asin": "H1", "image": "https://img/1.jpg"}, {"asin": "H2", "image": ""}]
+    assert vision.tag_items(rows, state, cfg, "", client=httpx.Client()) == 0  # 没有 key 不识别
+    assert vision.tag_items(rows, state, cfg, "k", client=httpx.Client()) == 0  # 不在追踪里，默认跳过
+    assert vision.tag_items(rows, state, cfg, "k", client=httpx.Client(), untracked=True) == 1
+    assert vision.of(state, "H1")["tags"] == {"颜色": ["黑色"]} and "H2" not in state[vision.EXTRA_KEY]
+    vision.prune_extra(state, {"H9"})
+    assert vision.of(state, "H1") == {}
 
 
 def test_appearance_needs_two_brands_and_keywords_drop_brand_names(cfg):
@@ -373,7 +585,11 @@ def test_summary_product_mentions_become_amazon_links():
     item = {"品牌": "Huuger", "品名": "Huuger 63.4-78.3'' Extendable Behind Couch Table", "ASIN": "B0H2XKVQ5L",
             "外观要点": "窄长条案", "标签": [], "可作参考": True, "异常信号": ["留评率高"]}
     facts = {"共性特点": {}, "突然爆火": [item], "潜力": [], "异常信号": [item],
-             "开发方向": [{"画像": "玄关桌：窄小省空间", "参考商品": [{"品名": item["品名"], "ASIN": "B0H2XKVQ5L"}]}]}
+             "开发方向": [{"画像": "玄关桌：窄小省空间", "参考商品": [{"品名": item["品名"], "ASIN": "B0H2XKVQ5L"}]},
+                      {"画像": "衣帽架：实木，$24–$120", "子类目": "衣帽架", "增量": "$26 万",
+                       "季节": ["去年同期品类没有明显上涨（1.1 倍）", "到货前品类会先冲高：去年 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上"],
+                       "参考商品": []}]}
     text = narrative.template_summary(facts)
     assert "[Huuger 63.4-78.3'' Extendable Behind…](B0H2XKVQ5L)" in text
     assert "- 开发玄关桌：窄小省空间，参考 [Huuger" in text
+    assert "- 开发衣帽架（月增量约 $26 万）：实木，$24–$120；到货前品类会先冲高：去年 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上\n" in text

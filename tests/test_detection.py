@@ -379,3 +379,138 @@ def test_section_popups_list_every_item_by_default(cfg):
     sec = analyze.sections(items, cfg["report"]["top_n"])
     assert len(sec["hot"]) == sec["counts"]["hot"] == 31
     assert len(analyze.sections(items, 15)["hot"]) == 15
+
+
+def test_relisted_listing_needs_inherited_reviews(cfg):
+    """老品换链接：评论 ≥ 自己累计销量的 50%，或 ≥15% 且第一周就满速。只是第一周卖得多、评论正常的
+    （大卖家投广告推起来的真新品）不算；上架超过 180 天的不看。"""
+    from radar.detect.rules import relisted
+
+    th = cfg["thresholds"]["relist"]
+    fast = make([0] * 70 + [150] * 50)               # 第一天就满速，累计 7500 件
+    assert relisted(fast, len(fast) - 1, 2315, 50, th)["fast"]       # 31% 且第一周满速
+    assert relisted(fast, len(fast) - 1, 200, 50, th) is None         # 2.7%：正常留评率
+    assert relisted(fast, len(fast) - 1, 5000, 200, th) is None       # 上架超过 180 天
+    ramp_sales = [0] * 70 + [1 + i * 0.6 for i in range(50)]
+    ramp = make(ramp_sales)
+    total = sum(ramp_sales)
+    r = relisted(ramp, len(ramp) - 1, int(total * 0.6), 50, th)
+    assert r and not r["fast"] and r["share"] >= 0.5
+    assert relisted(ramp, len(ramp) - 1, int(total * 0.2), 50, th) is None  # 20%，慢慢起量
+
+
+def test_relisted_listing_is_not_potential_or_a_new_listing_surge(cfg):
+    """老品换链接不算潜力、不算新品爆发（也不标新品起量），卡片上写明依据；评论不多的同款照常判。"""
+    ramp = [round(0.6 * 2.718 ** (i / 38), 1) for i in range(115)]
+    new = [0] * 113 + [60] * 7
+    state = {"asins": {
+        "P1": {**_rec(ramp, 4.5, available=(END - timedelta(days=114)).isoformat(), ratings=250),
+               "months": _months([45, 100, 210])},
+        "P2": {**_rec(ramp, 4.5, available=(END - timedelta(days=114)).isoformat(), ratings=20),
+               "months": _months([45, 100, 210])},
+        "N1": _rec(new, 4.6, available=(END - timedelta(days=6)).isoformat(), ratings=300),
+        "N2": _rec(new, 4.6, available=(END - timedelta(days=6)).isoformat(), ratings=0),
+    }}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]}
+    assert by["P2"]["label"] == "potential" and by["P1"]["label"] != "potential" and by["P1"]["potential"] is None
+    assert by["P1"]["relist"]["share"] >= 0.5 and any(t.startswith("老品换链接（上架 114 天已有 250 条评论") for t in by["P1"]["tags"])
+    assert by["N2"]["label"] == "surge" and by["N2"]["surge"]["kind"] == "新品爆发"
+    assert by["N1"]["label"] != "surge" and not any(t.startswith("新品起量") for t in by["N1"]["tags"])
+
+
+def test_relisted_listing_skips_new_listing_review_ratio(cfg):
+    f = cfg["thresholds"]["fake"]
+    d = make([0] * 50 + [80] * 70)
+    rec = {"variations": 2, "available": (END - timedelta(days=60)).isoformat(),
+           "obs": [{"date": END.isoformat(), "ratings": 1393, "rating": 4.4}], "months": _months([2482, 352])}
+    assert "new_listing_reviews" in {s["code"] for s in fakehot.score(rec, d, END, None, 2.0, f, [])["signals"]}
+    assert fakehot.score(rec, d, END, None, 2.0, f, [], relisted=True)["score"] == 0
+
+
+def test_review_rate_skips_many_variations(cfg):
+    """留评率用的评论数是父体共享的：变体多的商品不算（和两种评论/销量比一致）。"""
+    f = cfg["thresholds"]["fake"]
+    row = {"ratings_rate": 14.0, "ratings_cv": 30}
+    assert fakehot.score({"obs": [], "variations": 2}, None, None, row, 1.8, f, [])["score"] == 2
+    assert fakehot.score({"obs": [], "variations": 15}, None, None, row, 1.8, f, [])["score"] == 0
+
+
+def test_node_median_review_rate_ignores_many_variations(cfg):
+    products = {f"A{k}": {"asin": f"A{k}", "node": "N", "sources": ["top"], "units": 100, "ratings_rate": rate,
+                          "variations": vars_} for k, (rate, vars_) in enumerate([(1.0, 1), (2.0, 2), (3.0, 3), (40.0, 20), (50.0, 30)])}
+    assert analyze.node_stats({"products": products}, cfg)["N"]["median_rate"] == 2.0
+
+
+def test_relisted_increment_is_zero_without_earlier_sales():
+    from radar.detect import directions
+
+    item = {"recent_avg28": 100, "prev_avg28": None, "price": 50}
+    assert directions.increment(item) == 100 * 50 * 30
+    assert directions.increment({**item, "relist": {"share": 0.6}}) == 0
+    assert directions.increment({**item, "prev_avg28": 40, "relist": {"share": 0.6}}) == 60 * 50 * 30
+
+
+def _category_history(level, months=36, end=(2026, 9)):
+    """state["category_history"] 里一个子类目的 36 个月销量，level(月份) = 当月日均。"""
+    import calendar
+    out = {}
+    y, m = end
+    for _ in range(months):
+        out[f"{y}-{m:02d}"] = level(m) * calendar.monthrange(y, m)[1]
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return out
+
+
+def _with_history(state, path, units):
+    hist = state.setdefault("category_history", {"months": {}, "scanned": {}})
+    for month, v in units.items():
+        hist["months"].setdefault(month, {})[path] = v
+    return state
+
+
+def test_growth_in_a_seasonal_category_is_tagged(cfg):
+    """季节性品类里，按往年规律近 28 天品类本来就是之前的 ≥1.15 倍：上升中标“品类季节性”，写明季节倍数和扣除后的倍数；
+    没有类目历史的子类目不标。"""
+    early_autumn = lambda m: 100 * {9: 1.6, 10: 2.2}.get(m, 1.0)
+    state = _with_history({"asins": {}}, "N1", _category_history(early_autumn))
+    rising = [10] * 92 + [20] * 28
+    for k in range(3):
+        state["asins"][f"S{k}"] = {**_rec(rising, 4.5), "node": "N1", "node_cn": "衣帽架"}
+        state["asins"][f"F{k}"] = {**_rec(rising, 4.5), "node": "N2", "node_cn": "书架"}
+    result = analyze.analyze(state, None, list(state["asins"]), cfg, END)
+    by = {i["asin"]: i for i in result["items"]}
+    assert result["seasons"]["N1"]["seasonal"] and not result["seasons"]["N2"]["ready"]
+    s = by["S0"]
+    assert s["rising"] and s["season28"] > 1.15
+    tag = next(t for t in s["tags"] if t.startswith("品类季节性"))
+    assert tag == (f"品类季节性（按往年规律，这段时间品类本来就是之前的 {s['season28']:.1f} 倍，"
+                   f"扣除后 ×{s['rising']['ratio'] / s['season28']:.1f}）")
+    assert by["F0"]["rising"] and by["F0"]["season28"] is None
+    assert not any(t.startswith("品类季节性") for t in by["F0"]["tags"])
+
+
+def test_hot_counts_raw_or_seasonally_adjusted_sales(cfg):
+    """持续热销：原始销量达标的照样算；季节性品类里原始销量因为旺季波动不达标的，按季节指数调整后达标也算（卡片注明）。"""
+    from radar.detect import seasonality
+
+    th = cfg["thresholds"]
+    peak = lambda m: 100 * {7: 1.6, 8: 2.6, 9: 1.8}.get(m, 1.0)
+    prof = seasonality.profile(_category_history(peak), th["seasonality"])
+    assert prof["seasonal"]
+    season = seasonality.hot_levels(prof, END)
+    seasonal_months = _months([1000 * x for x in (1.0, 1.0, 1.0, 1.6, 2.6, 1.8)])
+    d = make([60] * 120)
+    assert evaluate_hot(seasonal_months, d, END, 900, th["hot"]) is None  # 直接算波动 0.39 > 0.35
+    hot = evaluate_hot(seasonal_months, d, END, 900, th["hot"], season, "2026-09")
+    assert hot and hot["adjusted"] and hot["cv"] < 0.05 and hot["season_n"] == 3
+    assert evaluate_hot(seasonal_months, d, END, 900, {**th["hot"], "deseasonalize": False}, season, "2026-09") is None
+
+    stats = {"N1": {"threshold": 900}}
+    flat = {**_rec([40] * 120, 4.5), "node": "N1", "months": _months([1200] * 6)}
+    wavy = {**_rec([60] * 120, 4.5), "node": "N1", "months": seasonal_months}
+    a = analyze.evaluate("A", flat, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
+    b = analyze.evaluate("B", wavy, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
+    assert a["label"] == "hot" and not a["hot"]["adjusted"]  # 原始销量就稳：不调整（调整反而会显得 8 月掉下去）
+    assert b["label"] == "hot" and b["hot"]["adjusted"]

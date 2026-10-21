@@ -114,9 +114,27 @@ def _describe_with_retry(client: httpx.Client, cfg: dict, api_key: str, image_ur
     return None
 
 
+EXTRA_KEY = "vision_extra"  # 不在追踪里的商品（开发方向对比用的同子类目头部商品）的识别结果，按 ASIN 存
+
+
+def of(state: dict, asin: str) -> dict:
+    """一个商品的主图识别结果：追踪商品存在 state["asins"] 里，其余存在 state[EXTRA_KEY] 里。没有返回 {}。"""
+    rec = (state.get("asins") or {}).get(asin) or {}
+    return rec.get("vision") or ((state.get(EXTRA_KEY) or {}).get(asin) or {}).get("vision") or {}
+
+
+def prune_extra(state: dict, keep: set[str]) -> None:
+    """只留 keep 里的（当前月度名单里的商品），其余删掉，免得状态越积越大。"""
+    extra = state.get(EXTRA_KEY)
+    if extra:
+        for asin in [a for a in extra if a not in keep]:
+            del extra[asin]
+
+
 def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
-              client: httpx.Client | None = None) -> int:
-    """给 items 的主图打标签，写入 state["asins"][asin]["vision"]。返回新识别的张数。
+              client: httpx.Client | None = None, untracked: bool = False) -> int:
+    """给 items 的主图打标签，写入 state["asins"][asin]["vision"]；untracked=True 时，
+    不在追踪里的商品写入 state[EXTRA_KEY][asin]["vision"]（否则跳过）。返回新识别的张数。
     单张失败先重试（网络中断、超时、限流、服务端错误），还不行就跳过这张、接着识别下一张；
     鉴权失败或连续 MAX_FAILED_IN_A_ROW 张失败才停（实测：一次连接中断就停掉了整批，56 个增长商品有 19 个没识别）。"""
     if not enabled(cfg, api_key):
@@ -128,6 +146,8 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
         for item in items:
             url = item.get("image")
             rec = state["asins"].get(item["asin"])
+            if url and rec is None and untracked:
+                rec = state.setdefault(EXTRA_KEY, {}).setdefault(item["asin"], {})
             if not url or rec is None:
                 continue
             cached = rec.get("vision")

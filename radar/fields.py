@@ -15,6 +15,7 @@ FIELD_SETS: dict[str, tuple[str, ...]] = {
         "bsr", "bsrCv", "bsrCr", "units", "unitsGr", "revenue", "price", "averagePrice",
         "ratings", "ratingsRate", "rating", "ratingsCv", "ratingDelta", "availableDate",
         "fulfillment", "variations", "sellers", "sellerName", "sellerNation", "lqs",
+        "fba", "pkgDimensions", "pkgWeight",  # 包装尺寸 / 重量 / FBA 配送费（shipping.py）
     ),
     # 返回结构与 product_research 相同（近 30 天数据）
     "asin_competitor": (
@@ -22,6 +23,7 @@ FIELD_SETS: dict[str, tuple[str, ...]] = {
         "bsr", "bsrCv", "bsrCr", "units", "unitsGr", "revenue", "price", "averagePrice",
         "ratings", "ratingsRate", "rating", "ratingsCv", "ratingDelta", "availableDate",
         "fulfillment", "variations", "sellers", "sellerName", "sellerNation", "lqs",
+        "fba", "pkgDimensions", "pkgWeight",  # 包装尺寸 / 重量 / FBA 配送费（shipping.py）
     ),
     "asin_detail": (
         "asin", "title", "brand", "parent", "availableDate", "firstRatingDate", "bsrRank",

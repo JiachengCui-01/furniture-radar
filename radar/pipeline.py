@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import analyze, clock, crypto, discovery, log, materials, narrative, store, tracking, verify, vision
+from . import analyze, category_history, clock, crypto, discovery, log, materials, narrative, store, tracking, verify, vision
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
 from .detect import directions
@@ -144,6 +144,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 1. 发现（月度基线）+ 近 30 天榜单（每期刷新）+ 上期爆款的相似款
     disc = ensure_discovery(vendor, cfg, state, today)
+    category_history.record_discovery(state, disc)  # 月度发现查的就是上个月的类目销量，顺手记进季节历史
     if disc and disc.get("nodes"):
         try:
             state["risers"] = {"run": run_seq, "date": today.isoformat(),
@@ -173,6 +174,12 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         log.warn("追踪阶段预算用完")
     log.info(f"刷新日数据 {refreshed}/{len(plan)} 个")
 
+    # 类目月度历史（季节模型的数据）：只用核心刷新做完后剩下的预算，给核查和材质查询留出 reserve
+    if disc and disc.get("nodes"):
+        spare = min(int(bcfg.get("history_calls", 0)), max(0, vendor.budget.remaining - reserve))
+        if spare:
+            category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare)
+
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows)
@@ -200,7 +207,8 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"]}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
-                       coverage=coverage, today=today, events=result.get("events"))
+                       coverage=coverage, today=today, events=result.get("events"),
+                       seasons=result.get("seasons"))
     key_text = ctx["key_text"]
     sec = ctx["sections"]
 
@@ -282,9 +290,10 @@ def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict
 
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
-                 prev_run: dict | None, coverage: dict, today, events: dict | None = None) -> dict:
+                 prev_run: dict | None, coverage: dict, today, events: dict | None = None,
+                 seasons: dict | None = None) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
-    events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”。"""
+    events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；seasons：各子类目的品类季节（同上）。"""
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
     trait = analyze.compute_traits(items, disc, state, today, cfg)
 
@@ -293,6 +302,13 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
     if tagged:
         log.info(f"主图识别 {tagged} 张")
+    # 开发方向：排在前面的几个子类目，增长商品和同子类目头部商品都看主图，两边特征的来源才一致
+    growth = analyze.focus_items(items)
+    tagged = vision.tag_items(directions.vision_targets(growth, disc, cfg), state, cfg, secrets.llm_api_key,
+                              untracked=True)
+    if tagged:
+        log.info(f"开发方向主图识别 {tagged} 张")
+    vision.prune_extra(state, set(((disc or {}).get("products") or {})))
     trait["vision"] = vision.summarize(focus, reference, state,
                                        min_gap=float(cfg["thresholds"]["appearance"]["image_min_gap"]))
     trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
@@ -301,7 +317,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = (rec.get("vision") or {}).get("summary") or ""
-    trait["directions"] = directions.compute(analyze.focus_items(items), state, trait["appearance"], cfg)
+    trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc, seasons=seasons)
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of")]
@@ -326,6 +342,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "cfg": cfg,
         "top_n": int(cfg["report"]["top_n"]),
         "events": events or {},
+        "seasons": seasons or {},
+        "season_nodes": (disc or {}).get("nodes") or [],
     }
     ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
     ctx["history"] = [{"id": old_id, "href": f"{old_id}.html#k={crypto.report_key_text(master, old_id)}"}
@@ -393,7 +411,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),
                                                                             cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
                        prev_run=state["runs"][-2] if len(state["runs"]) >= 2 else None, coverage=coverage,
-                       today=today, events=result.get("events"))
+                       today=today, events=result.get("events"), seasons=result.get("seasons"))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)

@@ -1,13 +1,30 @@
-"""开发方向：增长商品最多的几个子类目，各自写出“做什么品类、用什么主材质 / 风格 / 造型 / 工艺 / 颜色 / 功能、卖什么价”。
+"""开发方向：增长商品带来的销售额增量最大的几个子类目，各写一个产品画像——做什么品类、
+哪些外观 / 功能是增长商品比同子类目头部商品多的、哪些是这个品类本来就都有的、卖什么价、
+包装多大、FBA 配送费多少、季节上赶不赶得上。每一项都只来自该子类目，可以逐个核对。
 
-每一项都只来自该子类目的增长商品，可以逐个核对。按品牌计数：同一品牌的多条链接只算一次
-（实测：某期“梳妆台”4 个增长商品里 3 个是同一品牌，“白色 4/4、LED 4/4”其实是一家的产品线）。
-  入选：增长商品 ≥ min_items 个、来自 ≥ min_brands 个品牌的子类目，按品牌数、增长商品个数、其中突然爆火的个数、
-        势头最强的那个排在多前排序，取前 max 个；没有任何共同主材质或特征（画不出画像）的跳过，由下一个补上；
-  特征：该子类目里至少 feature_min_share（且不少于 2 个）品牌的增长商品具备的（标题词库或主图识别，任一有就算），
-        每个维度最多 per_dim 个，按具备的品牌数排序；
-  主材质：同“外观与工艺依据”的口径，每个商品一类，入选条件同上；
+  入选：增长商品 ≥ min_items 个、来自 ≥ min_brands 个品牌的子类目，按增量销售额从大到小
+        （同额时看品牌数、增长商品个数、突然爆火个数、势头最强的那个排在多前）取前 max 个；
+        没有任何特征也没有明确主材质（画不出画像）的跳过，由下一个补上；
+  月销售额 = 该子类目每个增长商品的 近 28 天日均 × 当前售价 × 30，加起来；
+  增量销售额 = 每个增长商品的（近 28 天日均 − 之前 28 天在卖日子的日均 × 季节倍数）× 当前售价 × 30，加起来，
+        之前 28 天没在卖的按 0 算（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
+        季节倍数 = 季节性品类里按往年规律近 28 天品类本来就是之前 28 天的几倍（analyze 的 item["season28"]），
+        其余子类目为 1——旺季里整个品类一起涨的那部分不算增量（否则 11 月的梳妆台、衣帽架会因为季节排到最前）；
+        老品换链接（rules.relisted）之前 28 天没在卖时增量按 0：它的销量是从老链接转过来的，不是新增的需求；
+        只按品牌数排序时，便宜、门槛低的品类会排前面（实测 2026-10-20：$35 的衣帽架 8 个品牌排第一，增量约 $26 万；
+        $138 的梳妆台 4 个品牌进不了前 5，增量约 $57 万）；
+  特征按品牌计数（同一品牌的多条链接只算一次，该品牌任一增长商品有就算），每个维度分两档，一个特征只进一档：
+    比头部多 = 至少 2 个品牌有，且具备的品牌占比 比 同子类目头部商品里的占比 高 head_min_gap 以上、
+              是它的 head_min_lift 倍以上（只看差距时，4 个品牌全有、头部 73% 有的“带抽屉”也会算进来）；
+    基本款   = 至少 feature_min_share（且不少于 2 个）品牌有，但不比头部多（例如书架的“开放格”、衣帽架的“带挂钩”）；
+  同子类目头部商品 = 月度名单里同一子类目、不在增长商品里（同一父体也不算）的商品，按月销量取前 head_max 个，
+    按商品数算占比。两边特征的来源要一致：有主图识别的头部商品 ≥ head_min 个时，两边都用“标题 + 主图”
+    （颜色只看主图），头部只算识别过的那些；否则两边都只看标题。头部商品不足 head_min 个时不分档，
+    只列“共同特征”（同基本款的门槛，但没有和头部比过）；
+  主材质：同“外观与工艺依据”的口径，每个商品一类，至少 feature_min_share（且 ≥2 个）品牌是这一类才列，不和头部比；
   价格：该子类目增长商品的最低价 ~ 最高价，3 个以上再给中位数；
+  包装：该子类目增长商品的包装体积、包装重量、FBA 配送费的中位数（shipping.py，只算有数据的）；
+  季节：detect/seasonality.py；
   参考：该子类目势头最强、没有任何异常信号（异常分 0）的两个增长商品，两个不同品牌。
 特征同时在全部增长商品里“比对照组更多”的，标 trend（报告里显示 ↑）。
 """
@@ -15,26 +32,41 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-
+from .. import shipping, vision
 from ..analyze import display_name
 from . import design
 from .design import brand_key
 
 DIMENSIONS = ("风格", "造型", "工艺", "颜色", "功能卖点")
-VISION_DIMENSIONS = ("风格", "造型", "工艺", "颜色", "功能卖点")  # 主图识别的功能只认看得见的（design.VISION_FUNCTIONS）
 VAGUE_MATERIALS = ("未注明", "木质（未注明）", "其他")
+MONTH_DAYS = 30
 
 
-def _features(item: dict, state: dict) -> dict[str, set[str]]:
-    """标题词库 + 主图识别，任一有就算；颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图。"""
+def node_of(row: dict) -> str:
+    return row.get("node_cn") or row.get("node_name") or ""
+
+
+def monthly_sales(item: dict) -> float:
+    return (item.get("recent_avg28") or 0) * (item.get("price") or 0) * MONTH_DAYS
+
+
+def increment(item: dict) -> float:
+    if item.get("relist") and item.get("prev_avg28") is None:
+        return 0.0  # 老品换链接：之前没在卖，现在的销量是从老链接转过来的
+    season = item.get("season28") or 1.0
+    return ((item.get("recent_avg28") or 0) - (item.get("prev_avg28") or 0) * season) * (item.get("price") or 0) * MONTH_DAYS
+
+
+def _features(item: dict, state: dict, use_vision: bool = True) -> dict[str, set[str]]:
+    """标题词库 + 主图识别，任一有就算；颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图。
+    use_vision=False 时只看标题（和只能看标题的头部商品比的时候）。"""
     feats = design.extract(item.get("title", ""))
-    vision = (((state.get("asins") or {}).get(item["asin"]) or {}).get("vision") or {})
-    tags = vision.get("tags") or {}
+    seen = vision.of(state, item["asin"]) if use_vision else {}
+    tags = seen.get("tags") or {}
     out = {}
     for dim in DIMENSIONS:
-        seen = set(tags.get(dim) or []) if dim in VISION_DIMENSIONS else set()
-        title = set() if vision and dim in design.IMAGE_FIRST_DIMENSIONS else feats.get(dim, set())
-        out[dim] = title | seen
+        title = set() if seen and dim in design.IMAGE_FIRST_DIMENSIONS else feats.get(dim, set())
+        out[dim] = title | set(tags.get(dim) or [])
     return out
 
 
@@ -44,52 +76,105 @@ def _median(values: list[float]) -> float:
     return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
 
 
-def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict) -> list[dict]:
-    """focus：增长商品（analyze.focus_items 的顺序 = 势头），每个商品要已带 item["material"]。"""
-    c = cfg["thresholds"]["directions"]
-    min_items, need_share, per_dim = int(c["min_items"]), float(c["feature_min_share"]), int(c["per_dim"])
-    min_brands = int(c.get("min_brands", 1))
-    trend = {dim: {f["label"] for f in rows.get("more") or []} for dim, rows in (appearance or {}).items()}
+def _n_brands(rows: list[dict]) -> int:
+    return len({brand_key(i) for i in rows})
 
+
+def ranked(focus: list[dict], cfg: dict) -> list[tuple[str, list[dict]]]:
+    """够格的子类目（增长商品数、品牌数达标），按增量销售额排好。focus 是按势头排好的增长商品。"""
+    c = cfg["thresholds"]["directions"]
     groups: dict[str, list[dict]] = {}
     for item in focus:
-        node = item.get("node_cn") or item.get("node_name")
-        if node:
-            groups.setdefault(node, []).append(item)
-    first = {node: n for n, node in enumerate(dict.fromkeys(i.get("node_cn") or i.get("node_name") for i in focus))}
+        if node_of(item):
+            groups.setdefault(node_of(item), []).append(item)
+    first = {node: n for n, node in enumerate(dict.fromkeys(node_of(i) for i in focus if node_of(i)))}
+    ok = [g for g in groups.items()
+          if len(g[1]) >= int(c["min_items"]) and _n_brands(g[1]) >= int(c.get("min_brands", 1))]
+    return sorted(ok, key=lambda g: (-round(sum(increment(i) for i in g[1])), -_n_brands(g[1]), -len(g[1]),
+                                     -sum(1 for i in g[1] if i["label"] == "surge"), first[g[0]]))
 
-    def n_brands(rows: list[dict]) -> int:
-        return len({brand_key(i) for i in rows})
 
-    ranked = sorted((g for g in groups.items() if len(g[1]) >= min_items and n_brands(g[1]) >= min_brands),
-                    key=lambda g: (-n_brands(g[1]), -len(g[1]), -sum(1 for i in g[1] if i["label"] == "surge"),
-                                   first[g[0]]))
+def heads(node: str, disc: dict | None, focus: list[dict], cfg: dict) -> list[dict]:
+    """同子类目头部商品：月度名单里这个子类目、不在增长商品里（同一父体也不算）的，按月销量取前 head_max 个。"""
+    c = cfg["thresholds"]["directions"]
+    taken = {i["asin"] for i in focus}
+    parents = {p for p in (((disc or {}).get("products") or {}).get(a, {}).get("parent") for a in taken) if p}
+    rows = [r for r in ((disc or {}).get("products") or {}).values()
+            if node_of(r) == node and r["asin"] not in taken and not (r.get("parent") and r["parent"] in parents)]
+    rows.sort(key=lambda r: -(r.get("units") or 0))
+    return rows[: int(c.get("head_max", 30))]
+
+
+def vision_targets(focus: list[dict], disc: dict | None, cfg: dict, spare: int = 2) -> list[dict]:
+    """主图识别要看的：排在前面的几个子类目（max + spare 个，有的会因为画不出画像被跳过）的增长商品和头部商品。"""
+    out: list[dict] = []
+    for node, rows in ranked(focus, cfg)[: int(cfg["thresholds"]["directions"]["max"]) + spare]:
+        out += rows + heads(node, disc, focus, cfg)
+    return out
+
+
+def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, *, disc: dict | None = None,
+            seasons: dict | None = None) -> list[dict]:
+    """focus：增长商品（analyze.focus_items 的顺序 = 势头），每个商品要已带 item["material"]。
+    disc：月度名单（同子类目头部商品从这里取）；seasons：各子类目（按 nodeIdPath）的季节展望（analyze.analyze 的结果，
+    seasonality.outlook）。"""
+    c = cfg["thresholds"]["directions"]
+    need_share, per_dim = float(c["feature_min_share"]), int(c["per_dim"])
+    head_min, gap, lift = int(c.get("head_min", 10)), float(c.get("head_min_gap", 0.2)), float(c.get("head_min_lift", 1.5))
+    trend = {dim: {f["label"] for f in rows.get("more") or []} for dim, rows in (appearance or {}).items()}
 
     out = []
-    for node, rows in ranked:
+    for node, rows in ranked(focus, cfg):
         if len(out) >= int(c["max"]):
             break
-        n, nb = len(rows), n_brands(rows)
+        n, nb = len(rows), _n_brands(rows)
         need = max(2, math.ceil(need_share * nb - 1e-9))
+        hs = heads(node, disc, focus, cfg)
+        tagged = [h for h in hs if vision.of(state, h["asin"])]
+        if len(hs) < head_min:
+            mode, sample = None, []
+        elif len(tagged) >= head_min:
+            mode, sample = "image", tagged
+        else:
+            mode, sample = "title", hs
+        use_vision = mode != "title"
+
         # 每个品牌：它的增长商品里任何一个有就算这个品牌有
         by_brand: dict[str, dict[str, set[str]]] = {}
         for item in rows:
             have = by_brand.setdefault(brand_key(item), {dim: set() for dim in (*DIMENSIONS, "主材质")})
-            for dim, labels in _features(item, state).items():
+            for dim, labels in _features(item, state, use_vision).items():
                 have[dim] |= labels
             have["主材质"].add(item.get("material") or "未注明")
         brands = list(by_brand.values())
+        head_feats = [_features(h, state, use_vision) for h in sample]
+
         features = {}
         for dim in DIMENSIONS:
             counts = Counter(label for b in brands for label in b[dim])
+            head_counts = Counter(label for f in head_feats for label in f[dim])
             order = {label: k for k, label in enumerate(dict.fromkeys(label for b in brands for label in sorted(b[dim])))}
-            picked = sorted((label for label, k in counts.items() if k >= need),
-                            key=lambda label: (-counts[label], label not in trend.get(dim, set()), order[label]))
-            features[dim] = [{"label": label, "count": counts[label], "trend": label in trend.get(dim, set())}
-                             for label in picked[:per_dim]]
+
+            def row(label: str) -> dict:
+                share = head_counts[label] / len(sample) if sample else None
+                return {"label": label, "count": counts[label], "trend": label in trend.get(dim, set()),
+                        "head_share": None if share is None else round(share, 3)}
+
+            def is_more(label: str, k: int) -> bool:
+                share, head = k / nb, head_counts[label] / len(sample)
+                return k >= 2 and share - head >= gap - 1e-9 and share >= lift * head - 1e-9
+
+            more = [] if mode is None else [label for label, k in counts.items() if is_more(label, k)]
+            more.sort(key=lambda label: (-(counts[label] / nb - head_counts[label] / len(sample)), -counts[label],
+                                         order[label]))
+            base = [label for label, k in counts.items() if k >= need and label not in more]
+            base.sort(key=lambda label: (-counts[label], label not in trend.get(dim, set()), order[label]))
+            features[dim] = {"more": [row(label) for label in more[:per_dim]],
+                             "base": [row(label) for label in base[:per_dim]]}
         mats = Counter(label for b in brands for label in b["主材质"])
         materials = [{"label": label, "count": k} for label, k in mats.most_common() if k >= need]
-        if not any(features.values()) and not any(m["label"] not in VAGUE_MATERIALS for m in materials):
+        if not any(f["more"] or f["base"] for f in features.values()) \
+                and not any(m["label"] not in VAGUE_MATERIALS for m in materials):
             continue  # 没有任何共同的主材质或特征：画不出产品画像，换下一个子类目
         prices = [float(i["price"]) for i in rows if i.get("price")]
         refs: list[dict] = []
@@ -100,12 +185,17 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict) 
         out.append({
             "node": node, "n": n, "n_brands": nb, "need": need,
             "n_surge": sum(1 for i in rows if i["label"] == "surge"),
+            "sales": {"monthly": round(sum(monthly_sales(i) for i in rows)),
+                      "increment": round(sum(increment(i) for i in rows))},
             "materials": materials,
             "features": features,
+            "compare": {"mode": mode, "n_head": len(sample), "n_head_all": len(hs)},
             "price": {"min": min(prices), "max": max(prices),
                       "median": _median(prices) if len(prices) >= 3 else None} if prices else None,
+            "pkg": shipping.summarize(rows),
+            "season": (seasons or {}).get(rows[0].get("node")),
             "refs": [{"asin": i["asin"], "brand": i.get("brand") or "", "name": display_name(i.get("brand"), i["title"]),
-                      "price": i.get("price"), "look": i.get("look") or ""} for i in refs],
+                      "price": i.get("price"), "look": i.get("look") or "", "pkg": i.get("pkg")} for i in refs],
         })
     return out
 
@@ -117,10 +207,28 @@ def price_text(price: dict | None) -> str:
     return lo if lo == hi else f"{lo}–{hi}"
 
 
+def money_text(value: float | None) -> str:
+    """$1,405,807 → “$141 万”；不到 1 万的写整数美元。"""
+    if value is None:
+        return ""
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    return f"{sign}${value / 10_000:,.0f} 万" if value >= 10_000 else f"{sign}${value:,.0f}"
+
+
+def labels(d: dict, tier: str) -> list[str]:
+    """一档特征的名字，按维度顺序。tier = "more"（比头部多）/ "base"（基本款或共同特征）。"""
+    return [f["label"] for dim in DIMENSIONS for f in d["features"][dim][tier]]
+
+
 def headline(d: dict) -> str:
-    """一句话产品画像：品类：主材质，风格，造型，工艺，颜色，功能，价格。只用入选的特征。"""
+    """一句话产品画像：品类：主材质，比头部多的特征（没有的话写基本款），价格。只用入选的特征。"""
     parts = [m["label"] for m in d["materials"][:1] if m["label"] not in VAGUE_MATERIALS]
-    parts += ["、".join(f["label"] for f in d["features"][dim]) for dim in DIMENSIONS if d["features"][dim]]
+    more, base = labels(d, "more"), labels(d, "base")
+    if more:
+        parts.append("、".join(more))
+    elif base:
+        parts.append(("基本款 " if (d.get("compare") or {}).get("mode") else "") + "、".join(base[:4]))
     if d.get("price"):
         parts.append(price_text(d["price"]))
     return f"{d['node']}：{'，'.join(parts)}" if parts else d["node"]

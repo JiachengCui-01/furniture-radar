@@ -1,4 +1,4 @@
-"""三类“正向”判定：突然爆火、持续热销、潜力，以及共用的评分门槛和“回落”。阈值全部来自 config.yaml。
+"""三类“正向”判定：突然爆火、持续热销、潜力，以及共用的评分门槛、“回落”和“老品换链接”。阈值全部来自 config.yaml。
 报告里每个板块的文字说明（report/render.py 的 section_hints）与这里的条件一一对应，改条件时一起改。"""
 from __future__ import annotations
 
@@ -31,6 +31,39 @@ def low_rating(rating: float | None, ratings: float | None, th: dict) -> bool:
     """评分不达标的商品不进入任何榜单。还没有评分（没有评论）的不算低分。"""
     floor = rating_floor(ratings, th)
     return bool(floor) and bool(rating) and rating < floor
+
+
+def relisted(d: Daily | None, as_of_idx: int | None, ratings: float | None, age: int | None,
+             cfg: dict) -> dict | None:
+    """老品换链接：新子体挂进老父体（或老品换了新 ASIN），继承了评论和排名，上架天数不代表商品是新的。
+    条件：上架 ≤ max_age_days 天，且 评论数 ≥ 这个 ASIN 自己累计销量的 review_share，
+          或 评论数 ≥ 累计销量的 review_share_fast 且 上架第一周日均 ≥ 近 7 天日均的 fast_share（且 ≥ fast_min_daily 件）。
+    累计销量 = 日数据里这个 ASIN 卖出的全部件数；第一周 = 从第一天卖出东西起的 7 天（之前 0 销量的日子不算）。
+    正常留评率 1~3%、Vine 最多 30 条，只“第一周就卖得多”、评论正常的多是投广告推起来的真新品，不算。"""
+    if d is None or as_of_idx is None or age is None or age > cfg["max_age_days"] or not ratings:
+        return None
+    values = [v for v in d.sales[: as_of_idx + 1] if v is not None]
+    if not values:
+        return None
+    total = sum(values)
+    share = ratings / max(total, 1.0)
+    selling = [k for k, v in enumerate(values) if v > 0]
+    first7 = mean(values[selling[0]: selling[0] + 7]) if selling else None
+    last7 = mean(d.window("sales", as_of_idx, 7))
+    fast = bool(first7 is not None and last7 and first7 >= cfg["fast_min_daily"]
+                and first7 >= cfg["fast_share"] * last7 - 1e-9)
+    if not (share >= cfg["review_share"] - 1e-9 or (fast and share >= cfg["review_share_fast"] - 1e-9)):
+        return None
+    return {"ratings": int(ratings), "sales": int(round(total)), "share": round(share, 3), "fast": fast,
+            "first7": None if first7 is None else round(first7, 1), "last7": None if last7 is None else round(last7, 1),
+            "age": age}
+
+
+def relist_text(r: dict) -> str:
+    text = f"老品换链接（上架 {r['age']} 天已有 {r['ratings']} 条评论，是自己累计销量的 {r['share']:.0%}"
+    if r["fast"]:
+        text += f"；开卖第一周日均 {r['first7']:g} 件，近 7 天 {r['last7']:g} 件"
+    return text + "）"
 
 
 def momentum(d: Daily, as_of_idx: int, cfg: dict) -> dict:
@@ -161,19 +194,37 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
 
 
 def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_threshold: float | None,
-                 cfg: dict) -> dict | None:
+                 cfg: dict, season: dict | None = None, threshold_month: str | None = None) -> dict | None:
+    """season：同子类目老链接（不含这个商品自己）的销量水平 {"months": {"2026-04": 日均合计, …}, "recent": 近 28 天日均合计,
+    "n": 个数}（detect/seasonality.py 的 month_levels / others）。有、且 cfg["deseasonalize"] 时先按品类季节调整：
+    每个月的销量 × (这 6 个月品类平均水平 ÷ 当月品类水平)，近 28 天同样调整；门槛线（threshold_month 那个月的子类目第 N 名）
+    也调到 6 个月平均水平。调整后再看下面四条。"""
     closed = closed_months(months, as_of)
     look = closed[-cfg["lookback_months"]:]
     if node_threshold is None or len(look) < cfg["months_required"]:
         return None
-    hits = sum(1 for _, s in look if s >= node_threshold)
-    six = [s for _, s in closed[-6:]]
+    keys = [k for k, _ in closed[-6:]]
+    level = (season or {}).get("months") or {}
+    adjusted = bool(season and cfg.get("deseasonalize") and season.get("recent")
+                    and all(level.get(k) for k in keys))
+    avg_level = mean([level[k] for k in keys]) if adjusted else None
+
+    def adj(key: str, value: float) -> float:
+        return value * avg_level / level[key] if adjusted else value
+
+    threshold = node_threshold
+    if adjusted and threshold_month and level.get(threshold_month):
+        threshold = node_threshold * avg_level / level[threshold_month]
+    hits = sum(1 for k, s in look if adj(k, s) >= threshold)
+    six = [adj(k, s) for k, s in closed[-6:]]
     variation = cv(six)
-    trend = log_growth([s for _, s in closed[-3:]])
-    six_daily = mean([daily_avg_of_month(k, s) for k, s in closed[-6:]])
+    trend = log_growth([adj(k, s) for k, s in closed[-3:]])
+    six_daily = mean([daily_avg_of_month(k, adj(k, s)) for k, s in closed[-6:]])
     recent = None
     if d is not None and as_of is not None:
         recent = mean(d.window("sales", d.index_of(as_of), 28))
+        if recent is not None and adjusted:
+            recent = recent * avg_level / season["recent"]
     recent_ratio = (recent / six_daily) if recent is not None and six_daily else None
 
     ok = (
@@ -187,10 +238,12 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
     return {
         "months_hit": hits,
         "lookback": len(look),
-        "threshold": node_threshold,
+        "threshold": round(threshold, 1),
+        "adjusted": adjusted,
+        "season_n": (season or {}).get("n") if adjusted else None,
         "cv": round(variation, 3),
         "trend": None if trend is None else round(trend, 3),
-        "avg_monthly": round(mean(six) or 0, 1),
+        "avg_monthly": round(mean([s for _, s in closed[-6:]]) or 0, 1),  # 实际月销量（不调整），排序和展示用
         "recent_daily": None if recent is None else round(recent, 2),
         "recent_ratio": None if recent_ratio is None else round(recent_ratio, 2),
     }

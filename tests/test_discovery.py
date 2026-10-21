@@ -193,3 +193,18 @@ def test_node_heads_by_units_and_by_revenue(cfg):
     cfg["pool"].update(per_node_top=1, per_node_top_revenue=1, core_max=2, similar_max=0, opportunity_every_run=0)
     pool, reasons = tracking.select_pool({"products": products}, {"asins": {}, "runs": []}, cfg, date(2026, 10, 1))
     assert pool == ["VOLUME", "VALUE"] and set(reasons.values()) == {"top"}
+
+
+def test_refresh_keeps_package_data_from_the_30_day_row(cfg):
+    """月度名单是月初查的，加包装字段之前的那份没有包装数据；近 30 天榜单每期都查、带包装数据。
+    刷新日数据时两行合并：月度行优先，月度行没有的包装数据从近 30 天行补上。"""
+    from radar.demo import SyntheticWorld
+
+    world = SyntheticWorld(date(2026, 10, 5))
+    p = world.products[0]
+    fresh = discovery.normalize_product(world._recent_row(p), {"path": p.node, "name": p.cn}, "riser", 1)
+    monthly = {k: v for k, v in fresh.items() if k != "pkg"}
+    state = {"asins": {}, "risers": {"items": [fresh]}}
+    vendor = Vendor(world, Budget(5), live=False)
+    assert tracking.refresh(vendor, [p.asin], state, {"products": {p.asin: monthly}}, cfg, run_seq=1) == 1
+    assert state["asins"][p.asin]["pkg"] == fresh["pkg"] and fresh["pkg"]["fba"] > 0

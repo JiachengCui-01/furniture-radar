@@ -15,7 +15,7 @@ import httpx
 
 from .. import log
 from ..analyze import display_name
-from ..detect.directions import headline
+from ..detect.directions import headline, money_text
 from ..report.render import growth_text
 from ..narrative import top_design_labels
 
@@ -134,7 +134,8 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("")
     if traits.get("directions"):
         lines.append("**🛠 开发方向**")
-        lines += [f"- {headline(d)}" for d in traits["directions"]]
+        lines += [f"- {headline(d)}" + (f"（月增量约 {money_text(d['sales']['increment'])}）" if d.get("sales") else "")
+                  for d in traits["directions"]]
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):
