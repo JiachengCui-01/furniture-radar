@@ -514,3 +514,40 @@ def test_hot_counts_raw_or_seasonally_adjusted_sales(cfg):
     b = analyze.evaluate("B", wavy, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
     assert a["label"] == "hot" and not a["hot"]["adjusted"]  # 原始销量就稳：不调整（调整反而会显得 8 月掉下去）
     assert b["label"] == "hot" and b["hot"]["adjusted"]
+
+
+def test_seasonal_items_are_listed_again_without_leaving_their_sections(cfg):
+    """季节性商品清单：自己去年同期也涨的突然爆火、带“品类季节性”的增长商品、按季节调整后才达标的持续热销再列一遍，
+    它们照样留在原板块；没有季节因素的、评分不达标的不列。"""
+    from radar.detect import seasonality
+    from radar.report import render
+
+    early_autumn = lambda m: 100 * {9: 1.6, 10: 2.2}.get(m, 1.0)
+    state = _with_history({"asins": {}}, "N1", _category_history(early_autumn))
+    rising = [10] * 92 + [20] * 28
+    yearly = [5] * 420  # 今年和去年同期都在最后 10 天涨到 18 件
+    for i in list(range(410, 420)) + list(range(46, 56)):
+        yearly[i] = 18
+    state["asins"] = {"CAT": {**_rec(rising, 4.5), "node": "N1"}, "FLAT": {**_rec(rising, 4.5), "node": "N2"},
+                      "OWN": {**_rec(yearly, 4.5), "node": "N2"}, "LOW": {**_rec(yearly, 3.5), "node": "N2"}}
+    items = analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]
+
+    th = cfg["thresholds"]
+    peak = lambda m: 100 * {7: 1.6, 8: 2.6, 9: 1.8}.get(m, 1.0)
+    season = seasonality.hot_levels(seasonality.profile(_category_history(peak), th["seasonality"]), END)
+    stats = {"N3": {"threshold": 900}}
+    wavy = {**_rec([60] * 120, 4.5), "node": "N3", "months": _months([1000 * x for x in (1.0, 1.0, 1.0, 1.6, 2.6, 1.8)])}
+    flat = {**_rec([40] * 120, 4.5), "node": "N3", "months": _months([1200] * 6)}
+    items += [analyze.evaluate(k, rec, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
+              for k, rec in (("ADJ", wavy), ("RAW", flat))]
+    by = {i["asin"]: i for i in items}
+    assert by["OWN"]["label"] == "surge" and by["LOW"]["label"] == "low" and by["CAT"]["rising"]
+    assert by["ADJ"]["hot"]["adjusted"] and by["RAW"]["label"] == "hot" and not by["RAW"]["hot"]["adjusted"]
+
+    sec = analyze.sections(items, 0)
+    assert [i["asin"] for i in sec["seasonal"]] == ["OWN", "CAT", "ADJ"] and sec["counts"]["seasonal"] == 3
+    assert {i["asin"] for i in sec["surge"]} == {"OWN"} and {i["asin"] for i in sec["hot"]} == {"ADJ", "RAW"}
+    assert [analyze.season_reasons(by[k]) for k in ("OWN", "CAT", "ADJ")] == [["own"], ["category"], ["hot_adjusted"]]
+    assert render.season_reason_text(by["OWN"], "own") == f"自己去年同期也涨了 ×{by['OWN']['surge']['last_year_ratio']:.1f}"
+    assert render.season_reason_text(by["CAT"], "category") == (
+        f"所在品类按往年规律这段时间本来就会涨 ×{by['CAT']['category_season']:.1f}")

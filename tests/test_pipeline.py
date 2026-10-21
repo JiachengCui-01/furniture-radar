@@ -99,6 +99,20 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
             h = item["hot"]
             assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]
     assert checked == {"surge", "potential", "hot"}
+    # 季节性商品：满足小窗里写的三条之一的都列出来，列出来的都仍在自己的板块里
+    sc = th["seasonality"]
+    listed = {i["asin"] for i in analyze.sections(items, 0)["seasonal"]}
+    for item in items:
+        own = item["label"] == "surge" and item["surge"]["seasonal"]
+        category = item["category_season"] is not None
+        adjusted = item["label"] == "hot" and item["hot"]["adjusted"]
+        assert (item["asin"] in listed) == (item["label"] not in ("fake", "low") and (own or category or adjusted))
+        if own:
+            assert item["surge"]["last_year_ratio"] >= s["seasonal_ratio"] and "季节性" in item["tags"]
+        if category:
+            assert item["label"] in ("surge", "potential") or item["rising"]
+            assert item["category_season"] >= sc["tag_ratio"] and any(t.startswith("品类季节性") for t in item["tags"])
+    assert listed  # 演示数据：书架有一个今年、去年同期都在涨的商品
     max_vars = th["fake"]["max_variations_for_ratio"]
     for item in items:  # 变体多的不算留评率；老品换链接不算新品评论/销量比
         codes = {sig["code"] for sig in item["fake"]["signals"]}

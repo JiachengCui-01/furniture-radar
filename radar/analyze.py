@@ -307,8 +307,9 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
 
 def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
     """季节性品类里的商品：item["season28"] = 按往年规律近 28 天品类是之前 28 天的几倍（开发方向扣除季节用）；
-    增长商品的对比窗口里品类本来就会涨 ≥ tag_ratio 倍的，标“品类季节性”，写明扣除季节后的倍数。"""
-    item["season28"] = None
+    增长商品的对比窗口里品类本来就会涨 ≥ tag_ratio 倍的，标“品类季节性”，写明扣除季节后的倍数
+    （item["category_season"] = 那个季节倍数，季节性商品清单用）。"""
+    item["season28"] = item["category_season"] = None
     as_of = clock.parse_day(item.get("as_of"))
     if not sc or not prof or not prof.get("seasonal") or as_of is None:
         return
@@ -327,6 +328,7 @@ def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
     else:
         return
     if expect is not None and expect >= float(sc["tag_ratio"]) - 1e-9:
+        item["category_season"] = expect
         rest = f"，扣除后 ×{ratio / expect:.1f}" if ratio else ""
         item["tags"].append(f"品类季节性（按往年规律，这段时间品类本来就是之前的 {expect:.1f} 倍{rest}）")
 
@@ -338,8 +340,27 @@ def _growth(item: dict) -> float:
     return (p.get("recent_ratio") or 1) - 1
 
 
+def season_reasons(item: dict) -> list[str]:
+    """季节性商品清单（不是板块：商品仍在自己的板块里，这里再列一遍）= 本期的判断和季节有关的，任一：
+      own：突然爆火，且这个商品自己去年同期同样的窗口也涨了 ≥ surge.seasonal_ratio 倍（标签“季节性”）；
+      category：增长商品，所在季节性品类按往年规律这段时间本来就会涨 ≥ seasonality.tag_ratio 倍（标签“品类季节性”）；
+      hot_adjusted：持续热销，原始销量不达标、按品类季节调整后才达标（卡片注明“已按品类季节调整”）。
+    异常信号、评分偏低的不列（它们不进任何榜单）。"""
+    if item["label"] in UNLISTED:
+        return []
+    out = []
+    if item["label"] == "surge" and (item.get("surge") or {}).get("seasonal"):
+        out.append("own")
+    if item.get("category_season"):
+        out.append("category")
+    if item["label"] == "hot" and (item.get("hot") or {}).get("adjusted"):
+        out.append("hot_adjusted")
+    return out
+
+
 def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
-    """每个板块按排序；top_n ≤ 0 时全部列出（报告小窗默认如此，免得顶部数字和小窗里的个数对不上）。"""
+    """每个板块按排序；top_n ≤ 0 时全部列出（报告小窗默认如此，免得顶部数字和小窗里的个数对不上）。
+    seasonal：季节性商品清单（season_reasons），按 突然爆火 → 潜力 → 上升中 → 持续热销、各自板块里的顺序排。"""
     def cut(rows: list[dict]) -> list[dict]:
         return rows if top_n <= 0 else rows[:top_n]
 
@@ -348,10 +369,18 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
     potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: -_growth(i))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
+    # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
+    rising = sorted((i for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
+                    key=lambda i: -i["rising"]["ratio"])
+    seasonal, seen = [], set()
+    for i in surge + potential + rising + hot:  # 上升中的持续热销两边都有，只列一次
+        if i["asin"] not in seen and season_reasons(i):
+            seen.add(i["asin"])
+            seasonal.append(i)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot),
+            "seasonal": cut(seasonal),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
-                       # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
-                       "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
+                       "rising": len(rising), "seasonal": len(seasonal),
                        "low": sum(1 for i in items if i["label"] == "low"), "total": len(items)}}
 
 

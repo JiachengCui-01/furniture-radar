@@ -10,13 +10,13 @@ import html
 import re
 
 from .. import shipping
-from ..analyze import display_name
+from ..analyze import display_name, season_reasons
 from ..detect import directions, events, seasonality
 from ..tracking import REASON_CN
 from .sparkline import HOVER_JS, bars, sparkline
 
 LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
-               "low": "muted", "rising": "accent"}
+               "low": "muted", "rising": "accent", "seasonal": "seasonal"}
 
 
 def esc(value) -> str:
@@ -101,10 +101,11 @@ def markdown(text: str, products: dict | None = None) -> str:
 
 CSS = """
 :root{--bg:#f5f6f8;--card:#fff;--text:#1c2230;--muted:#667085;--line:#e4e7ec;--chip:#f0f2f5;
---surge:#e8590c;--potential:#2b8a3e;--hot:#1c6dd0;--fake:#c92a2a;--accent:#1c6dd0;--spark:#1c6dd0;--hl:rgba(232,89,12,.10)}
+--surge:#e8590c;--potential:#2b8a3e;--hot:#1c6dd0;--fake:#c92a2a;--seasonal:#0b7285;--accent:#1c6dd0;--spark:#1c6dd0;
+--hl:rgba(232,89,12,.10)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#181c24;--text:#e6e8ec;
 --muted:#9aa3b2;--line:#2a303b;--chip:#232833;--surge:#ff8a4c;--potential:#5cc477;--hot:#6aa8ff;--fake:#ff6b6b;
---accent:#6aa8ff;--spark:#6aa8ff;--hl:rgba(255,138,76,.14)}}
+--seasonal:#3bc9db;--accent:#6aa8ff;--spark:#6aa8ff;--hl:rgba(255,138,76,.14)}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",
 "Microsoft YaHei","Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
@@ -113,12 +114,12 @@ header h1{font-size:22px;margin:4px 0 2px}
 .sub{color:var(--muted);font-size:13px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .chip{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted)}
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:14px 0}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;border-top:3px solid var(--c);
 font:inherit;color:inherit;text-align:left;width:100%}
 .kpi b{display:block;font-size:26px;line-height:1.2;color:var(--c)}
 .kpi span{font-size:13px;color:var(--muted)}
-@media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi:last-child:nth-child(odd){grid-column:span 2}}
 .kpi-hint{margin:-6px 0 0;font-size:12px}
 section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
 section>h2{font-size:18px;margin:0 0 4px;display:flex;align-items:center;gap:8px}
@@ -285,8 +286,9 @@ def _head(item: dict) -> str:
             f'<div class="meta">{meta}</div>')
 
 
-def card(item: dict, kind: str, group: str = "") -> str:
-    """kind：surge / potential / hot / fake / rising（决定展示哪些数字和走势图）；group：增长商品小窗里的归类。"""
+def card(item: dict, kind: str, group: str = "", notes: list[tuple[str, str]] = ()) -> str:
+    """kind：surge / potential / hot / fake / rising（决定展示哪些数字和走势图）；group：增长商品、季节性商品小窗里的归类；
+    notes：额外的 (小标题, 文字) 行，放在外观要点下面。"""
     c = LABEL_COLOR.get(kind, "muted")
     kv: list[str] = [f'<span class="grp">{esc(group)}</span>'] if group else []
     s = item.get("surge")
@@ -325,6 +327,7 @@ def card(item: dict, kind: str, group: str = "") -> str:
     chart = bars(item["monthly"][-12:]) if kind == "hot" else \
         sparkline(item.get("spark") or [], start=item.get("spark_start"))
     look = f'<div class="look"><em>外观</em>{esc(item["look"])}</div>' if item.get("look") else ""
+    look += "".join(f'<div class="look"><em>{esc(head)}</em>{esc(text)}</div>' for head, text in notes)
     signals = ""
     if item["fake"]["signals"] and kind in ("fake", "surge", "potential", "rising"):
         signals = "<ul class=\"signals\">" + "".join(
@@ -350,6 +353,30 @@ def _growth_pop(focus: list[dict], hint: str) -> str:
         cards.append(card(i, kind, GROUP_CN[kind]))
     body = "".join(cards) or '<div class="empty">本期没有增长商品。</div>'
     return _pop_src("growth", "增长商品", "potential", f'<p class="hint">{esc(hint)}</p><div class="cards">{body}</div>')
+
+
+def season_reason_text(item: dict, code: str) -> str:
+    """季节性商品清单里每条依据的文字（analyze.season_reasons），报告卡片和钉钉消息共用。"""
+    if code == "own":
+        return f"自己去年同期也涨了 ×{item['surge']['last_year_ratio']:.1f}"
+    if code == "category":
+        return f"所在品类按往年规律这段时间本来就会涨 ×{item['category_season']:.1f}"
+    return "原始销量不达标，按品类季节调整后才算持续热销"
+
+
+def _seasonal_pop(items: list[dict], seasons: dict, hint: str, total: int) -> str:
+    """季节性商品：每张卡片仍按它所在的板块展示（左上角写板块），下面写为什么列在这里、所在品类的季节。"""
+    cards = []
+    for i in items:
+        kind = i["label"] if i["label"] in ("surge", "potential") else "rising" if i.get("rising") else "hot"
+        why = "；".join(season_reason_text(i, code) for code in season_reasons(i))
+        cat = seasonality.verdicts(seasons.get(i.get("node"))) or ["还没有这个子类目的类目历史"]
+        cards.append(card(i, kind, GROUP_CN.get(kind, "持续热销"), [("季节", why), ("品类", cat[0])]))
+    more = f"（共 {total} 个，展示前 {len(items)} 个）" if total > len(items) else ""
+    body = "".join(cards) or '<div class="empty">本期没有判断和季节有关的商品。</div>'
+    link = '<p class="sub"><a href="#" data-pop="season">查看季节日历（全部子类目的旺季、淡季和接下来 6 个月）</a></p>'
+    return _pop_src("seasonal", "季节性商品", LABEL_COLOR["seasonal"],
+                    f'<p class="hint">{esc(hint)}{more}</p>{link}<div class="cards">{body}</div>')
 
 
 def _meter(share: float, base: float | None) -> str:
@@ -686,6 +713,12 @@ def section_hints(cfg: dict) -> dict[str, str]:
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
                   f"且 ≥{r['min_daily_sales']} 件、没有回落。“外观与工艺依据”就是从这些商品统计的。按势头排序。"
                   f"季节性品类里、按往年规律对比期间品类本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍的，标“品类季节性”并写明扣除季节后的倍数（见“数据说明”）。",
+        "seasonal": f"不是单独的板块：每个商品仍在自己的板块里（卡片左上角），这里把本期判断和季节有关的再列一遍，任一："
+                    f"① 突然爆火，且这个商品自己去年同期同样的窗口也涨了 ≥{s['seasonal_ratio']:g} 倍（标签“季节性”，要上架满一年才看得到）；"
+                    f"② 突然爆火 / 潜力 / 上升中，所在季节性品类按往年规律这段时间本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍（标签“品类季节性”）；"
+                    "③ 持续热销里原始销量不达标、按品类季节调整后才达标的（卡片注明“已按品类季节调整”）。"
+                    "异常信号和评分不达标的不列。按 突然爆火 → 潜力 → 上升中 → 持续热销 排，同一板块里的顺序和板块一样；"
+                    "“品类”一行是所在子类目的季节结论（季节性品类的定义见“季节日历”）。",
         "all": "本期追踪的全部商品。“板块”是本期归入的板块（观察 = 不属于任何板块），“来源”是它被选进追踪的原因。",
     }
 
@@ -742,6 +775,8 @@ def _method(cfg: dict) -> str:
 这种 28 天的短窗口，季节倍数 = (季节指数之比)^k：月度指数摊到 28 天会夸大，k 每期用卖家精灵数据现算（过去一年，季节性品类的指数之比 vs
 该子类目追踪商品实际 28 天变化的中位数，k = ln(实际) ÷ ln(指数之比) 的中位数，只用季节起伏 ≥5% 的样本），本期的 k 写在上面。
 只是标签，不影响上榜。回测：去年 12 月判出的突然爆火只有 52% 四周后还保持住，6~8 月是 84~86%。</li>
+<li><b>季节性商品</b>：顶部的“季节性商品”不是板块，商品不从原板块移走：带“季节性”的突然爆火、带“品类季节性”的增长商品、
+按品类季节调整后才达标的持续热销，在这里再列一遍，方便单独看。条件见点开后小窗顶部。</li>
 <li><b>老品换链接</b>：上架 ≤{th['relist']['max_age_days']} 天，且评论数 ≥ 这个 ASIN 自己累计销量（日数据里卖出的全部件数）的 {th['relist']['review_share']:.0%}，
 或评论数 ≥ 累计销量的 {th['relist']['review_share_fast']:.0%} 且第一周（从第一天卖出东西算起）日均 ≥ 近 7 天日均的 {th['relist']['fast_share']:.0%}（且 ≥{th['relist']['fast_min_daily']} 件）。
 多是新子体挂进老父体、或老品换了新 ASIN，继承了评论和排名，上架天数不代表商品是新的（正常留评率 1~3%，Vine 最多 30 条）。
@@ -774,7 +809,8 @@ def render(ctx: dict) -> str:
     hints = section_hints(cfg)
     kpi = "".join(
         f'<button type="button" class="kpi" data-pop="{k}" style="--c:var(--{k})"><b>{counts[k]}</b><span>{label}</span></button>'
-        for k, label in (("surge", "突然爆火"), ("potential", "潜力产品"), ("hot", "持续热销"), ("fake", "异常信号")))
+        for k, label in (("surge", "突然爆火"), ("potential", "潜力产品"), ("hot", "持续热销"), ("fake", "异常信号"),
+                         ("seasonal", "季节性商品")))
     cov = ctx["coverage"]
     facts = [f"月度名单 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
              f"追踪 {counts['total']} 个（本期刷新 {cov['refreshed']} 个）"]
@@ -800,6 +836,7 @@ def render(ctx: dict) -> str:
         _section_pop("hot", "持续热销", hints["hot"], sec["hot"], counts["hot"]),
         _section_pop("fake", "异常信号", hints["fake"], sec["fake"], counts["fake"]),
         _growth_pop(ctx.get("focus") or [], hints["growth"]),
+        _seasonal_pop(sec.get("seasonal") or [], ctx.get("seasons") or {}, hints["seasonal"], counts.get("seasonal", 0)),
         _season_pop(ctx),
         _pop_src("all", f"全部追踪商品（{counts['total']} 个）", "muted",
                  f'<p class="hint">{esc(hints["all"])}</p>{_all_table(ctx["items"])}'),
