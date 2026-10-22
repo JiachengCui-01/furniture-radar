@@ -60,3 +60,19 @@ def test_each_group_can_be_its_own_secret():
                                     ["SECa", "SECb", "", "SECd"])
     legacy = {"DINGTALK_WEBHOOK": "https://x/a,https://x/b", "DINGTALK_SECRET": "SECa"}
     assert dingtalk_robots(legacy) == (["https://x/a", "https://x/b"], ["SECa", ""])
+
+
+
+def test_revision_caveat_shows_in_the_message():
+    """靠最近几天才成立的判定（按修订幅度校正后不成立的），钉钉消息里那一行也提醒一句。"""
+    def item(asin, lost):
+        return {"asin": asin, "brand": "B", "title": f"{asin} Desk", "node_cn": "书桌", "tags": ["稳在高位"],
+                "surge": {"base_avg": 5, "recent_avg": 12, "sales_ratio": 2.4}, "revision_lost": lost}
+    counts = {"total": 2, "surge": 2, "potential": 0, "hot": 0, "fake": 0}
+    ctx = {"title": "雷达", "report_id": "2026-10-23", "as_of": "2026-10-22", "traits": {}, "diff": {"first": True},
+           "sections": {"surge": [item("A1", ["突然爆火"]), item("A2", [])], "potential": [], "fake": [], "seasonal": [],
+                        "counts": counts}}
+    text = dingtalk.build_text(ctx)
+    a1 = next(line for line in text.splitlines() if "A1" in line)
+    a2 = next(line for line in text.splitlines() if "A2" in line)
+    assert a1.endswith("（最近几天的数待修订，校正后不算突然爆火）") and "待修订" not in a2

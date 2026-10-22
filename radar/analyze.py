@@ -238,6 +238,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "potential": potential,
         "fake": fake,
         "relist": relist,
+        "fading": bool(mom and mom["fading"]),  # 回落规则成不成立（观察板块的“最近回落”标签只在有增长时才打）
         "spark": (full.sales[max(0, idx - 89): idx + 1] if idx is not None else []),
         "spark_start": full.day(max(0, idx - 89)).isoformat() if idx is not None else None,
         "monthly": [[k, s] for k, s in months[-12:]],
@@ -316,6 +317,9 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     rev = usable_revision(revision, th)
     if rev:  # 最近几天的数还会被改：按本期测到的幅度校正后重判一次，原来成立、校正后不成立的写明
         for item, (asin, rec) in zip(items, recs):
+            # 开发方向的增量和月销售额用校正后的近 28 天日均（去掉大促日，和 recent_avg28 同一口径）
+            fixed = Daily.from_record(revised_rec(rec, rev["window"], rev["median"])["series"]).without(ev["days"])
+            item["revised_avg28"] = _avg(fixed, fixed.as_of_index(), 28)
             if revision_sensitive(item):
                 alt = evaluate(asin, revised_rec(rec, rev["window"], rev["median"]), products.get(asin), stats, cfg, today,
                                data_date=data_date, events=ev["days"], season=hot_season(rec), threshold_month=threshold_month)
@@ -375,8 +379,8 @@ def lost_judgments(item: dict, alt: dict) -> list[str]:
         lost.append("上升中")
     if item["label"] == "hot" and not alt.get("hot"):
         lost.append("持续热销")
-    if _has_tag(item, "最近回落") and not _has_tag(alt, "最近回落"):
-        lost.append("最近回落")
+    if _has_tag(item, "最近回落") and not alt.get("fading"):
+        lost.append("最近回落")  # 比回落规则本身：校正后不再算增长的，“最近回落”标签也会消失，但它仍在往下走
     return lost
 
 

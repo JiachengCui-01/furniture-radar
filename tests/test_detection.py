@@ -723,3 +723,23 @@ def test_judgments_resting_on_recent_days_are_noted(cfg):
     for weak in ({**rev, "items": 10}, {**rev, "median": 0.99}, None):
         item = analyze.analyze(state, None, ["THIN"], cfg, END, revision=weak)["items"][0]
         assert not any(t.startswith("最近 9 天的数还会被改") for t in item["tags"])
+
+
+
+def test_falling_is_compared_by_the_rule_not_the_tag(cfg):
+    """“最近回落”比回落规则本身：观察板块的这个标签只在有增长时才打，校正后不再算增长时标签会消失，但它仍在往下走，
+    不能写成“校正后不算最近回落”（10-20 期数据里原来有 4 个这样写错的）。"""
+    sales = [10] * 92 + [16] * 19 + [15, 14, 13, 12, 11, 10, 9, 8, 7]
+    state = {"asins": {"F": _rec(sales, 4.5)}}
+    item = analyze.analyze(state, None, ["F"], cfg, END, revision={"window": 9, "median": 0.5, "items": 100})["items"][0]
+    assert item["label"] == "watch" and any(t.startswith("最近回落") for t in item["tags"]) and item["fading"]
+    assert "最近回落" not in item["revision_lost"]
+
+
+def test_direction_increment_uses_revised_recent_sales():
+    """开发方向的增量和月销售额：本期测到了日数据修订时，用最近几天按修订幅度校正后的近 28 天日均。"""
+    from radar.detect import directions
+
+    item = {"recent_avg28": 100, "prev_avg28": 50, "price": 10, "revised_avg28": 90}
+    assert directions.increment(item) == (90 - 50) * 10 * 30 and directions.monthly_sales(item) == 90 * 10 * 30
+    assert directions.increment({**item, "revised_avg28": None}) == (100 - 50) * 10 * 30

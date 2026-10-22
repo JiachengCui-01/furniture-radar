@@ -99,7 +99,9 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
 
     def item_line(item: dict, extra: str) -> str:
         node = item.get("node_cn") or item.get("node_name") or ""
-        return f"- {_short(display_name(item['brand'], item['title']), 36)}（{node}）{extra}"
+        # 按本期测到的修订幅度校正最近几天后不成立的判定：卡片上有完整说明，这里只提醒一句
+        caveat = f"（最近几天的数待修订，校正后不算{'、'.join(item['revision_lost'])}）" if item.get("revision_lost") else ""
+        return f"- {_short(display_name(item['brand'], item['title']), 36)}（{node}）{extra}{caveat}"
 
     if sec["surge"]:
         lines.append("**🚀 突然爆火**")
