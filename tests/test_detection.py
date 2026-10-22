@@ -570,3 +570,123 @@ def test_seasonal_products_are_listed_whatever_their_section(cfg):
     assert any(t.startswith("季节性（") for t in by["LOW"]["tags"])
     assert by["NOHIST"]["item_season"] is None and not by["FLAT"]["item_season"]["seasonal"]
     assert render.season_text(by["SMALL"]) == f"每年 11~12 月旺，旺季日均至少是前后淡季的 {ratio:.1f} 倍，离旺季还有 1 个月"
+
+
+def test_old_listing_starting_from_zero_is_not_called_new(cfg):
+    """从零起量的：上架 ≤180 天的叫新品爆发；更老的叫老链接重新起量（停了很久又开始卖，不是新品），门槛一样、照常算爆火。
+    回测：上架超过 1 年却被叫成新品的 11 个商品，之后 28 天 61% 保持住，和真新品的 65% 差不多。"""
+    jump = [0] * 113 + [60] * 7
+    state = {"asins": {
+        "N": _rec(jump, 4.6, available=(END - timedelta(days=60)).isoformat(), ratings=0),
+        "O": _rec(jump, 4.6, available=(END - timedelta(days=700)).isoformat(), ratings=0),
+        "S": _rec([0] * 113 + [8] * 7, 4.6, available=(END - timedelta(days=700)).isoformat(), ratings=0),
+    }}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]}
+    assert by["N"]["label"] == "surge" and by["N"]["surge"]["kind"] == "新品爆发" and by["N"]["tags"][0] == "新品爆发"
+    assert by["O"]["label"] == "surge" and by["O"]["surge"]["kind"] == "老链接重新起量"
+    assert by["O"]["tags"][0] == "老链接重新起量（上架 700 天，之前 28 天几乎没卖，不是新品）"
+    assert by["S"]["label"] != "surge" and "老链接重新起量（未达爆火门槛）" in by["S"]["tags"]
+    assert not any(t.startswith("新品") for t in by["O"]["tags"] + by["S"]["tags"])
+
+
+def test_short_comparison_period_is_written_on_the_card(cfg):
+    """对比期（之前 28 天）只算在卖的日子；在卖不到 14 天的照样判，卡片上写明天数
+    （回测：对比期 1~13 天的潜力之后 67~72% 保持住，对比期完整的 74%，并不更差）。"""
+    sales = [4] * 12 + [7] * 28  # 上架 39 天：之前 28 天里只有最早的 12 天在卖
+    start = END - timedelta(days=len(sales) - 1)
+    rec = {"series": {"start": start.isoformat(), "bsr": [bsr_of(s) for s in sales], "sales": sales,
+                      "price": [100.0] * len(sales)},
+           "available": start.isoformat(), "obs": [{"date": END.isoformat(), "ratings": 20, "rating": 4.6}],
+           "months": _months([150, 200])}
+    item = analyze.analyze({"asins": {"P": rec}}, None, ["P"], cfg, END)["items"][0]
+    assert item["label"] == "potential" and item["potential"]["base_in"] == 12
+    assert "对比期只有 12 天在卖（之前 28 天里其余日子没在卖）" in item["tags"]
+    full = _surge_item(cfg, [14] * 113 + [25, 28, 30, 33, 36, 38, 40])
+    assert full["label"] == "surge" and not any(t.startswith("对比期只有") for t in full["tags"])
+
+
+def test_hot_needs_enough_volume_even_in_a_tiny_node(cfg):
+    """小子类目的第 20 名可能一个月只卖几件（实测门槛为 0），所以达标的月份还要量够：≥150 件或销售额 ≥2 万美元。"""
+    th = cfg["thresholds"]["hot"]
+    assert evaluate_hot(_months([48, 50, 47, 49, 51, 48]), make([1.6] * 120), END, 0, th) is None  # 每月 50 件、$5000
+    assert evaluate_hot(_months([160] * 6), make([5.3] * 120), END, 0, th)
+    expensive = [[k, 100, 25000, 250] for k, *_ in _months([0] * 6)]  # 件数不到 150，但销售额 2.5 万
+    assert evaluate_hot(expensive, make([3.3] * 120), END, 0, th)
+
+
+def test_hot_that_is_falling_is_tagged(cfg):
+    """持续热销正在回落的标“最近回落”，不影响上榜（回测：这样的之后 28 天 61% 保持在近 28 天水平的 80% 以上，没回落的 85%）。"""
+    sales = [40] * 106 + [60, 62, 61, 60, 58, 40, 38, 35, 33, 30, 30, 29, 28, 28]
+    rec = {**_rec(sales, 4.5), "months": _months([1200, 1210, 1190, 1205, 1220, 1215]), "node": "N"}
+    item = analyze.evaluate("H1", rec, None, {"N": {"threshold": 900, "median_rate": 1.0}}, cfg, END)
+    assert item["label"] == "hot"
+    assert "最近回落（近7天中位数 30 件，再之前7天 60 件）" in item["tags"]
+    steady = {**_rec([40] * 120, 4.5), "months": rec["months"], "node": "N"}
+    item = analyze.evaluate("H2", steady, None, {"N": {"threshold": 900, "median_rate": 1.0}}, cfg, END)
+    assert item["label"] == "hot" and not any(t.startswith("最近回落") for t in item["tags"])
+
+
+def test_relisted_listing_compared_with_its_first_week_is_noted(cfg):
+    """老品换链接、对比期还包括它开卖第一周的爆火 / 上升中照样判，但写明起量里可能有老链接转过来的流量
+    （回测：这样的之后 28 天 84% 保持住，其他增长商品 71%，所以不排除）。"""
+    sales = [0] * 90 + [5, 5, 6, 6, 7, 8, 9] + [20] * 16 + [60] * 7  # 开卖 30 天，最近一周跳到 60
+    available = (END - timedelta(days=29)).isoformat()
+    state = {"asins": {"R": _rec(sales, 4.5, available=available, ratings=1500),
+                       "N": _rec(sales, 4.5, available=available, ratings=10)}}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, ["R", "N"], cfg, END)["items"]}
+    note = "对比期包括它开卖的第一周（老品换链接：起量里可能有老链接转过来的流量）"
+    assert by["R"]["relist"] and by["R"]["label"] == "surge" and note in by["R"]["tags"]
+    assert not by["N"]["relist"] and by["N"]["label"] == "surge" and note not in by["N"]["tags"]
+
+
+def _monthly_state(rows: dict, rolling: dict) -> dict:
+    """rows：{asin: [每月销量 × 6（4~9 月）]}，某个月是 None = 那个月不在名单里。"""
+    months = {}
+    for k, key in enumerate(["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]):
+        months[key] = {"N": {a: [u[k], u[k] * 100, 100, None] for a, u in rows.items() if u[k] is not None}}
+    return {"asins": {}, "monthly_lists": {"months": months, "rolling": {"date": END.isoformat(), "rows": rolling,
+                                                                         "nodes": ["N"]}}}
+
+
+def test_untracked_heads_are_judged_from_monthly_lists(cfg):
+    """持续热销的月度名单补判：不在追踪池的头部商品，近 6 个月每个月都在名单里、近 30 天名单也有它的，按同样的条件判；
+    某个月跌出名单、近 30 天名单里没有的看不到销量，不判；和追踪商品同一父体的不重复判。"""
+    steady = [1200, 1210, 1190, 1205, 1220, 1215]
+
+    def row(asin, units, rating=4.5, parent=None):
+        return {"asin": asin, "units": units, "rating": rating, "ratings": 500, "title": f"{asin} Nightstand",
+                "brand": "B", "price": 100, "parent": parent}
+
+    state = _monthly_state({"M1": steady, "M2": [None] + steady[1:], "M3": steady, "M4": steady, "M5": steady,
+                            "M6": [50] * 6},
+                           {"M1": row("M1", 1210), "M2": row("M2", 1210), "M4": row("M4", 1200, rating=3.9),
+                            "M5": row("M5", 1200, parent="P1"), "M6": row("M6", 50)})
+    disc = {"period": "202609", "nodes": [{"path": "N"}],
+            "products": {a: {"asin": a, "node": "N", "sources": ["top"], "units": 1215, "parent": "P1" if a == "M5" else None,
+                             "title": f"{a} Nightstand", "variations": 2}
+                         for a in ("M1", "M2", "M3", "M4", "M5", "M6", "T1")}}
+    disc["products"]["T1"]["parent"] = "P1"  # 追踪着的商品，和 M5 同一父体
+    stats = {"N": {"threshold": 900, "median_rate": 1.0}}
+    items, judged, status = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09")
+    assert [i["asin"] for i in items] == ["M1"] and set(judged) == {"M1", "M4", "M6"}
+    m1 = items[0]
+    assert m1["label"] == "hot" and not m1["daily"] and m1["as_of"] is None and m1["spark"] == []
+    assert m1["tags"][0] == "只有月度数据（不在追踪池：没有走势图，不判回落和脉冲）"
+    assert m1["recent_avg28"] == round(1210 / 30, 2) and m1["hot"]["months_hit"] == 4
+    assert status == {"months": 6, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1}
+    sec = analyze.sections([{"label": "watch", "asin": "T1"}, *items], 0)
+    assert sec["counts"]["total"] == 1 and sec["counts"]["hot"] == sec["counts"]["hot_monthly"] == 1
+    # 往月名单还没补齐时不补判
+    del state["monthly_lists"]["months"]["2026-04"]
+    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09")[0] == []
+
+
+def test_monthly_heads_seen_for_the_first_time_are_not_new_entries():
+    """补判出的持续热销上期没判过的不算“新进入”，单列；上期判过（没达标）这期达标的才算新进入。"""
+    from radar.detect import diff
+
+    prev = {"id": "P", "labels": {"A": ["watch", 0]}}
+    out = diff.compare(prev, {"A": "hot", "M1": "hot"}, monthly={"M1"})
+    assert out["new"]["hot"] == ["A"] and out["covered"] == ["M1"]
+    out = diff.compare({**prev, "monthly_judged": ["M1"]}, {"A": "hot", "M1": "hot"}, monthly={"M1"})
+    assert out["new"]["hot"] == ["A", "M1"] and out["covered"] == []

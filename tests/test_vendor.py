@@ -80,3 +80,22 @@ def test_rate_limit_waits_retries_and_refunds_budget():
     reply = vendor.call("product_research", request(marketplace="US", nodeIdPath="1"))
     assert reply.ok and len(transport.seen) == 3
     assert vendor.budget.used == 1 and vendor.billable_calls == 1  # 限流的两次不占预算
+
+
+def test_monthly_list_that_failed_is_fetched_again(cfg):
+    """往月名单某次调用被拒（参数错、服务出错）时不记成“这个月名单是空的”：下期接着补，补齐之前不补判。"""
+    from radar import monthly_lists
+
+    cfg["thresholds"]["hot"]["list_months"] = 2
+    nodes = [{"path": "1:A", "name": "A"}, {"path": "1:B", "name": "B"}]
+    disc = {"period": "202609", "nodes": nodes, "products": {}}
+    state = {"monthly_lists": {"months": {"2026-09": {"1:A": {}, "1:B": {}}}}}
+    rejected = json.dumps({"code": "ERROR_SERVER", "message": "服务繁忙", "data": None})
+    transport = Recorder([rejected, fixture_text("product_research"), fixture_text("product_research")])
+    vendor = Vendor(transport, Budget(10), live=False)
+    assert monthly_lists.backfill(vendor, cfg, state, disc, 10) == 2
+    assert set(state["monthly_lists"]["months"]["2026-08"]) == {"1:B"}
+    assert not monthly_lists.complete(state, nodes, "202609", 2)
+    vendor = Vendor(transport, Budget(10), live=False)  # 下一期
+    assert monthly_lists.backfill(vendor, cfg, state, disc, 10) == 1
+    assert monthly_lists.complete(state, nodes, "202609", 2) and state["monthly_lists"]["months"]["2026-08"]["1:A"]

@@ -195,6 +195,7 @@ def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
         "window": window,
         "recent_avg": recent_avg,
         "base_avg": base_avg or 0.0,
+        "base_in": len(base_sales),  # 对比期里在卖的天数
         "sales_ratio": (recent_avg / base_avg) if base_avg and base_avg > 0 else None,
         "recent_bsr": recent_bsr,
         "base_bsr": base_bsr,

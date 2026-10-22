@@ -54,9 +54,29 @@ def relisted(d: Daily | None, as_of_idx: int | None, ratings: float | None, age:
                 and first7 >= cfg["fast_share"] * last7 - 1e-9)
     if not (share >= cfg["review_share"] - 1e-9 or (fast and share >= cfg["review_share_fast"] - 1e-9)):
         return None
+    first = first_sale_index(d, as_of_idx)
     return {"ratings": int(ratings), "sales": int(round(total)), "share": round(share, 3), "fast": fast,
             "first7": None if first7 is None else round(first7, 1), "last7": None if last7 is None else round(last7, 1),
-            "age": age}
+            "age": age, "first_day": None if first is None else d.day(first).isoformat()}
+
+
+def first_sale_index(d: Daily, as_of_idx: int) -> int | None:
+    """日数据里第一天卖出东西的下标。"""
+    for k, v in enumerate(d.sales[: as_of_idx + 1]):
+        if v:
+            return k
+    return None
+
+
+def relist_ramp(d: Daily, as_of_idx: int, first_day: str | None, recent_days: int, cfg: dict) -> bool:
+    """老品换链接的对比期（近 recent_days 天之前的 28 天）里还包括它开卖的第一周（从第一天卖出东西算起的
+    ramp_days 天）：这段时间老链接的流量可能正在转过来，和它比出来的“暴涨”“上升”里有一部分是流量换了链接。
+    只标注、不影响上榜（回测：这样的爆火 / 上升中 之后 28 天 84% 保持住，比其他增长商品的 71% 还高）。"""
+    first, days = clock.parse_day(first_day), int(cfg.get("ramp_days", 7))
+    if first is None or days <= 0:
+        return False
+    base_start = d.day(as_of_idx - recent_days - 27)
+    return (first - base_start).days + days - 1 >= 0
 
 
 def relist_text(r: dict) -> str:
@@ -190,11 +210,14 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
 
 
 def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_threshold: float | None,
-                 cfg: dict, season: dict | None = None, threshold_month: str | None = None) -> dict | None:
-    """season：同子类目老链接（不含这个商品自己）的销量水平 {"months": {"2026-04": 日均合计, …}, "recent": 近 28 天日均合计,
-    "n": 个数}（detect/seasonality.py 的 month_levels / others）。有、且 cfg["deseasonalize"] 时先按品类季节调整：
-    每个月的销量 × (这 6 个月品类平均水平 ÷ 当月品类水平)，近 28 天同样调整；门槛线（threshold_month 那个月的子类目第 N 名）
-    也调到 6 个月平均水平。调整后再看下面四条。"""
+                 cfg: dict, season: dict | None = None, threshold_month: str | None = None,
+                 recent_daily: float | None = None) -> dict | None:
+    """months：[[YYYY-MM, 月销量, 月销售额, 价格]]。
+    season：所在子类目的季节指数 {"months": {"2026-04": 指数, …}, "recent": 近 28 天的指数, "n": 年数}
+    （detect/seasonality.py 的 hot_levels）。有、且 cfg["deseasonalize"] 时先按品类季节调整：
+    每个月的销量 × (这 6 个月指数的平均 ÷ 当月指数)，近 28 天同样调整；门槛线（threshold_month 那个月的子类目第 N 名）
+    也调到 6 个月平均水平。调整后再看下面几条。
+    recent_daily：没有日数据（d 为空）时的近期日均（月度名单补判用近 30 天名单的销量 ÷ 30）。"""
     closed = closed_months(months, as_of)
     look = closed[-cfg["lookback_months"]:]
     if node_threshold is None or len(look) < cfg["months_required"]:
@@ -211,16 +234,24 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
     threshold = node_threshold
     if adjusted and threshold_month and level.get(threshold_month):
         threshold = node_threshold * avg_level / level[threshold_month]
-    hits = sum(1 for k, s in look if adj(k, s) >= threshold)
+    # 量够：小子类目的第 N 名可能一个月只卖几件（实测有门槛为 0 的），所以这个月还要 ≥ min_units 件或 ≥ min_revenue 美元
+    revenue = {row[0]: row[2] for row in months or [] if len(row) > 2 and row[2] is not None}
+
+    def enough(key: str, units: float) -> bool:
+        money = revenue.get(key)
+        return (units >= float(cfg.get("min_units", 0)) - 1e-9
+                or (money is not None and adj(key, float(money)) >= float(cfg.get("min_revenue") or math.inf) - 1e-9))
+
+    hits = sum(1 for k, s in look if adj(k, s) >= threshold and enough(k, adj(k, s)))
     six = [adj(k, s) for k, s in closed[-6:]]
     variation = cv(six)
     trend = log_growth([adj(k, s) for k, s in closed[-3:]])
     six_daily = mean([daily_avg_of_month(k, adj(k, s)) for k, s in closed[-6:]])
-    recent = None
+    recent = recent_daily
     if d is not None and as_of is not None:
         recent = mean(d.window("sales", d.index_of(as_of), 28))
-        if recent is not None and adjusted:
-            recent = recent * avg_level / season["recent"]
+    if recent is not None and adjusted:
+        recent = recent * avg_level / season["recent"]
     recent_ratio = (recent / six_daily) if recent is not None and six_daily else None
 
     ok = (
@@ -261,7 +292,8 @@ def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: flo
         return None
 
     # 近 28 天 vs 再之前 28 天（不重叠，断货 / 还没开卖的日子不算），外加完整月份的月环比
-    prev28 = mean(d.in_stock_window("sales", idx - 28, 28, oos_bsr))
+    base = d.in_stock_window("sales", idx - 28, 28, oos_bsr)
+    prev28 = mean(base)
     recent_ratio = avg28 / prev28 if prev28 else None
     launch_month = clock.month_key(available)
     full = [(k, s) for k, s in closed_months(rec.get("months") or [], as_of) if k > launch_month]
@@ -275,6 +307,7 @@ def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: flo
         "growth": None if growth is None else round(growth, 3),
         "recent_ratio": None if recent_ratio is None else round(recent_ratio, 2),
         "avg28": round(avg28, 2),
+        "base_in": len(base),  # 之前 28 天里在卖的天数
         "ratings": ratings,
         "rating": rating,
     }

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import analyze, category_history, clock, crypto, discovery, log, materials, narrative, store, tracking, verify, vision
+from . import (analyze, category_history, clock, crypto, discovery, log, materials, monthly_lists, narrative, store,
+               tracking, verify, vision)
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
 from .detect import directions
@@ -44,11 +45,27 @@ def is_due(state: dict, cfg: dict, now_utc: datetime) -> tuple[bool, str]:
 
 
 def needs_discovery(state: dict, cfg: dict, today) -> bool:
-    """本期要不要重新发现（首期、换了监控范围、新的月份数据）：要的话给更多预算。"""
+    """本期要不要重新发现（首期、换了监控范围、新的月份数据、月初拉的名单该重拉了）：要的话给更多预算。"""
     current = state.get("discovery")
     return (not state.get("asins") or not current or not current.get("complete")
             or current.get("scope_key") != discovery.scope_key(cfg)
-            or current.get("period", "") < clock.closed_period(today))
+            or current.get("period", "") < clock.closed_period(today)
+            or needs_refresh(current, cfg, today))
+
+
+def needs_refresh(current: dict | None, cfg: dict, today) -> bool:
+    """月度名单是月份结束后不到 discovery.settle_days 天拉的、现在已经过了这么多天：重新拉一次。
+    卖家精灵的上月名单在月初还没更新完：实测 10-09 拉的 9 月名单里，衣帽架 31 个商品的 9 月销量还是 8 月的数，
+    10-22 再拉全部更新了、和日数据接口一致（9 月名单整体约两成商品 8、9 月销量一模一样，其他相邻月份只有零销量的这样）。"""
+    settle = int(cfg["discovery"].get("settle_days") or 0)
+    if not settle or not current or not current.get("complete") or current.get("settled"):
+        return False
+    period = str(current.get("period") or "")
+    fetched = clock.parse_day(current.get("fetched_on") or current.get("fetched_at"))  # 拉名单那天（美国时间）
+    if len(period) != 6 or period != clock.closed_period(today) or fetched is None:
+        return False
+    end = date(int(period[:4]), int(period[4:]), clock.days_in_month(f"{period[:4]}-{period[4:]}"))
+    return (fetched - end).days < settle <= (today - end).days
 
 
 def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | None:
@@ -61,6 +78,14 @@ def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | No
         state["risers"] = None
     if pending and pending.get("scope_key") != key:
         state["discovery_pending"] = pending = None
+    if needs_refresh(current, cfg, today):
+        log.info(f"发现：{current['period']} 的名单是月初拉的（卖家精灵那时还没更新完），重新拉一次")
+        result = discovery.discover(vendor, cfg, current["period"], None)
+        if result and result["complete"]:
+            result["settled"], result["fetched_on"] = True, today.isoformat()
+            state["discovery"] = current = result
+        else:
+            log.warn("发现：重新拉名单时预算不够，先用原来的，下期再拉")
     if current and current.get("complete") and current["period"] >= target:
         return current
     for period in (target, clock.step_period(target, -1)):
@@ -75,6 +100,7 @@ def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | No
         if result is None:
             log.info(f"发现：{period} 的月度数据尚未发布")
             continue
+        result["fetched_on"] = today.isoformat()
         if result["complete"]:
             state["discovery"], state["discovery_pending"] = result, None
         else:
@@ -145,6 +171,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     # 1. 发现（月度基线）+ 近 30 天榜单（每期刷新）+ 上期爆款的相似款
     disc = ensure_discovery(vendor, cfg, state, today)
     category_history.record_discovery(state, disc)  # 月度发现查的就是上个月的类目销量，顺手记进季节历史
+    monthly_lists.record_discovery(state, disc)  # 月度发现的头部名单也是持续热销补判的当月名单
     if disc and disc.get("nodes"):
         try:
             state["risers"] = {"run": run_seq, "date": today.isoformat(),
@@ -174,11 +201,20 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         log.warn("追踪阶段预算用完")
     log.info(f"刷新日数据 {refreshed}/{len(plan)} 个")
 
-    # 类目月度历史（季节模型的数据）：只用核心刷新做完后剩下的预算，给核查和材质查询留出 reserve
+    # 核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
+    #   持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
     if disc and disc.get("nodes"):
-        spare = min(int(bcfg.get("history_calls", 0)), max(0, vendor.budget.remaining - reserve))
-        if spare:
-            category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare)
+        def spare(cap: int) -> int:
+            return min(cap, max(0, vendor.budget.remaining - reserve))
+
+        months = int(cfg["thresholds"]["hot"].get("list_months", 6))
+        lists_ready = monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months)
+        if lists_ready and spare(len(disc["nodes"])):
+            monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
+        if spare(int(bcfg.get("history_calls", 0))):
+            category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare(int(bcfg.get("history_calls", 0))))
+        if not lists_ready and spare(int(bcfg.get("monthly_list_calls", 0))):
+            monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
 
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)
@@ -190,6 +226,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         if checked:
             result = analyze.analyze(state, disc, pool, cfg, today, extra_rows)
     items = result["items"]
+    remember_monthly(state, items, disc, run_seq)
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     prev_run = state["runs"][-1] if state.get("runs") else None
 
@@ -208,7 +245,8 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
-                       seasons=result.get("seasons"), calibration=result.get("season_calibration"))
+                       seasons=result.get("seasons"), calibration=result.get("season_calibration"),
+                       monthly=result.get("monthly_status"), monthly_judged=result.get("monthly_judged"))
     key_text = ctx["key_text"]
     sec = ctx["sections"]
 
@@ -233,7 +271,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
     # 轮查靠它排先后。很久没进池的整条删除。
     for asin, rec in list(state["asins"].items()):
-        last = int(rec.get("last_pool_run", 0))
+        last = max(int(rec.get("last_pool_run", 0)), int(rec.get("monthly_run", 0)))
         if last < run_seq - FORGET_RUNS:
             del state["asins"][asin]
         elif last < run_seq:
@@ -250,6 +288,17 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     if notify:
         out.notified = send_last(cfg, secrets, site)
     return out
+
+
+def remember_monthly(state: dict, items: list[dict], disc: dict | None, run_seq: int) -> None:
+    """月度名单补判出的持续热销也记进 state["asins"]（不拉日数据），主材质查询和主图识别的结果才能缓存下来、下期接着用。"""
+    products = (disc or {}).get("products") or {}
+    for item in items:
+        if item.get("daily", True):
+            continue
+        rec = state["asins"].setdefault(item["asin"], {"asin": item["asin"], "obs": []})
+        tracking.remember_meta(rec, products.get(item["asin"]))
+        rec["monthly_run"] = run_seq
 
 
 def refresh_similar(vendor: Vendor, cfg: dict, state: dict, disc: dict, run_seq: int) -> None:
@@ -291,7 +340,8 @@ def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
                  prev_run: dict | None, coverage: dict, today, events: dict | None = None,
-                 seasons: dict | None = None, calibration: dict | None = None) -> dict:
+                 seasons: dict | None = None, calibration: dict | None = None, monthly: dict | None = None,
+                 monthly_judged: list[str] | None = None) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
     events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；seasons：各子类目的品类季节（同上）。"""
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
@@ -316,11 +366,11 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     for item in items:
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
-        item["look"] = (rec.get("vision") or {}).get("summary") or ""
+        item["look"] = vision.of(state, item["asin"]).get("summary") or ""
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc, seasons=seasons)
 
     labels = {i["asin"]: i["label"] for i in items}
-    as_of_values = [i["as_of"] for i in items if i.get("as_of")]
+    as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]
     key_text = crypto.report_key_text(master, report_id)
     log.mask(key_text)
     ctx = {
@@ -337,7 +387,9 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "sections": sec,
         "traits": trait,
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)
-                                else None, labels),
+                                else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)}),
+        "monthly": monthly or {},
+        "monthly_judged": monthly_judged or [],
         "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
         "cfg": cfg,
         "top_n": int(cfg["report"]["top_n"]),
@@ -379,6 +431,7 @@ def point_to_latest(cfg: dict, site: Path, report_ids: list[str]) -> None:
 def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
     return {
         "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels,
+        "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity")},
@@ -402,6 +455,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     extra_rows = tracking.fresh_rows(state)
     result = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows)
     items = result["items"]
+    remember_monthly(state, items, disc, last["seq"])
     coverage = last.get("coverage") or {}
     if not coverage:
         month = (last.get("date") or "")[:7]
@@ -413,7 +467,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                                                                             cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
                        prev_run=state["runs"][-2] if len(state["runs"]) >= 2 else None, coverage=coverage,
                        today=today, events=result.get("events"), seasons=result.get("seasons"),
-                       calibration=result.get("season_calibration"))
+                       calibration=result.get("season_calibration"), monthly=result.get("monthly_status"),
+                       monthly_judged=result.get("monthly_judged"))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)

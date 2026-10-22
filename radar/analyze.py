@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from . import category_history, clock
+from . import category_history, clock, monthly_lists
 from .detect import events as events_mod
 from .detect import fakehot, seasonality, traits
 from .detect.design import main_material
 from .discovery import clean_text
 from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
-                           momentum, rating_floor, relist_text, relisted)
+                           momentum, rating_floor, relist_ramp, relist_text, relisted)
 from .series import Daily, closed_months, median
 
 def display_name(brand: str, title: str) -> str:
@@ -59,9 +59,11 @@ def _last(values: list):
 
 
 def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dict, st: dict, th: dict,
-                  stale: bool, relist: dict | None = None) -> dict:
+                  stale: bool, relist: dict | None = None, age: int | None = None) -> dict:
     """突然爆火（及断货恢复 / 新品起量 / 形态不稳）、潜力、上升中、回落：都在同一份日数据上判断。
-    relist：老品换链接（rules.relisted）——上架天数不代表商品是新的，不算潜力、新品爆发、新品起量。"""
+    relist：老品换链接（rules.relisted）——上架天数不代表商品是新的，不算潜力、新品爆发、新品起量。
+    age：上架天数。“从零起量”的只有上架 ≤ new_listing_max_age_days 天的叫新品爆发 / 新品起量，
+         更老的叫老链接重新起量（停了很久又开始卖，不是新品；回测：之后照样在涨，所以照常算爆火，只是名字不同）。"""
     oos = th.get("out_of_stock_bsr")
     surge = evaluate_surge(d, idx, th["surge"], oos) if idx is not None else None
     restock = None
@@ -69,6 +71,8 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         restock, surge = surge, None
     if surge and surge.get("from_zero") and relist:
         surge = None  # “从零起量”只是新子体开始卖，销量是从老链接转过来的
+    max_new = th["surge"].get("new_listing_max_age_days")
+    revived = bool(surge and surge.get("from_zero") and max_new is not None and (age is None or age > max_new))
     new_ramp = None
     if surge and surge.get("from_zero"):
         sc = th["surge"]
@@ -76,6 +80,8 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         need = max(sc["new_listing_min_daily"], sc["new_listing_node_share"] * node_daily)
         if surge["recent_avg"] < need:
             new_ramp, surge = surge, None
+    if surge and revived:
+        surge = {**surge, "kind": "老链接重新起量"}
     unshaped = None
     if surge and not surge["kind"]:  # 不符合任何一种爆火形态
         unshaped, surge = surge, None
@@ -89,7 +95,8 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         avg28, prev28 = _avg(d, idx, 28), _avg(d, idx - 28, 28, oos)
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
-            rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28}
+            rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28, "window": 28,
+                      "base_in": len(d.in_stock_window("sales", idx - 28, 28, oos))}
     # 短时脉冲把近 28 天日均撑高了，不是持续的增长：也不算潜力 / 上升中
     if unshaped and unshaped.get("pulse"):
         potential = rising = None
@@ -99,7 +106,7 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     if faded:
         surge = potential = rising = None
     return {"surge": surge, "restock": restock, "new_ramp": new_ramp, "unshaped": unshaped,
-            "potential": potential, "rising": rising, "mom": mom, "faded": faded}
+            "potential": potential, "rising": rising, "mom": mom, "faded": faded, "revived": revived}
 
 
 def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
@@ -122,12 +129,12 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     age = clock.days_between(clock.parse_day(rec.get("available")), as_of or today)
     relist = relisted(full, idx, n_ratings, age, th["relist"]) if th.get("relist") else None
 
-    g = _judge_growth(d, idx, as_of, rec, st, th, stale, relist)
+    g = _judge_growth(d, idx, as_of, rec, st, th, stale, relist, age)
     # 大促拉动：近 56 天里有大促日、这个商品自己在大促日冲高了，而且算上大促日能达到爆火 / 潜力 / 上升中、去掉就达不到
     deal_lift = False
     if d is not full and idx is not None and not (g["surge"] or g["potential"] or g["rising"]) \
             and _spiked_on_events(full, idx, events, th["events"]):
-        g_full = _judge_growth(full, idx, as_of, rec, st, th, stale, relist)
+        g_full = _judge_growth(full, idx, as_of, rec, st, th, stale, relist, age)
         deal_lift = bool(g_full["surge"] or g_full["potential"] or g_full["rising"])
     surge, restock, new_ramp, unshaped = g["surge"], g["restock"], g["new_ramp"], g["unshaped"]
     potential, rising, mom, faded = g["potential"], g["rising"], g["mom"], g["faded"]
@@ -157,12 +164,22 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         few = f"评论仅 {int(n_ratings)} 条，" if floor > th["min_rating"] else ""
         tags.append(f"{few}评分 {rating} 低于 {floor}")
     if surge:
-        tags.append(surge["kind"])
+        tags.append(surge["kind"] if surge["kind"] != "老链接重新起量"
+                    else f"老链接重新起量（上架 {age if age is not None else '天数未知'}{' 天' if age is not None else ''}，"
+                         f"之前 28 天几乎没卖，不是新品）")
         if surge["price_driven"]:
             tags.append("降价驱动")
     if rising and label in ("watch", "hot"):
         tags.append(f"上升中（近28天 ×{rising['ratio']:.1f}）")
-    if faded:
+    # 对比期在卖的天数少（刚开卖或断过货）：照样判，但写明天数（回测：这样的潜力 / 上升中之后保持得不比对比期完整的差）
+    shown = surge if label == "surge" else potential if label == "potential" else rising if rising and label in ("watch", "hot") else None
+    short = int(th.get("short_base_days") or 0)
+    if shown and not shown.get("from_zero") and shown.get("base_in") is not None and shown["base_in"] < short:
+        tags.append(f"对比期只有 {shown['base_in']} 天在卖（之前 28 天里其余日子没在卖）")
+    # 老品换链接、对比期还包括它开卖的第一周：照样判（回测：之后照样卖得好），但起量里可能有老链接转过来的流量
+    if relist and shown is not None and shown is not potential             and relist_ramp(d, idx, relist.get("first_day"), shown.get("window") or 28, th["relist"]):
+        tags.append("对比期包括它开卖的第一周（老品换链接：起量里可能有老链接转过来的流量）")
+    if faded or (hot and mom and mom["fading"]):  # 持续热销正在回落的也标出来，但不影响上榜
         why = []
         if mom["falling"]:
             why.append(f"最近3天日均 {mom['avg3']:.1f} 件，再之前3天 {mom['prev3']:.1f} 件，近4周最高的3天 {mom['peak3']:.1f} 件")
@@ -177,7 +194,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if restock:
         tags.append("断货恢复")
     if new_ramp:
-        tags.append("新品起量（未达爆火门槛）")
+        tags.append("老链接重新起量（未达爆火门槛）" if g["revived"] else "新品起量（未达爆火门槛）")
     if deal_lift:
         tags.append("大促拉动（去掉大促日后不达标）")
     if relist:
@@ -300,8 +317,84 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
         _item_season(item, rec, profiles.get(item.get("node")), ev["days"], sc, th.get("out_of_stock_bsr"))
     seasons = ({path: seasonality.outlook(prof, data_date, sc) for path, prof in profiles.items()}
                if sc and data_date else {})
+    monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, profiles, threshold_month)
+    items += monthly
     return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date, "seasons": seasons,
-            "profiles": profiles, "season_calibration": calibration}
+            "profiles": profiles, "season_calibration": calibration, "monthly_judged": judged, "monthly_status": status}
+
+
+def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, data_date: date | None,
+                      tracked: list[dict], profiles: dict, threshold_month: str | None) -> tuple[list[dict], list[str], dict]:
+    """持续热销的月度名单补判（monthly_lists.py）：本期月度名单里、不在追踪池（同一父体也不算）的商品，
+    近 list_months 个月每个月都在子类目销售额前 50（往月名单）、近 30 天名单里也有它的，按同一套持续热销条件判，
+    近 28 天日均用近 30 天名单的销量 ÷ 30。评分不达标的不列。
+    返回 (达标的商品, 判过的 ASIN, 状态 {"months": 已齐的月数, "need": 要几个月, "rolling": 近 30 天名单查了几个子类目, "judged", "listed"})。
+    没有日数据：没有走势图，不判回落，异常分只有留评率一项。"""
+    th = cfg["thresholds"]
+    n = int(th["hot"].get("list_months", 6))
+    status = {"months": 0, "need": n, "rolling": 0, "nodes": len((disc or {}).get("nodes") or []), "judged": 0, "listed": 0}
+    if not disc or not disc.get("nodes") or not data_date or len(str(disc.get("period") or "")) != 6:
+        return [], [], status
+    period = str(disc["period"])
+    keys = monthly_lists.month_keys(period, n)
+    have = (state.get("monthly_lists") or {}).get("months") or {}
+    status["months"] = sum(1 for k in keys if all(nd["path"] in (have.get(k) or {}) for nd in disc["nodes"]))
+    rolling = (state.get("monthly_lists") or {}).get("rolling") or {}
+    status["rolling"] = len(rolling.get("nodes") or [])
+    if status["months"] < n or not rolling.get("rows"):
+        return [], [], status
+    products = disc.get("products") or {}
+
+    def parent_of(asin: str) -> str:
+        return (products.get(asin) or {}).get("parent") or (state["asins"].get(asin) or {}).get("parent") or asin
+
+    taken = {i["asin"] for i in tracked} | {parent_of(i["asin"]) for i in tracked}
+    by_parent = {r.get("parent") or r["asin"]: r for r in rolling["rows"].values()}
+    out, judged = [], []
+    for p in sorted(products.values(), key=lambda r: -(r.get("units") or 0)):
+        key = p.get("parent") or p["asin"]
+        if "top" not in p["sources"] or p["asin"] in taken or key in taken or p["node"] not in stats:
+            continue
+        taken.add(key)
+        r = rolling["rows"].get(p["asin"]) or by_parent.get(key)
+        months = monthly_lists.months_of(state, p["node"], p["asin"], p.get("parent"), keys)
+        if r is None or months is None:
+            continue  # 近 30 天或某个月跌出了子类目销售额前 50：看不到销量，不判
+        judged.append(p["asin"])
+        rating, n_ratings = r.get("rating") or p.get("rating"), r.get("ratings") or p.get("ratings")
+        if low_rating(rating, n_ratings, th):
+            continue
+        threshold = stats[p["node"]].get("threshold")
+        recent = (r.get("units") or 0) / 30
+        hot = evaluate_hot(months, None, data_date, threshold, th["hot"], recent_daily=recent)
+        season = seasonality.hot_levels(profiles.get(p["node"]), data_date) if th["hot"].get("deseasonalize") else None
+        if not hot and season:
+            hot = evaluate_hot(months, None, data_date, threshold, th["hot"], season, threshold_month, recent_daily=recent)
+        if not hot:
+            continue
+        rec = dict(state["asins"].get(p["asin"]) or {})
+        if rec.get("variations") is None:
+            rec["variations"] = p.get("variations")  # 变体多的评论是父体共享的，不算留评率
+        fake = fakehot.score(rec, None, None, p, stats[p["node"]].get("median_rate"), th["fake"])
+        if fake["level"]:
+            continue
+        title = clean_text(r.get("title") or p.get("title") or p["asin"])
+        out.append({
+            "asin": p["asin"], "title": title, "brand": clean_text(r.get("brand") or p.get("brand") or ""),
+            "image": r.get("image") or p.get("image") or "", "node": p["node"], "node_name": p.get("node_name") or "",
+            "node_cn": p.get("node_cn") or "", "price": r.get("price") or p.get("price"), "bsr": r.get("bsr"),
+            "rating": rating, "ratings": n_ratings, "variations": r.get("variations") or p.get("variations"),
+            "age_days": clock.days_between(clock.parse_day(p.get("available")), data_date),
+            "as_of": None, "stale": False, "label": "hot", "label_cn": LABEL_CN["hot"],
+            "tags": ["只有月度数据（不在追踪池：没有走势图，不判回落和脉冲）"] + fake["tags"],
+            "surge": None, "restock": None, "rising": None, "material": main_material(title), "hot": hot,
+            "potential": None, "fake": fake, "relist": None, "spark": [], "spark_start": None,
+            "monthly": [[k, u] for k, u, *_ in months], "recent_avg7": None, "recent_avg28": round(recent, 2),
+            "prev_avg28": None, "pkg": r.get("pkg") or p.get("pkg"), "fetched_run": None, "source": "monthly",
+            "daily": False, "season28": None, "item_season": None,
+        })
+    status.update(judged=len(judged), listed=len(out))
+    return out, judged, status
 
 
 def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
@@ -378,7 +471,10 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                        # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
                        "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
                        "seasonal": len(seasonal),
-                       "low": sum(1 for i in items if i["label"] == "low"), "total": len(items)}}
+                       "low": sum(1 for i in items if i["label"] == "low"),
+                       # 追踪的商品数（月度名单补判的持续热销没有日数据，不算追踪）
+                       "total": sum(1 for i in items if i.get("daily", True)),
+                       "hot_monthly": sum(1 for i in hot if not i.get("daily", True))}}
 
 
 def focus_items(items: list[dict]) -> list[dict]:

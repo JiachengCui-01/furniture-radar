@@ -60,7 +60,7 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
     from radar import analyze, clock, tracking
     from radar.detect import seasonality
     from radar.detect.rules import low_rating, momentum
-    from radar.series import Daily
+    from radar.series import Daily, closed_months
 
     _world, _secrets, site, _first, _second = world_run
     state = store.load(site, crypto.parse_master_key(master_key))
@@ -71,8 +71,8 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
     th, s = cfg["thresholds"], cfg["thresholds"]["surge"]
     checked = set()
     for item in items:
-        if item["label"] not in ("surge", "potential", "hot"):
-            continue
+        if item["label"] not in ("surge", "potential", "hot") or not item.get("daily", True):
+            continue  # 月度名单补判的另有测试（test_untracked_heads_are_judged_from_monthly_lists）
         checked.add(item["label"])
         assert item["fake"]["score"] < th["fake"]["suspect_score"]
         assert not low_rating(item["rating"], item["ratings"], th)
@@ -91,8 +91,14 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
             elif kind == "仍在上涨":
                 assert g["week_ratio"] >= s["climb_ratio"] and g["last3_ratio"] > 1
             else:
-                assert kind == "新品爆发" and g["from_zero"] and not item["relist"]
+                assert kind in ("新品爆发", "老链接重新起量") and g["from_zero"] and not item["relist"]
+                old = item["age_days"] is None or item["age_days"] > s["new_listing_max_age_days"]
+                assert (kind == "老链接重新起量") == old  # 上架 ≤180 天的才叫新品
             assert "持续热销" not in item["tags"]  # 同时符合热销条件的写“长期头部”，不和“突然爆火”矛盾
+        shown = item["surge"] if item["label"] == "surge" else item["potential"] if item["label"] == "potential" else None
+        if shown is not None:  # 对比期在卖不到 14 天的写明天数（新品爆发本来就是之前没卖，不写）
+            short = not shown.get("from_zero") and shown["base_in"] < th["short_base_days"]
+            assert short == any(t.startswith("对比期只有") for t in item["tags"]), item["asin"]
         if item["label"] == "potential":
             p = item["potential"]
             assert not item["relist"]  # 老品换链接不算潜力
@@ -101,6 +107,15 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
         if item["label"] == "hot":
             h = item["hot"]
             assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]
+            months = state["asins"][item["asin"]].get("months") or []
+            if not h["adjusted"]:  # 达标的月份：≥ 子类目第 20 名，且量够（≥150 件或 ≥2 万美元）
+                look = closed_months(months, full.as_of())[-th["hot"]["lookback_months"]:]
+                money = {m[0]: m[2] for m in months}
+                hits = sum(1 for k, u in look if u >= h["threshold"] - 0.05
+                           and (u >= th["hot"]["min_units"] or (money.get(k) or 0) >= th["hot"]["min_revenue"]))
+                assert hits == h["months_hit"], item["asin"]
+            # 持续热销正在回落的标“最近回落”（不影响上榜）
+            assert mom["fading"] == any(t.startswith("最近回落") for t in item["tags"]), item["asin"]
     assert checked == {"surge", "potential", "hot"}
     # 季节性商品：小窗里写的四条，从每个商品的每月日均重新核对；符合的（异常信号、评分不达标除外）都列出来
     sc = th["seasonality"]
@@ -348,3 +363,75 @@ def test_local_runs_derive_pages_url_from_git_remote(cfg, monkeypatch):
         assert config_mod.report_base_url(cfg, Secrets()) == "https://jiachengcui-01.github.io/furniture-radar/"
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="https://gitee.com/a/b.git"))
     assert config_mod.report_base_url(cfg, Secrets()) == ""
+
+
+def test_untracked_heads_are_judged_from_monthly_lists(cfg, master_key, tmp_path):
+    """追踪池装不下的头部商品，用往月名单 + 近 30 天名单补判持续热销：第一期补往月名单，第二期开始判。
+    补判的商品只在持续热销里（标“只有月度数据”），不算追踪商品、不进“全部追踪商品”，每个都符合写出来的条件。"""
+    from radar import analyze, clock, monthly_lists, tracking
+    from radar.series import closed_months, cv, log_growth
+
+    cfg["budget"].update(per_run=400, bootstrap_run=400, monthly_list_calls=200)
+    cfg["pool"].update(max_size=12, core_max=12)
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    site = tmp_path / "site"
+    pipeline.run(cfg, secrets, site, transport=world, now=START)
+    state = store.load(site, crypto.parse_master_key(master_key))
+    assert monthly_lists.complete(state, state["discovery"]["nodes"], state["discovery"]["period"], 6)
+    assert not (state["monthly_lists"].get("rolling") or {}).get("rows")  # 第一期只补往月名单
+    world.advance(3)
+    pipeline.run(cfg, secrets, site, transport=world, now=START + timedelta(days=3))
+    state = store.load(site, crypto.parse_master_key(master_key))
+    last, disc = state["runs"][-1], state["discovery"]
+    result = analyze.analyze(state, disc, list(last["labels"]), cfg, clock.parse_day(last["date"]), tracking.fresh_rows(state))
+    monthly = [i for i in result["items"] if not i.get("daily", True)]
+    tracked = {a for a, r in state["asins"].items() if r.get("series")}
+    assert monthly and last["monthly_judged"] and not {i["asin"] for i in monthly} & tracked
+    th = cfg["thresholds"]["hot"]
+    keys = monthly_lists.month_keys(disc["period"], th["list_months"])
+    for item in monthly:
+        assert item["label"] == "hot" and item["tags"][0].startswith("只有月度数据")
+        months = monthly_lists.months_of(state, item["node"], item["asin"], None, keys)
+        closed = closed_months(months, clock.parse_day(last["date"]))
+        threshold = result["node_stats"][item["node"]]["threshold"]
+        hits = sum(1 for k, u, rev, _p in months[-th["lookback_months"]:] if u >= threshold
+                   and (u >= th["min_units"] or rev >= th["min_revenue"]))
+        assert hits >= th["months_required"] and cv([u for _, u in closed]) <= th["max_cv"]
+        assert (log_growth([u for _, u in closed[-3:]]) or 0) >= th["min_trend"]
+        row = state["monthly_lists"]["rolling"]["rows"][item["asin"]]
+        six_daily = sum(u / clock.days_in_month(k) for k, u in closed) / len(closed)
+        assert row["units"] / 30 >= th["min_recent_ratio"] * six_daily - 1e-6
+    sec = analyze.sections(result["items"], 0)
+    assert sec["counts"]["total"] == len(tracked & set(last["labels"])) and sec["counts"]["hot_monthly"] == len(monthly)
+    page = _decrypt_page((site / "reports" / f"{last['id']}.html").read_text(encoding="utf-8"),
+                         crypto.parse_master_key(master_key))
+    assert f"持续热销里 {len(monthly)} 个来自月度名单补判" in page and "只有月度数据" in page
+
+
+def test_early_monthly_list_is_fetched_again_once_settled(cfg, master_key, tmp_path):
+    """卖家精灵的上月名单月初还没更新完（实测 10-09 拉的 9 月名单约两成商品还是 8 月的数）：
+    月份结束后不到 20 天拉的，过了 20 天重拉一次，只重拉一次；已经到下个月就直接拉新月份。"""
+    from datetime import date
+
+    cur = {"complete": True, "period": "202609", "fetched_at": "2026-10-09T02:12:25+00:00"}
+    assert not pipeline.needs_refresh(cur, cfg, date(2026, 10, 15))
+    assert pipeline.needs_refresh(cur, cfg, date(2026, 10, 22))
+    assert not pipeline.needs_refresh({**cur, "settled": True}, cfg, date(2026, 10, 22))
+    assert not pipeline.needs_refresh({**cur, "fetched_at": "2026-10-21T00:00:00+00:00"}, cfg, date(2026, 10, 25))
+    assert not pipeline.needs_refresh(cur, cfg, date(2026, 11, 3))
+
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    site = tmp_path / "site"
+    pipeline.run(cfg, secrets, site, transport=world, now=START)
+    first = store.load(site, crypto.parse_master_key(master_key))["discovery"]
+    world.advance(16)
+    pipeline.run(cfg, secrets, site, transport=world, now=START + timedelta(days=16))  # 10-21：9 月结束 21 天
+    state = store.load(site, crypto.parse_master_key(master_key))
+    assert first["fetched_on"] == "2026-10-04" and not first.get("settled")
+    assert state["discovery"]["settled"] and state["discovery"]["fetched_on"] == "2026-10-20"
+    assert state["discovery"]["period"] == first["period"] == "202609"
+    sep = state["monthly_lists"]["months"]["2026-09"]
+    assert {n["path"] for n in state["discovery"]["nodes"]} <= set(sep)

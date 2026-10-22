@@ -225,7 +225,7 @@ def plan_fetch(pool: list[str], state: dict, run_seq: int, cfg: dict, limit: int
     return (flagged + fresh + [a for _, a in stale])[: max(0, limit)]
 
 
-def _meta_from_discovery(rec: dict, row: dict | None) -> None:
+def remember_meta(rec: dict, row: dict | None) -> None:
     if not row:
         return
     for key in ("title", "brand", "image", "node", "node_name", "node_cn", "parent", "variations",
@@ -240,7 +240,7 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
                         vendor.args("asin_prediction", nested=False, marketplace=cfg["marketplace"], asin=asin),
                         purpose="日数据", prune=False)
     rec = state["asins"].setdefault(asin, {"asin": asin, "first_seen_run": run_seq, "obs": []})
-    _meta_from_discovery(rec, disc_row)
+    remember_meta(rec, disc_row)
     if not reply.ok or not isinstance(reply.data, dict):
         rec["fetch_error"] = reply.detail or reply.status
         return False
