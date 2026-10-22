@@ -124,5 +124,7 @@ def compare(focus: list[dict], reference: list[dict], state: dict) -> dict:
                      "reference": cr.get(label, 0), "reference_share": None if ref_share is None else round(ref_share, 3)})
     rows.sort(key=lambda row: (row["label"] in ("未注明", "其他", "木质（未注明）"), -row["share"]))
     return {"n_focus": len(f), "n_reference": len(r), "rows": rows,
+            # 两组各有几个用的是亚马逊 Material（其余看标题 / 主图）：查询有每期名额，月度名单补判的新商品要等查过才有
+            "amazon_focus": sum(1 for _, s in f if s == "amazon"), "amazon_reference": sum(1 for _, s in r if s == "amazon"),
             "from_amazon": sum(1 for _, s in f + r if s == "amazon"),
             "from_image": sum(1 for _, s in f + r if s == "image")}

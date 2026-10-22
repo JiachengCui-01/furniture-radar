@@ -208,3 +208,58 @@ def test_refresh_keeps_package_data_from_the_30_day_row(cfg):
     vendor = Vendor(world, Budget(5), live=False)
     assert tracking.refresh(vendor, [p.asin], state, {"products": {p.asin: monthly}}, cfg, run_seq=1) == 1
     assert state["asins"][p.asin]["pkg"] == fresh["pkg"] and fresh["pkg"]["fba"] > 0
+
+
+def test_candidates_use_own_monthly_growth_and_rising_heads(cfg):
+    """月度名单里的“增长快”用自己存的往月名单算（卖家精灵的 unitsGr 字段两成是 0 或空的）；
+    近 30 天名单的日均 ≥ 近 6 个月名单日均 1.3 倍的头部商品也进候选（没有日数据就判不了上升中）。"""
+    keys = ["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]
+    sep = {"OWN_UP": 1300, "FIELD_ONLY": 1050, "RISING": 1000, "FLAT": 1000}
+    months = {k: {"N": {a: [1000 if k != "2026-09" else u, 0, 50, None] for a, u in sep.items()}} for k in keys}
+    rolling = {"RISING": {"asin": "RISING", "units": 1500, "parent": None}, "FLAT": {"asin": "FLAT", "units": 1000, "parent": None}}
+    state = {"asins": {}, "runs": [], "monthly_lists": {"months": months, "rolling": {"rows": rolling}}}
+    gr = {"OWN_UP": 0, "FIELD_ONLY": 50, "RISING": None, "FLAT": 0}
+    products = {a: {"asin": a, "parent": None, "node": "N", "units": u, "revenue": u * 50, "units_gr": gr[a],
+                    "available": "2024-01-01", "sources": ["top"]} for a, u in sep.items()}
+    disc = {"period": "202609", "nodes": [{"path": "N"}], "products": products}
+    cands = {p["asin"]: p for p in tracking.opportunity_candidates(disc, state, cfg, date(2026, 10, 20))}
+    assert set(cands) == {"OWN_UP", "RISING"}
+    assert cands["OWN_UP"]["units_gr"] == 30.0  # 字段是 0，自己算 1300 ÷ 1000
+    assert cands["RISING"]["head_rising"] >= 1.3
+    del state["monthly_lists"]  # 没有往月名单时照旧用字段
+    assert {p["asin"] for p in tracking.opportunity_candidates(disc, state, cfg, date(2026, 10, 20))} == {"FIELD_ONLY"}
+
+
+def test_deal_factor_comes_from_tracked_items():
+    """近 30 天名单含大促日：系数 = 追踪商品“含大促日的近 30 天日均 ÷ 去掉大促日的”的中位数；近 30 天没有大促日时为 1。"""
+    from datetime import timedelta
+
+    from radar import analyze
+
+    end = date(2026, 10, 20)
+    sales = [10] * 28 + [30, 30] + [10] * 10  # 最后 40 天，大促在倒数第 12、11 天
+    start = end - timedelta(days=len(sales) - 1)
+    events = {start + timedelta(days=28), start + timedelta(days=29)}
+    dailies = [Daily(start, [1000] * len(sales), list(sales), [50.0] * len(sales)) for _ in range(12)]
+    f = analyze.deal_factors({"N": dailies}, events, end)
+    assert f["N"] == f["*"] == round((28 * 10 + 60) / 30 / 10, 3)
+    assert analyze.deal_factors({"N": dailies}, events, end + timedelta(days=40)) == {"*": 1.0}
+
+
+def test_revisions_of_recent_daily_data_are_measured():
+    """卖家精灵会回头改最近几天的日数据：上期存的和这期新拉的逐天比，记下改了几天、改了多少（判定还没用它）。
+    实测 2026-10-22：20 个商品隔 2 天重拉，最近 9 天中位数是原来的 85%，更早的没变。"""
+    from datetime import timedelta
+
+    end = date(2026, 10, 20)
+    old_sales = [100] * 30
+    start = end - timedelta(days=29)
+    old = {"start": start.isoformat(), "bsr": [1000] * 30, "sales": old_sales, "price": [50.0] * 30}
+    revised = [100] * 21 + [85] * 9 + [90, 95]  # 最近 9 天被下调 15%，又多了 2 天新数据
+    new = {"start": start.isoformat(), "bsr": [1000] * 32, "sales": revised, "price": [50.0] * 32}
+    pairs = tracking.revision_pairs(old, new)
+    assert pairs[0] == [0, 0.85] and pairs[8] == [8, 0.85] and pairs[9] == [9, 1.0]
+    state = {"asins": {"A": {"revision": {"run": 5, "pairs": pairs}}, "B": {"revision": {"run": 5, "pairs": pairs}},
+                       "C": {"revision": {"run": 4, "pairs": pairs}}}}
+    out = tracking.summarize_revisions(state, 5)
+    assert out["items"] == 2 and out["window"] == 9 and out["median"] == 0.85 and out["changed"] == 1.0

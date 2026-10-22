@@ -20,10 +20,11 @@
 """
 from __future__ import annotations
 
+import statistics
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from . import clock, log
+from . import clock, log, monthly_lists
 from .detect.rules import current_rating, low_rating
 from .discovery import clean_text, keep_product
 from .series import Daily, build_daily
@@ -101,12 +102,18 @@ def fresh_rows(state: dict) -> dict[str, dict]:
 
 
 def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> list[dict]:
-    """机会候选（按机会分排序）：近 30 天榜单和相似款全部纳入；月度名单里只取增长快或上架半年内的。
+    """机会候选（按机会分排序）：近 30 天榜单和相似款全部纳入；月度名单里只取增长快、上架半年内、或近 30 天在往上走的。
+    增长快 = 本月比上月的销量增长 ≥ opportunity_min_growth%，用自己存的往月名单算（monthly_lists.growth_pct），
+    上月不在名单里的才用卖家精灵行里的 unitsGr 字段；近 30 天在往上走 = 近 30 天名单的日均 ≥ 近几个月名单日均的
+    opportunity_head_rising 倍（monthly_lists.rolling_ratio，和“上升中”同一个倍数，补判的持续热销里正在涨的靠它进池拉日数据）。
     同一 ASIN 用最新的一行；评分不达标、量不够（enough_volume）、标题不在范围内的剔除；同一父体只留销量最大的。"""
     pcfg = cfg["pool"]
     th = cfg["thresholds"]
     min_growth = float(pcfg.get("opportunity_min_growth", 0))
     max_age = int(pcfg.get("opportunity_max_age_days", 180))
+    head_rising = float(pcfg.get("opportunity_head_rising") or 0)
+    period = str((disc or {}).get("period") or "")
+    n_months = int(th["hot"].get("list_months", 6))
     nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
     rows = {**((disc or {}).get("products") or {}), **fresh_rows(state)}
     best: dict[str, dict] = {}
@@ -119,7 +126,13 @@ def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> 
             continue
         if p["sources"][0] not in FRESH_SOURCES:
             age = clock.days_between(clock.parse_day(p.get("available")), today)
-            if (p.get("units_gr") or 0) < min_growth and not (age is not None and age <= max_age):
+            own = monthly_lists.growth_pct(state, p, period) if len(period) == 6 else None
+            if own is not None:
+                p = {**p, "units_gr": own}
+            ratio = monthly_lists.rolling_ratio(state, p, period, n_months) if head_rising and len(period) == 6 else None
+            if ratio is not None and ratio >= head_rising - 1e-9:
+                p = {**p, "units_gr": max(p.get("units_gr") or 0, round((ratio - 1) * 100, 2)), "head_rising": ratio}
+            elif (p.get("units_gr") or 0) < min_growth and not (age is not None and age <= max_age):
                 continue
         key = p.get("parent") or p["asin"]
         if key not in best or (p["units"] or 0) > (best[key]["units"] or 0):
@@ -248,6 +261,8 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
     data = reply.data
     detail = data.get("asinDetail") or {}
     series = build_daily(data.get("dailyItemList") or [])
+    old = rec.get("series")
+    rec["revision"] = {"run": run_seq, "pairs": revision_pairs(old, series)} if old and series else None
     months = []
     for m in data.get("monthItemList") or []:
         key = str(m.get("date") or "")[:7]
@@ -286,6 +301,44 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
             obs.append(entry)
         del obs[:-24]
     return True
+
+
+def revision_pairs(old: dict, new: dict, max_lag: int = 14) -> list[list]:
+    """卖家精灵会回头改最近几天的日数据：上期存的日数据和这期新拉的逐天比。返回 [[距上期最后一天几天, 新 ÷ 旧]]
+    （旧值为 0 或任一边缺失的日子不算）。"""
+    a, b = Daily.from_record(old), Daily.from_record(new)
+    end = a.as_of() if a else None
+    if end is None or b is None:
+        return []
+    out = []
+    for lag in range(max_lag):
+        day = end - timedelta(days=lag)
+        i, j = a.index_of(day), b.index_of(day)
+        if 0 <= i < len(a.sales) and 0 <= j < len(b.sales) and a.sales[i] and b.sales[j] is not None:
+            out.append([lag, round(b.sales[j] / a.sales[i], 4)])
+    return out
+
+
+def summarize_revisions(state: dict, run_seq: int, min_share: float = 0.3) -> dict | None:
+    """这期刷新的商品里，上期最后几天的日销量被改了多少：
+    window = 从上期最后一天往前、每天都有 ≥ min_share 的商品被改过的天数；median = 这些天“新 ÷ 旧”的中位数（含没改的）；
+    changed = 至少有一天被改过的商品占比。2026-10-22 实测（20 个商品，隔 2 天重拉）：75% 被改，最近 9 天中位数约 −15%。"""
+    pairs = [rec["revision"]["pairs"] for rec in state["asins"].values()
+             if (rec.get("revision") or {}).get("run") == run_seq and rec["revision"]["pairs"]]
+    if not pairs:
+        return None
+    by_lag: dict[int, list[float]] = {}
+    for item in pairs:
+        for lag, ratio in item:
+            by_lag.setdefault(int(lag), []).append(float(ratio))
+    window = 0
+    while window in by_lag and sum(1 for r in by_lag[window] if abs(r - 1) > 0.001) >= min_share * len(by_lag[window]):
+        window += 1
+    inside = [r for lag in range(window) for r in by_lag.get(lag, [])]
+    return {"run": run_seq, "items": len(pairs), "window": window,
+            "median": round(statistics.median(inside), 3) if inside else 1.0,
+            "changed": round(sum(1 for item in pairs if any(abs(r - 1) > 0.001 for _, r in item)) / len(pairs), 3),
+            "by_lag": {lag: round(statistics.median(v), 3) for lag, v in sorted(by_lag.items())}}
 
 
 def refresh(vendor: Vendor, plan: list[str], state: dict, disc: dict | None, cfg: dict,

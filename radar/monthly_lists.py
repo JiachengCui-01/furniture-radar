@@ -136,6 +136,40 @@ def fetch_rolling(vendor: Vendor, cfg: dict, state: dict, disc: dict, today: dat
     return vendor.billable_calls - start
 
 
+def _row(state: dict, key: str, node: str, asin: str, parent: str | None) -> list | None:
+    rows = ((_lists(state)["months"].get(key) or {}).get(node)) or {}
+    row = rows.get(asin)
+    if row is None and parent:
+        row = next((r for r in rows.values() if r[3] == parent), None)
+    return row
+
+
+def growth_pct(state: dict, p: dict, period: str) -> float | None:
+    """月度名单里这个商品本月比上月的销量增长（%），用自己存的往月名单算；上月不在名单里返回 None。
+    卖家精灵行里的 unitsGr 字段有两成是 0 或空的（598 个头部商品里 133 个），和日数据接口比误差中位数 5.9%，自己算的 2.6%。"""
+    prev = _row(state, month_keys(period, 2)[1], p["node"], p["asin"], p.get("parent"))
+    if not prev or not prev[0] or p.get("units") is None:
+        return None
+    return round((p["units"] / prev[0] - 1) * 100, 2)
+
+
+def rolling_ratio(state: dict, p: dict, period: str, n: int) -> float | None:
+    """近 30 天名单的日均 ÷ 近 n 个月名单里的日均：在往上走的头部商品（没有日数据、判不了上升中的）。
+    近 30 天名单里没有它、或某个月不在名单里返回 None。"""
+    rolling = (_lists(state).get("rolling") or {}).get("rows") or {}
+    r = rolling.get(p["asin"]) or next((x for x in rolling.values() if p.get("parent") and x.get("parent") == p["parent"]), None)
+    months = months_of(state, p["node"], p["asin"], p.get("parent"), month_keys(period, n))
+    if not r or not months:
+        return None
+    daily = sum(u / _days(k) for k, u, *_ in months) / len(months)
+    return round((r.get("units") or 0) / 30 / daily, 2) if daily > 0 else None
+
+
+def _days(key: str) -> int:
+    y, m = int(key[:4]), int(key[5:])
+    return ((date(y + (m == 12), m % 12 + 1, 1)) - date(y, m, 1)).days
+
+
 def months_of(state: dict, node: str, asin: str, parent: str | None, keys: list[str]) -> list[list] | None:
     """这个商品在 keys 这几个月的 [月份, 月销量, 月销售额, 价格]（按时间升序）。有一个月不在名单里就返回 None：
     跌出子类目销售额前 50 的月份看不到销量。同一父体换了代表的子体时按父体对上。"""

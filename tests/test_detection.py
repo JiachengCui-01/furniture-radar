@@ -671,9 +671,17 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
     assert [i["asin"] for i in items] == ["M1"] and set(judged) == {"M1", "M4", "M6"}
     m1 = items[0]
     assert m1["label"] == "hot" and not m1["daily"] and m1["as_of"] is None and m1["spark"] == []
-    assert m1["tags"][0] == "只有月度数据（不在追踪池：没有走势图，不判回落和脉冲）"
+    assert m1["tags"][0] == "只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率）"
     assert m1["recent_avg28"] == round(1210 / 30, 2) and m1["hot"]["months_hit"] == 4
-    assert status == {"months": 6, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1}
+    assert status == {"months": 6, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1, "deal": 1.0}
+    # 近 30 天名单含大促日：按大促系数扣掉（追踪商品比较时都去掉了大促日）
+    deal_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09",
+                                           {"*": 1.05, "N": 1.10})[0]
+    assert deal_items[0]["recent_avg28"] == round(1210 / 30 / 1.10, 2)
+    # 近 30 天名单里最后几天的数也还会被改：校正后不达标的写明，不排除
+    rev_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09", None,
+                                          {"window": 30, "median": 0.5, "items": 100})[0]
+    assert rev_items[0]["label"] == "hot" and rev_items[0]["revision_lost"] == ["持续热销"]
     sec = analyze.sections([{"label": "watch", "asin": "T1"}, *items], 0)
     assert sec["counts"]["total"] == 1 and sec["counts"]["hot"] == sec["counts"]["hot_monthly"] == 1
     # 往月名单还没补齐时不补判
@@ -690,3 +698,28 @@ def test_monthly_heads_seen_for_the_first_time_are_not_new_entries():
     assert out["new"]["hot"] == ["A"] and out["covered"] == ["M1"]
     out = diff.compare({**prev, "monthly_judged": ["M1"]}, {"A": "hot", "M1": "hot"}, monthly={"M1"})
     assert out["new"]["hot"] == ["A", "M1"] and out["covered"] == []
+
+
+def test_revived_old_listing_adds_no_direction_increment():
+    """开发方向的增量：老链接重新起量（停了很久又开始卖）按 0，新品爆发照常按整月销量算
+    （回放：有老链接重新起量的 7 个日期里 5 次改变了前 5 个方向，3 次靠它一个商品排到第一）。"""
+    from radar.detect import directions
+
+    revived = {"recent_avg28": 500, "prev_avg28": None, "price": 200, "surge": {"kind": "老链接重新起量"}}
+    new = {"recent_avg28": 500, "prev_avg28": None, "price": 200, "surge": {"kind": "新品爆发"}}
+    assert directions.increment(revived) == 0
+    assert directions.increment(new) == 500 * 200 * 30
+
+
+def test_judgments_resting_on_recent_days_are_noted(cfg):
+    """卖家精灵会回头改最近几天的日销量：按本期测到的幅度校正最近几天后重判，原来成立、校正后不成立的写明，不排除。"""
+    rev = {"window": 9, "median": 0.8, "items": 100}
+    state = {"asins": {"THIN": _rec([5] * 110 + [12] * 10, 4.5), "SOLID": _rec([5] * 110 + [18] * 10, 4.5)}}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, ["THIN", "SOLID"], cfg, END, revision=rev)["items"]}
+    assert by["THIN"]["label"] == by["SOLID"]["label"] == "surge"  # 不排除
+    assert "最近 9 天的数还会被改：按本期测到的幅度（改成原来的 80%）校正后不算突然爆火" in by["THIN"]["tags"]
+    assert by["THIN"]["revision_lost"] == ["突然爆火"] and not by["SOLID"]["revision_lost"]
+    # 测到的商品太少、或幅度太小：不校正、不标
+    for weak in ({**rev, "items": 10}, {**rev, "median": 0.99}, None):
+        item = analyze.analyze(state, None, ["THIN"], cfg, END, revision=weak)["items"][0]
+        assert not any(t.startswith("最近 9 天的数还会被改") for t in item["tags"])

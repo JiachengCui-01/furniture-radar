@@ -1,6 +1,7 @@
 """一次完整运行：发现 → 近 30 天榜单 / 相似款 → 选池 → 刷新日数据 → 判定 → 核查 → 报告 → 加密发布 →（可选）钉钉。"""
 from __future__ import annotations
 
+import itertools
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -200,6 +201,10 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     except BudgetExhausted:
         log.warn("追踪阶段预算用完")
     log.info(f"刷新日数据 {refreshed}/{len(plan)} 个")
+    revision = tracking.summarize_revisions(state, run_seq)
+    if revision:  # 卖家精灵回头改了多少：每期记下来，看规律稳不稳定（判定还没用它）
+        state["revisions"] = ((state.get("revisions") or []) + [{**revision, "date": today.isoformat()}])[-12:]
+        log.info(f"日数据修订：上期最后 {revision['window']} 天，{revision['changed']:.0%} 的商品被改过，中位数 ×{revision['median']}")
 
     # 核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
     #   持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
@@ -218,13 +223,13 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)
-    result = analyze.analyze(state, disc, pool, cfg, today, extra_rows)
+    result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, revision)
     jobs = verify.select(result["items"], state, cfg, today)
     if jobs and vendor.budget.remaining > 0:
         checked = verify.run_checks(vendor, jobs, state, cfg, today)
         log.info(f"核查 {checked} 个可疑商品")
         if checked:
-            result = analyze.analyze(state, disc, pool, cfg, today, extra_rows)
+            result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, revision)
     items = result["items"]
     remember_monthly(state, items, disc, run_seq)
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
@@ -232,8 +237,9 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 主材质：增长商品 + 持续热销对照组，查亚马逊商品详情的 Material（查过的永久缓存）
     focus, reference = analysis_groups(items, cfg)
-    looked = materials.lookup(vendor, focus + reference, state, cfg, today,
-                              int(bcfg.get("material_lookups", 15)))
+    # 两组交替排：名额不够时两组都有一部分查到亚马逊 Material，主材质对比的口径不会一边倒
+    both = [i for pair in itertools.zip_longest(focus, reference) for i in pair if i is not None]
+    looked = materials.lookup(vendor, both, state, cfg, today, int(bcfg.get("material_lookups", 15)))
     if looked:
         log.info(f"材质查询 {looked} 个")
 
@@ -241,7 +247,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
     report_id = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
     coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
-                "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"]}
+                "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"], "revision": revision}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
@@ -434,7 +440,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
-        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity")},
+        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }
@@ -453,7 +459,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     disc = state.get("discovery")
     today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()
     extra_rows = tracking.fresh_rows(state)
-    result = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows)
+    result = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows,
+                             (last.get("coverage") or {}).get("revision"))
     items = result["items"]
     remember_monthly(state, items, disc, last["seq"])
     coverage = last.get("coverage") or {}

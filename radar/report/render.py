@@ -264,7 +264,7 @@ def _tags(item: dict) -> str:
     out = []
     for tag in item["tags"]:
         cls = "warn" if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定",
-                                               "拉动")) else \
+                                               "拉动", "还会被改")) else \
             "good" if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith("上升中") else \
             "info" if any(k in tag for k in ("季节", "大促", "头部", "变体", "换链接", "老链接", "对比期")) else ""
         out.append(f'<span class="tag {cls}">{esc(tag)}</span>')
@@ -430,7 +430,11 @@ def _material_box(m: dict) -> str:
         f'<div class="feat"><b>{esc(r["label"])}</b>'
         + _ev("", f'{r["count"]}/{nf}', r["share"], f'对照 {r["reference"]}/{nr}' if nr else "", r["reference_share"])
         + "</div>" for r in rows)
-    return f'<div class="dbox"><h4>主材质</h4>{feats}</div>'
+    src = ""
+    if "amazon_focus" in m:
+        src = (f'<p class="hint">用亚马逊 Material 属性的：增长商品 {m["amazon_focus"]}/{nf}、对照 {m["amazon_reference"]}/{nr}，'
+               f'其余看标题 / 主图（每期最多查 40 个，查过的永久缓存）</p>')
+    return f'<div class="dbox"><h4>主材质</h4>{src}{feats}</div>'
 
 
 def _evidence(f: dict, vision: dict) -> str:
@@ -605,7 +609,7 @@ def _directions(tr: dict, cfg: dict) -> str:
     rule = (f"增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目，按增量销售额从大到小"
             f"（同额时看品牌数、增长商品个数、突然爆火个数、势头）取前 {c['max']} 个，没有任何主材质或特征的跳过。"
             "月销售额 = 每个增长商品的近 28 天日均 × 当前售价 × 30 的合计；增量 = （近 28 天日均 − 之前 28 天在卖日子的日均 × 季节倍数）"
-            "× 售价 × 30 的合计，之前没在卖的按 0、老品换链接之前没在卖的增量按 0（销量是卖家精灵按 BSR 估算的，大促日不算）。"
+            "× 售价 × 30 的合计，之前没在卖的按 0、老品换链接之前没在卖的增量按 0、老链接重新起量的增量按 0（销量是卖家精灵按 BSR 估算的，大促日不算）。"
             "特征按品牌计数，同一品牌的多个商品只算一次（该品牌任一增长商品的标题或主图有就算），数字 = 具备的品牌数 / 品牌数，"
             "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里的，按月销量取前 "
             f"{c.get('head_max', 30)} 个；有主图识别的 ≥{c.get('head_min', 10)} 个时两边都看标题 + 主图，头部只算识别过的，"
@@ -741,8 +745,8 @@ def section_hints(cfg: dict) -> dict[str, str]:
                f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
                f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}{adjust}。"
                f"不在追踪池里的头部商品也判（月度名单补判）：近 {h.get('list_months', 6)} 个月每个月都在子类目销售额前 50、"
-               f"近 30 天名单里也有它的，按同样的条件判，近 28 天日均用近 30 天的销量 ÷ 30；没有日数据，卡片上标“只有月度数据”，"
-               f"没有走势图、不判回落。正在回落的（规则见“判定方法”）标“最近回落”，不影响上榜。按近 6 个月月均销量排序。",
+               f"近 30 天名单里也有它的，按同样的条件判，近 28 天日均用近 30 天的销量 ÷ 30（名单的销量含大促日，按本期追踪商品算的大促系数扣掉）；"
+               f"没有日数据，卡片上标“只有月度数据”：没有走势图、不判回落，异常信号只看留评率一项（追踪商品还看评论增速、评分跳升、短时脉冲等）。正在回落的（规则见“判定方法”）标“最近回落”，不影响上榜。按近 6 个月月均销量排序。",
         "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
                 f"仅为数据异常提示，需人工核实。按异常分排序。",
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
@@ -774,6 +778,10 @@ def _method(cfg: dict) -> str:
 {th['events']['base_days']} 天中位数的 {th['events']['jump']:g} 倍，与它相连、比例 ≥{th['events']['edge_share']:.0%} 的日子也算）
 + config.yaml 登记的大促里、数据也印证（当天 ≥{th['events']['edge_share']:.0%} 的商品冲高）的日子。
 自己在大促日冲高过、算上大促日能达到爆火 / 潜力 / 上升中而去掉后达不到的，标“大促拉动”，不进这几个板块。</li>
+<li><b>最近几天的数还会被改</b>：卖家精灵会回头改最近几天的日销量（实测隔 2 天重拉，最近 9 天里 75% 的商品被改、中位数是原来的 85%）。
+每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）；判定用当期拉到的数，再把最近这几天按测到的幅度校正后重判一次，
+原来成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销 / 最近回落，卡片上标“最近 N 天的数还会被改：…校正后不算 X”，不排除
+（验证：标了的 60% 修订后真的不成立，没标的 13%）。测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正、不标。</li>
 <li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
 爆火、潜力、上升中都只和真正在卖的日子比。</li>
 <li><b>追踪名额</b>：依次给必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
@@ -827,7 +835,7 @@ def _method(cfg: dict) -> str:
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组，
 对照组不含增长商品），同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的哪一档都不列；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
 <li><b>开发方向</b>：增长商品带来的增量销售额最大的几个子类目（增量 = （近 28 天日均 − 之前 28 天在卖日子的日均 × 季节倍数）× 售价 × 30 的合计；
-季节倍数 = 季节性品类里按往年规律近 28 天品类本来就是之前 28 天的几倍，其余子类目为 1），
+季节倍数 = 季节性品类里按往年规律近 28 天品类本来就是之前 28 天的几倍，其余子类目为 1；老链接重新起量的增量按 0），
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）；
 季节（只对季节性品类下结论，依据是这个子类目 3 年的类目月度销量算出的季节指数：本期增长有没有季节因素、
@@ -859,13 +867,19 @@ def render(ctx: dict) -> str:
         facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
     if counts.get("low"):
         facts.append(f"评分不达标未上榜 {counts['low']} 个")
+    rev = cov.get("revision")
+    if rev and rev.get("window"):
+        facts.append(f"卖家精灵会回头改最近几天的日数据：上期拉到的数据，这期再拉时 {rev['changed']:.0%} 的商品被改过，"
+                     f"上期最后 {rev['window']} 天平均是原来的 {rev['median']:.0%}（{rev['items']} 个商品的中位数）；"
+                     f"本期的判定用的是这期拉到的数；把最近 {rev['window']} 天按这个幅度校正后不成立的判定，卡片上写明“最近 N 天的数还会被改”")
     mon = ctx.get("monthly") or {}
     if mon.get("need"):
         if mon["months"] < mon["need"]:
             facts.append(f"持续热销的月度名单补判：往月名单已齐 {mon['months']}/{mon['need']} 个月，补齐后开始（这期只判追踪的商品）")
         else:
             part = f"（近 30 天名单只查了 {mon['rolling']}/{mon['nodes']} 个子类目）" if mon["rolling"] < mon["nodes"] else ""
-            facts.append(f"持续热销里 {counts.get('hot_monthly', 0)} 个来自月度名单补判（不在追踪池的头部商品判了 {mon['judged']} 个）{part}")
+            deal = f"，近 30 天名单含大促日，按 ×{mon['deal']:.2f} 扣掉" if (mon.get("deal") or 1) > 1.001 else ""
+            facts.append(f"持续热销里 {counts.get('hot_monthly', 0)} 个来自月度名单补判（不在追踪池的头部商品判了 {mon['judged']} 个{deal}）{part}")
     spans = (ctx.get("events") or {}).get("spans") or []
     if spans:
         facts.append("大促日（不参与比较）：" + "、".join(events.span_text(sp) for sp in spans))
