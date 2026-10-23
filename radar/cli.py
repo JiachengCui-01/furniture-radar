@@ -30,14 +30,26 @@ def _github_output(args, result) -> None:
 
 
 def cmd_run(args, cfg, secrets) -> int:
-    result = pipeline.run(cfg, secrets, args.site_dir, force=args.force, budget=args.budget,
-                          notify=args.notify)
+    from .vendor import QuotaExhausted
+
+    try:
+        result = pipeline.run(cfg, secrets, args.site_dir, force=args.force, budget=args.budget,
+                              notify=args.notify)
+    except QuotaExhausted as exc:
+        # 核心数据（名单、日数据）还没拉完账户额度就用完了：不出这一期（不拿旧数据凑报告），工作流失败 → 钉钉失败告警
+        log.warn(f"{exc}。卖家精灵账户的调用额度用完了，本期没有生成报告，额度恢复后的下一次定时检查会重新运行")
+        return 1
     _github_output(args, result)
     return 0
 
 
 def cmd_rerender(args, cfg, secrets) -> int:
     _github_output(args, pipeline.rerender(cfg, secrets, args.site_dir))
+    return 0
+
+
+def cmd_reseal(args, cfg, secrets) -> int:
+    pipeline.reseal(cfg, secrets, args.site_dir)
     return 0
 
 
@@ -229,6 +241,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))
     p.add_argument("--github-output", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_rerender)
+
+    p = sub.add_parser("reseal", help="重新加密 site 里的数据和报告（换随机 IV，内容和链接不变；推送被 GitHub 误拦时用）")
+    p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))
+    p.set_defaults(func=cmd_reseal)
 
     p = sub.add_parser("notify", help="把最近一期报告推送到钉钉")
     p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))

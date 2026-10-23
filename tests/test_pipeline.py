@@ -436,3 +436,50 @@ def test_early_monthly_list_is_fetched_again_once_settled(cfg, master_key, tmp_p
     assert state["discovery"]["period"] == first["period"] == "202609"
     sep = state["monthly_lists"]["months"]["2026-09"]
     assert {n["path"] for n in state["discovery"]["nodes"]} <= set(sep)
+
+
+class _AccountLimit:
+    """卖家精灵账户额度用完：这些工具（或第 after 次以后的全部调用）返回“接口访问次数已达上限”。"""
+
+    def __init__(self, world, tools=(), after=None):
+        self.world, self.tools, self.after, self.n = world, set(tools), after, 0
+
+    def __call__(self, tool, arguments):
+        self.n += 1
+        if tool in self.tools or (self.after is not None and self.n > self.after):
+            return json.dumps({"code": "ERROR", "message": "接口访问次数已达上限"})
+        return self.world(tool, arguments)
+
+
+def test_account_limit_skips_the_run_or_only_the_extras(cfg, master_key, tmp_path):
+    """名单和日数据还没拉完账户额度就用完了：不出这一期（不拿旧数据凑报告），抛给命令行让工作流失败、发钉钉告警；
+    核心数据拉完后才用完（材质、核查、往年月销量这些补充查询）：跳过补充查询，照常出报告。"""
+    from radar.vendor import QuotaExhausted
+
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    world = SyntheticWorld(START.date())
+    with pytest.raises(QuotaExhausted):
+        pipeline.run(cfg, secrets, tmp_path / "a", transport=_AccountLimit(world, after=5), now=START)
+    assert not (tmp_path / "a" / "reports").exists() and not store.state_path(tmp_path / "a").exists()
+    out = pipeline.run(cfg, secrets, tmp_path / "b", now=START,
+                       transport=_AccountLimit(world, tools=("asin_detail", "review", "asin_sales_trend")))
+    assert out.published and (tmp_path / "b" / "reports" / f"{out.report_id}.html").exists()
+
+
+def test_reseal_changes_ciphertext_but_not_content(cfg, master_key, tmp_path):
+    """推送被 GitHub 误拦时重新加密：密文全变（换了随机 IV），解密出来的数据、报告和链接里的密钥都不变。"""
+    from radar.report import shell
+
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    out = pipeline.run(cfg, secrets, tmp_path, transport=SyntheticWorld(START.date()), now=START)
+    master = crypto.parse_master_key(master_key)
+    page_path = tmp_path / "reports" / f"{out.report_id}.html"
+    before_state, before_page = store.state_path(tmp_path).read_bytes(), page_path.read_text(encoding="utf-8")
+    assert pipeline.reseal(cfg, secrets, tmp_path) == 2
+    after_page = page_path.read_text(encoding="utf-8")
+    assert store.state_path(tmp_path).read_bytes() != before_state and after_page != before_page
+    assert store.load(tmp_path, master)["run_seq"] == 1
+    assert _decrypt_page(after_page, master) == _decrypt_page(before_page, master)
+    assert shell.read_payload(after_page)["latest"] == out.report_id

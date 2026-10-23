@@ -81,17 +81,26 @@ jobs:
         if: steps.run.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPORT_KEY: ${{ secrets.REPORT_KEY }}
         run: |
-          cd site
-          git init -q -b site
-          git add -A
-          git -c user.name="radar-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "radar: ${{ steps.run.outputs.report_id }}"
+          # GitHub 推送保护偶尔把密文里的一段随机字符认成访问密钥（实测 2026-10-23 被拒过一次）：被拒时换一个随机 IV 重新加密再推。
+          # 三次都推不上就让这一步失败（不再部署网站，并触发钉钉失败告警），不能悄悄当成功
           for i in 1 2 3; do
-            git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site:site && break
+            rm -rf site/.git
+            git -C site init -q -b site
+            git -C site add -A
+            git -C site -c user.name="radar-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "radar: ${{ steps.run.outputs.report_id }}"
+            if git -C site push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site:site; then
+              rm -rf site/.git
+              exit 0
+            fi
+            python -m radar reseal --site-dir site
             sleep 5
           done
-          rm -rf .git
+          rm -rf site/.git
+          echo "::error::三次都没能推送到 site 分支，本期数据没有保存"
+          exit 1
 
       - name: 准备网站文件（不包含 data/）
         if: steps.run.outputs.published == 'true'

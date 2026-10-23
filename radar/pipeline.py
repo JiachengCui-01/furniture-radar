@@ -17,7 +17,7 @@ from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
 from .report import shell
-from .vendor import Budget, BudgetExhausted, Transport, Vendor, mcp_transport
+from .vendor import Budget, BudgetExhausted, QuotaExhausted, Transport, Vendor, mcp_transport
 
 
 FORGET_RUNS = 20  # 连续这么多期没进池的 ASIN 从状态里删除
@@ -206,37 +206,23 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         state["revisions"] = ((state.get("revisions") or []) + [{**revision, "date": today.isoformat()}])[-12:]
         log.info(f"日数据修订：上期最后 {revision['window']} 天，{revision['changed']:.0%} 的商品被改过，中位数 ×{revision['median']}")
 
-    # 核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
-    #   持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
-    #   → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判 → 季节性品类里商品自己往年的月销量
+    # 核心刷新做完后剩下的预算：补充数据（backfill_extras）。账户额度用完时跳过，照常出报告
     if disc and disc.get("nodes"):
-        def spare(cap: int) -> int:
-            return min(cap, max(0, vendor.budget.remaining - reserve))
-
-        months = int(cfg["thresholds"]["hot"].get("list_months", 6))
-        lists_ready = monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months)
-        if lists_ready and spare(len(disc["nodes"])):
-            monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
-        if spare(int(bcfg.get("history_calls", 0))):
-            category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare(int(bcfg.get("history_calls", 0))))
-        if not lists_ready and spare(int(bcfg.get("monthly_list_calls", 0))):
-            monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
-            if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months) and spare(len(disc["nodes"])):
-                monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
-        # 季节性商品要看商品自己往年的月销量（sales_trend.py）：季节性品类（类目历史够了才认得出）里上架满一年的追踪商品
-        sc = cfg["thresholds"].get("seasonality")
-        if sc and spare(int(bcfg.get("trend_calls", 0))):
-            profiles = {n["path"]: seasonality.profile(category_history.series(state, n["path"]), sc) for n in disc["nodes"]}
-            asins = sales_trend.candidates(state, pool, profiles, today, cfg)
-            if asins:
-                sales_trend.fetch(vendor, cfg, state, asins, today, spare(int(bcfg.get("trend_calls", 0))))
+        try:
+            backfill_extras(vendor, cfg, state, disc, pool, today, reserve)
+        except QuotaExhausted as exc:
+            log.warn(f"补充查询：{exc}，本期跳过，下期再补")
 
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, revision)
     jobs = verify.select(result["items"], state, cfg, today)
+    checked = 0
     if jobs and vendor.budget.remaining > 0:
-        checked = verify.run_checks(vendor, jobs, state, cfg, today)
+        try:
+            checked = verify.run_checks(vendor, jobs, state, cfg, today)
+        except QuotaExhausted as exc:
+            log.warn(f"核查：{exc}，本期跳过")
         log.info(f"核查 {checked} 个可疑商品")
         if checked:
             result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, revision)
@@ -256,7 +242,11 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         if item["asin"] not in seen:
             seen.add(item["asin"])
             both.append(item)
-    looked = materials.lookup(vendor, both, state, cfg, today, int(bcfg.get("material_lookups", 15)))
+    try:
+        looked = materials.lookup(vendor, both, state, cfg, today, int(bcfg.get("material_lookups", 15)))
+    except QuotaExhausted as exc:
+        looked = 0
+        log.warn(f"材质查询：{exc}，本期跳过")
     if looked:
         log.info(f"材质查询 {looked} 个")
 
@@ -293,11 +283,12 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     state["calls"][month] = used_this_month + vendor.billable_calls
     # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
     # 轮查靠它排先后。很久没进池的整条删除。
+    # 月度名单补判的商品（monthly_run）只留缓存，不留日数据：以前进过池子的旧日数据留着，重新生成报告时会被当成追踪商品
     for asin, rec in list(state["asins"].items()):
         last = max(int(rec.get("last_pool_run", 0)), int(rec.get("monthly_run", 0)))
         if last < run_seq - FORGET_RUNS:
             del state["asins"][asin]
-        elif last < run_seq:
+        elif int(rec.get("last_pool_run", 0)) < run_seq:
             rec.pop("series", None)
     store.save(site, master, state)
 
@@ -311,6 +302,35 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     if notify:
         out.notified = send_last(cfg, secrets, site)
     return out
+
+
+def backfill_extras(vendor: Vendor, cfg: dict, state: dict, disc: dict, pool: list[str], today, reserve: int) -> None:
+    """核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
+    持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
+    → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判 → 季节性品类里商品自己往年的月销量。
+    账户额度用完（QuotaExhausted）由调用方接住：这些都是补充数据，跳过照常出报告。"""
+    bcfg = cfg["budget"]
+
+    def spare(cap: int) -> int:
+        return min(cap, max(0, vendor.budget.remaining - reserve))
+
+    months = int(cfg["thresholds"]["hot"].get("list_months", 6))
+    lists_ready = monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months)
+    if lists_ready and spare(len(disc["nodes"])):
+        monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
+    if spare(int(bcfg.get("history_calls", 0))):
+        category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare(int(bcfg.get("history_calls", 0))))
+    if not lists_ready and spare(int(bcfg.get("monthly_list_calls", 0))):
+        monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
+        if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months) and spare(len(disc["nodes"])):
+            monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
+    # 季节性商品要看商品自己往年的月销量（sales_trend.py）：季节性品类（类目历史够了才认得出）里上架满一年的追踪商品
+    sc = cfg["thresholds"].get("seasonality")
+    if sc and spare(int(bcfg.get("trend_calls", 0))):
+        profiles = {n["path"]: seasonality.profile(category_history.series(state, n["path"]), sc) for n in disc["nodes"]}
+        asins = sales_trend.candidates(state, pool, profiles, today, cfg)
+        if asins:
+            sales_trend.fetch(vendor, cfg, state, asins, today, spare(int(bcfg.get("trend_calls", 0))))
 
 
 def remember_monthly(state: dict, items: list[dict], disc: dict | None, run_seq: int) -> None:
@@ -439,6 +459,26 @@ def _write_shell(cfg: dict, site: Path, report_id: str, envelope: dict, latest_i
         shell.encrypted_page(f"{cfg['report']['title']} {report_id}", envelope, report_id, latest_id), encoding="utf-8")
 
 
+def reseal(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> int:
+    """把 site 里的历史数据和全部报告重新加密一遍：换一个随机 IV，内容和钉钉链接里的密钥都不变。
+    GitHub 的推送保护会扫描推上去的文件，密文是随机字符，偶尔有一段长得像某种访问密钥（实测 2026-10-23 data/state.enc
+    被认成火山引擎 Access Key ID，推送被拒）；换了 IV 密文就全变了。工作流推送被拒时调用它再推。返回重新加密的文件数。"""
+    master = crypto.parse_master_key(secrets.report_key)
+    site = Path(site_dir)
+    count = 0
+    if store.state_path(site).exists():
+        store.save(site, master, store.load(site, master))
+        count += 1
+    for path in sorted((site / "reports").glob("*.html")):
+        payload = shell.read_payload(path.read_text(encoding="utf-8"))
+        rid, key, aad = payload["id"], crypto.report_key(master, payload["id"]), crypto.report_aad(payload["id"])
+        page = crypto.decrypt(key, shell.envelope_of(payload), aad)
+        _write_shell(cfg, site, rid, crypto.encrypt(key, page, aad), payload.get("latest") or rid)
+        count += 1
+    log.info(f"已重新加密 {count} 个文件")
+    return count
+
+
 def point_to_latest(cfg: dict, site: Path, report_ids: list[str]) -> None:
     """往期报告的外壳改记最新一期的 ID，打开后顶部显示“回到最新报告”。只换外壳，密文原样保留。"""
     latest = report_ids[-1]
@@ -476,8 +516,9 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     disc = state.get("discovery")
     today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()
     extra_rows = tracking.fresh_rows(state)
-    result = analyze.analyze(state, disc, list(last.get("labels") or {}), cfg, today, extra_rows,
-                             (last.get("coverage") or {}).get("revision"))
+    # 只用那一期真正拉了日数据的商品（labels 里还有月度名单补判的，它们可能留着更早进池时的旧日数据）
+    pool = [a for a in last.get("labels") or {} if int((state["asins"].get(a) or {}).get("last_pool_run", -1)) == last["seq"]]
+    result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, (last.get("coverage") or {}).get("revision"))
     items = result["items"]
     remember_monthly(state, items, disc, last["seq"])
     coverage = last.get("coverage") or {}

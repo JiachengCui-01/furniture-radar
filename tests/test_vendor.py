@@ -99,3 +99,16 @@ def test_monthly_list_that_failed_is_fetched_again(cfg):
     vendor = Vendor(transport, Budget(10), live=False)  # 下一期
     assert monthly_lists.backfill(vendor, cfg, state, disc, 10) == 1
     assert monthly_lists.complete(state, nodes, "202609", 2) and state["monthly_lists"]["months"]["2026-08"]["1:A"]
+
+
+def test_account_limit_stops_without_waiting_and_blocks_later_calls():
+    """“接口访问次数已达上限”是账户额度（实测过一小时仍然拒绝），不是“每分钟访问已达上限”的限流：
+    不等待重试，直接停；之后的调用不再发出去。"""
+    limit = json.dumps({"code": "ERROR", "message": "接口访问次数已达上限"})
+    transport = Recorder([limit, fixture_text("product_research")])
+    vendor = Vendor(transport, Budget(5), live=False, rate_limit_wait=3600)
+    with pytest.raises(QuotaExhausted):
+        vendor.call("asin_prediction", {"asin": "X"})
+    with pytest.raises(QuotaExhausted):
+        vendor.call("product_research", request(marketplace="US", nodeIdPath="1"))
+    assert len(transport.seen) == 1

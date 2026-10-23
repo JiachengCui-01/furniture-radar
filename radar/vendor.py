@@ -21,10 +21,11 @@ from .mcp_client import McpClient, McpToolError, McpUnavailable
 
 Transport = Callable[[str, dict], str]
 
-# 厂商返回这些字眼时视为积分/权限问题，整轮停止，而不是逐个失败
-_QUOTA_HINTS = ("积分", "余额", "额度", "quota", "credit", "insufficient", "points")
-# 限流（实测返回“每分钟访问已达上限”）：等一会儿重试即可，不算失败
-_RATE_HINTS = ("每分钟", "访问已达上限", "频繁", "rate limit", "too many", "429")
+# 厂商返回这些字眼时视为积分/权限问题，整轮停止，而不是逐个失败。
+# 实测 2026-10-23 一天调了约 1 万次后，每次都返回“接口访问次数已达上限”（立即拒绝，过一小时仍然拒绝）：这是账户额度，不是限流
+_QUOTA_HINTS = ("积分", "余额", "额度", "次数已达上限", "quota", "credit", "insufficient", "points")
+# 限流（实测返回“每分钟访问已达上限”）：等一会儿重试即可，不算失败。只认“每分钟”，免得把上面的账户额度当成限流
+_RATE_HINTS = ("每分钟", "频繁", "rate limit", "too many", "429")
 
 
 def _rate_limited(message: str) -> bool:
@@ -118,6 +119,7 @@ class Vendor:
     calls: list[dict] = field(default_factory=list)
     _cache: dict = field(default_factory=dict)
     _last_call_at: float = 0.0
+    quota_error: str = ""  # 账户额度用完后记下原因，之后的调用不再发出去，直接抛 QuotaExhausted
     _schemas: dict | None = None
 
     def wants_request(self, tool: str, default: bool) -> bool:
@@ -140,6 +142,8 @@ class Vendor:
 
     def call(self, tool: str, arguments: dict, *, purpose: str = "", prune: bool = True,
              _drift_retry: bool = True) -> Reply:
+        if self.quota_error:
+            raise QuotaExhausted(self.quota_error)
         if self.live and os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("RADAR_TEST_LIVE"):
             raise McpUnavailable("pytest 中禁止真实调用卖家精灵（设置 RADAR_TEST_LIVE=1 可显式开启）")
 
@@ -184,7 +188,8 @@ class Vendor:
             self.calls.append({"tool": tool, "purpose": purpose, "status": "rejected",
                                "billable": True, "detail": message[:200]})
             if any(hint in message.lower() for hint in _QUOTA_HINTS) and not _rate_limited(message):
-                raise QuotaExhausted(f"卖家精灵拒绝调用：{message}")
+                self.quota_error = f"卖家精灵拒绝调用：{message}"
+                raise QuotaExhausted(self.quota_error)
             return Reply(tool, prepared, "rejected", detail=message, billable=True)
 
         data = envelope.get("data") if isinstance(envelope, dict) and "data" in envelope else envelope
@@ -212,7 +217,8 @@ class Vendor:
             except McpToolError as exc:
                 message = str(exc)
                 if any(hint in message.lower() for hint in _QUOTA_HINTS) and not _rate_limited(message):
-                    raise QuotaExhausted(f"卖家精灵拒绝调用：{message}") from exc
+                    self.quota_error = f"卖家精灵拒绝调用：{message}"
+                    raise QuotaExhausted(self.quota_error) from exc
                 return Reply(tool, arguments, "rejected", detail=message, billable=True)
             except McpUnavailable as exc:
                 # 401/403 是密钥问题，重试无用
