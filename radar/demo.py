@@ -288,9 +288,12 @@ class SyntheticWorld:
             members = [p for p in self.products
                        if (p.node == node or p.node.startswith(node + ":")) and p.available <= end]
             rows = [self._month_row(p, period) if period else self._recent_row(p) for p in members]
-            rows = [r for r in rows if r["revenue"] >= req.get("minRevenue", 0) and r["units"] >= req.get("minUnits", 0)]
+            rows = [r for r in rows if r["revenue"] >= req.get("minRevenue", 0) and r["units"] >= req.get("minUnits", 0)
+                    and r["units"] <= req.get("maxUnits", float("inf"))]
             order = (req.get("order") or {}).get("field")
-            if order == "available_date":
+            if order == "total_units":
+                rows.sort(key=lambda r: -r["units"])
+            elif order == "available_date":
                 rows.sort(key=lambda r: -r["availableDate"])
             elif order == "bsr_rank_cr":
                 rows.sort(key=lambda r: -r["bsrCr"])
@@ -298,7 +301,8 @@ class SyntheticWorld:
                 rows.sort(key=lambda r: -(r["unitsGr"] if r["unitsGr"] is not None else -1e9))
             else:
                 rows.sort(key=lambda r: -r["revenue"])
-            return self._ok(self._page(rows[: int(req.get("size", 50))]))
+            size, page = int(req.get("size", 50)), int(req.get("page") or 1)
+            return self._ok({"page": page, "size": size, "total": len(rows), "items": rows[(page - 1) * size: page * size]})
         if tool == "asin_prediction":
             p = self.by_asin[req["asin"]]
             end = self.data_end

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import (analyze, category_history, clock, crypto, discovery, log, materials, monthly_lists, narrative, sales_trend,
-               store, tracking, verify, vision)
+               store, tracking, universe, verify, vision)
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
 from .detect import directions, seasonality
@@ -169,11 +169,15 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
                     schema_loader=schema_loader)
     log.info(f"本期调用预算 {limit} 次（本月已用 {used_this_month}/{bcfg['monthly_cap']}）")
 
-    # 1. 发现（月度基线）+ 近 30 天榜单（每期刷新）+ 上期爆款的相似款
+    # 1. 发现（月度基线）+ 全市场名单（每期翻一遍，机会候选从这里初筛）+ 近 30 天榜单 / 上期爆款的相似款（默认关闭：全市场名单已经包括）
     disc = ensure_discovery(vendor, cfg, state, today)
     category_history.record_discovery(state, disc)  # 月度发现查的就是上个月的类目销量，顺手记进季节历史
     monthly_lists.record_discovery(state, disc)  # 月度发现的头部名单也是持续热销补判的当月名单
     if disc and disc.get("nodes"):
+        try:
+            universe.run(vendor, cfg, state, disc["nodes"], today)
+        except BudgetExhausted:
+            log.warn("全市场名单：预算不够，没翻完，机会候选退回月度名单和近 30 天榜单")
         try:
             state["risers"] = {"run": run_seq, "date": today.isoformat(),
                                "items": discovery.find_risers(vendor, cfg, disc["nodes"])}
@@ -188,7 +192,9 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         rec = state["asins"].setdefault(asin, {"asin": asin, "first_seen_run": run_seq, "obs": []})
         rec["last_pool_run"] = run_seq
         rec["pool_reason"] = reasons[asin]
-    n_cands = len(tracking.opportunity_candidates(disc, state, cfg, today))
+    uni = state.get("universe") or {}
+    screened = universe.screen(state, uni["rows"], today, cfg) if uni.get("date") == today.isoformat() else None
+    n_cands = len(screened) if screened is not None else len(tracking.opportunity_candidates(disc, state, cfg, today))
     mix = {k: sum(1 for r in reasons.values() if r == k) for k in tracking.REASON_CN}
     log.info(f"追踪池 {len(pool)} 个 ASIN（" + " / ".join(f"{tracking.REASON_CN[k]} {v}" for k, v in mix.items())
              + f"；机会候选共 {n_cands} 个）")
@@ -254,7 +260,9 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
     report_id = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
     coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
-                "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"], "revision": revision}
+                "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"] + mix["screen"], "revision": revision,
+                "universe": len(uni.get("rows") or {}) if screened is not None else None,
+                "universe_pages": uni.get("pages") if screened is not None else None}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
@@ -497,7 +505,8 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
-        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision")},
+        "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
+                                                         "universe", "universe_pages")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }

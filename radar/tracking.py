@@ -24,7 +24,7 @@ import statistics
 import zlib
 from datetime import datetime, timedelta, timezone
 
-from . import clock, log, monthly_lists
+from . import clock, log, monthly_lists, universe
 from .detect.rules import current_rating, low_rating
 from .discovery import clean_text, keep_product
 from .series import Daily, build_daily
@@ -32,7 +32,7 @@ from .vendor import Vendor
 
 FLAG_LABELS = ("surge", "potential", "fake")
 FRESH_SOURCES = ("riser", "fresh_new", "similar")  # 近 30 天数据（截至当天）
-REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "similar": "爆款相似款",
+REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "screen": "全市场初筛", "similar": "爆款相似款",
              "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
 
 
@@ -95,8 +95,9 @@ def opportunity_rank(cands: list[dict], today) -> list[dict]:
 
 
 def fresh_rows(state: dict) -> dict[str, dict]:
-    """本期的近 30 天行：上升榜 / 新品榜优先，其次相似款。"""
-    rows = {p["asin"]: p for p in (state.get("similar") or {}).get("items") or []}
+    """本期的近 30 天行：上升榜 / 新品榜优先，其次相似款，再次全市场名单（universe.py）。"""
+    rows = dict((state.get("universe") or {}).get("rows") or {})
+    rows.update({p["asin"]: p for p in (state.get("similar") or {}).get("items") or []})
     rows.update({p["asin"]: p for p in (state.get("risers") or {}).get("items") or []})
     return rows
 
@@ -204,7 +205,15 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
         if enough_volume(p, pcfg) and keep_product(p, cfg):
             add(p["asin"], "similar", cap)
 
-    # 3. 机会候选：分数最高的每期都看，其余按“最久没查”轮流
+    # 3. 机会候选：本期翻了全市场名单的，初筛出来的全部都看（universe.screen，按优先级，预算不够时先看前面的）；
+    #    没翻成的（预算不够）退回旧办法：月度名单和近 30 天榜单里的，分数最高的每期都看，其余按“最久没查”轮流
+    uni = state.get("universe") or {}
+    if uni.get("date") == today.isoformat() and uni.get("rows"):
+        for asin, _score, _why in universe.screen(state, uni["rows"], today, cfg):
+            if len(order) >= size:
+                break
+            add(asin, "screen", size)
+        return order, {a: reason[a] for a in order}
     cands = opportunity_candidates(disc, state, cfg, today)
     every = int(pcfg.get("opportunity_every_run", 0))
     for p in cands[:every]:

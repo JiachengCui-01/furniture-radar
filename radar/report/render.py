@@ -730,6 +730,9 @@ def section_hints(cfg: dict) -> dict[str, str]:
     th = cfg["thresholds"]
     s, h, p, f, r = th["surge"], th["hot"], th["potential"], th["fake"], th["rising"]
     sc = th.get("seasonality") or {}
+    pool = cfg["pool"]
+    scope = (f"范围：全部子类目里近 30 天销量 ≥{pool['opportunity_min_units']} 件或销售额 ≥${pool.get('opportunity_min_revenue') or 0:,.0f} 的商品"
+             f"（全市场名单，每期都翻一遍，初筛后拉日数据判定；量不够的不在范围内）。")
     windows = " 或 ".join(map(str, s["windows"]))
     short = (f"对比期在卖不到 {th['short_base_days']} 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。"
              if th.get("short_base_days") else "")
@@ -737,10 +740,10 @@ def section_hints(cfg: dict) -> dict[str, str]:
               "乘以 这 6 个月季节指数的平均 ÷ 当月的指数，调整后达标的也算，卡片上注明“已按品类季节调整”"
               if h.get("deseasonalize") and sc else "")
     return {
-        "surge": f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
+        "surge": scope + f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
                  f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
                  f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}按爆发强度排序。",
-        "potential": f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
+        "potential": scope + f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
                      f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
                      f"没有回落；异常分 <{f['suspect_score']}。{short}按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平、"
@@ -752,7 +755,7 @@ def section_hints(cfg: dict) -> dict[str, str]:
                f"没有日数据，卡片上标“只有月度数据”：没有走势图、不判回落，异常信号只看留评率一项（追踪商品还看评论增速、评分跳升、短时脉冲等）。正在回落的（规则见“判定方法”）标“最近回落”，不影响上榜。按近 6 个月月均销量排序。",
         "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
                 f"仅为数据异常提示，需人工核实。按异常分排序。",
-        "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
+        "growth": scope + f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
                   f"且 ≥{r['min_daily_sales']} 件、没有回落。{short}“外观与工艺依据”就是从这些商品统计的。按势头排序。"
                   f"季节性品类里、按往年规律对比期间品类本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍的，标“品类季节性”并写明扣除季节后的倍数（见“数据说明”）。",
         "seasonal": "每年固定一段时间卖得特别好、其他时间反而不行的商品。不是板块：不论它本期在哪个板块、还是只在观察"
@@ -787,11 +790,14 @@ def _method(cfg: dict) -> str:
 钉钉消息里那一行也提醒，不排除（验证：标了的 4 个里 3 个修订后真的不成立，没标的 16 个里 2 个变了）。开发方向的增量和月销售额也用校正后的近 28 天日均。测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正、不标。</li>
 <li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
 爆火、潜力、上升中都只和真正在卖的日子比。</li>
-<li><b>追踪名额</b>：依次给必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
-+ 全部类目里销量最大的）、上期爆款的相似款、机会候选（近 30 天榜单和月度名单里增长快或上架半年内的，
-月销量 ≥{cfg['pool']['opportunity_min_units']} 件或月销售额 ≥${cfg['pool'].get('opportunity_min_revenue') or 0:,.0f}；
-名额够时全部每期都看，不够时机会分最高的 {cfg['pool']['opportunity_every_run']} 个每期都看，其余按最久没查轮流查）。
-机会分综合销量增长率、近 7 天 BSR 改善、子类目内销量位次和销售额位次、是否上架半年内。</li>
+<li><b>追踪名额</b>：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
++ 全部类目里销量最大的）+ 机会候选。机会候选来自<b>全市场名单</b>：每期把全部子类目里近 30 天销量 ≥{cfg['pool']['opportunity_min_units']} 件
+或销售额 ≥${cfg['pool'].get('opportunity_min_revenue') or 0:,.0f} 的商品都翻一遍，存下每个商品的近 30 天销量；名单里的增长率和日数据对不上，
+所以用自己存的往期名单算：比约 30 天前那份高 ≥{cfg['pool']['screen_growth']:.0%}、半年内上架且没跌、近 6 / 12 天比 6 / 12 天前那份的日均高
+{cfg['pool']['screen_short']:g} 倍以上，满足一个就拉日数据按上面的规则判；新进名单的都拉。头一个月还没有 30 天前的快照，
+用上个月的月度名单当基准、门槛放宽，再加上近 7 天排名改善 ≥{cfg['pool']['screen_bsr_cr']:g}%。
+回测（全覆盖试跑 2,039 个门槛以上商品）：初筛不漏增长商品，要拉日数据的约三成多（头一个月四到六成）。
+突然爆火、潜力、上升中都只在这些量够的商品里找。</li>
 <li><b>板块归属</b>：每个商品只归入一个板块，优先级：评分不达标 &gt; 异常信号 &gt; 突然爆火 &gt; 潜力 &gt; 持续热销；都不属于的为“观察”。
 同时也符合潜力 / 持续热销条件的，在卡片上标“潜力”/“长期头部”。各板块的入选条件见点开后小窗顶部。</li>
 <li><b>评分门槛</b>：评分低于 {th['min_rating']}、或评论不到 {th['few_ratings']} 条且评分低于 {th['few_ratings_min_rating']}（评论少时几条差评就会跌破
@@ -867,7 +873,10 @@ def render(ctx: dict) -> str:
     cov = ctx["coverage"]
     facts = [f"月度名单 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
              f"追踪 {counts['total']} 个（本期刷新 {cov['refreshed']} 个）"]
-    if cov.get("candidates"):
+    if cov.get("universe"):
+        facts.append(f"全市场名单：近 30 天量够的商品 {cov['universe']} 个（翻名单 {cov.get('universe_pages') or 0} 次调用），"
+                     f"初筛出 {cov.get('candidates') or 0} 个可能在增长，本期拉了日数据的 {cov.get('opportunity') or 0} 个")
+    elif cov.get("candidates"):
         facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
     if counts.get("low"):
         facts.append(f"评分不达标未上榜 {counts['low']} 个")

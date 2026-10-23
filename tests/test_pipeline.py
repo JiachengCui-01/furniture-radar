@@ -289,29 +289,34 @@ def test_send_last_posts_action_card(world_run, cfg):
     assert "%23k%3D" in card["singleURL"]  # 密钥片段被完整编码进按钮链接
 
 
-def test_recent_lists_and_similar_feed_the_pool(cfg, master_key, tmp_path):
-    """默认名额下：近 30 天榜单每期刷新并带进追踪池；第二期用上期爆款查相似款。"""
-    cfg["discovery"]["risers_min_units"] = 100
+def test_whole_market_list_feeds_the_pool(cfg, master_key, tmp_path):
+    """默认：每期把全部子类目里近 30 天量够的商品翻一遍（全市场名单），机会候选从它初筛；根类目的近 30 天榜单、相似款不再查。
+    头一个月还没有 30 天前自己存的快照：拉一次结束于 21~45 天前的那个月的全市场月度名单当基准，下一期不再拉。"""
+    from radar import clock
+
     cfg["pool"]["opportunity_min_units"] = 50  # 模拟世界里的商品销量偏小
     world = SyntheticWorld(START.date())
     secrets = Secrets(report_key=master_key)
     pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
     master = crypto.parse_master_key(master_key)
     state = store.load(tmp_path, master)
-    risers = state["risers"]["items"]
-    assert risers and state["risers"]["run"] == 1
-    assert all(r["node"] != "1055398:1063306:1063318:3733551" for r in risers)  # 被排除的沙发不会混进来
-    assert set(state["runs"][-1]["labels"]) & {r["asin"] for r in risers}
-    assert "asin_competitor" not in world.calls  # 第一期还没有爆款作种子
+    uni = state["universe"]
+    today = clock.parse_day(state["runs"][-1]["date"])
+    assert uni["rows"] and uni["date"] == today.isoformat() and len(uni["snaps"]) == 1
+    assert all(r["units"] >= 50 or r["revenue"] >= 40000 for r in uni["rows"].values())
+    assert all(r["node"] != "1055398:1063306:1063318:3733551" for r in uni["rows"].values())  # 被排除的沙发不会混进来
+    assert uni["baseline"]["period"] == "202608"  # 10-04 跑：9 月才结束 4 天，用 8 月（结束 34 天）
+    reasons = {state["asins"][a]["pool_reason"] for a in state["runs"][-1]["labels"] if a in state["asins"]}
+    assert "screen" in reasons and "similar" not in reasons
+    assert "asin_competitor" not in world.calls
+    assert state["runs"][-1]["coverage"]["universe"] == len(uni["rows"])
 
     world.advance(3)
     before = len(world.calls)
     pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=3))
     state = store.load(tmp_path, master)
-    assert state["risers"]["run"] == 2 and "asin_competitor" in world.calls[before:]
-    similar = {p["asin"] for p in state["similar"]["items"]}
-    assert similar and any(state["asins"][a].get("pool_reason") == "similar" for a in similar if a in state["asins"])
-    assert len(state["runs"][-1]["labels"]) <= cfg["pool"]["max_size"]
+    assert len(state["universe"]["snaps"]) == 2 and state["universe"]["baseline"]["period"] == "202608"
+    assert "asin_competitor" not in world.calls[before:]  # 基准月已经有了，第二期不再拉（period 没变）
 
 
 def test_scope_change_rediscovers_without_cross_scope_diff(cfg, master_key, tmp_path):

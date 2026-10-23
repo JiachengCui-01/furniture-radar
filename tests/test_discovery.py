@@ -134,6 +134,7 @@ def test_pool_order_core_similar_then_opportunities(cfg):
 
 
 def test_find_risers_uses_recent_30_days_and_find_similar_parses(cfg):
+    cfg["discovery"].update(risers_per_root=50, risers_new_per_root=50)  # 默认关闭（全市场名单已经包括），这里测它本身
     calls = []
 
     def transport(tool, args):
