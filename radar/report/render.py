@@ -370,7 +370,8 @@ def season_text(item: dict) -> str:
     as_of = clock.parse_day(item.get("as_of"))
     gap = seasonality.months_to_peak(as_of, s["peak_months"]) if as_of else None
     when = "" if gap is None else "，现在是旺季" if gap == 0 else f"，离旺季还有 {gap} 个月"
-    return f"每年 {seasonality.months_text(s['peak_months'])}旺，旺季日均至少是前后淡季的 {s['ratio']:.1f} 倍{when}"
+    return (f"连续 {s['cycles']} 年 {seasonality.months_text(s['peak_months'])}旺，"
+            f"每年旺季日均都至少是前后淡季的 {s['ratio']:.1f} 倍{when}")
 
 
 def _seasonal_pop(items: list[dict], seasons: dict, hint: str, total: int) -> str:
@@ -715,12 +716,13 @@ def _all_table(items: list[dict]) -> str:
 
 def season_rule(sc: dict) -> str:
     """季节性商品的四条（seasonality.item_season），小窗顶部和“判定方法”共用。"""
-    return ("每个商品的日数据只有约 400 天，自己看不出“每年都这样”，所以“每年”由所在品类 3 年的类目销量证明，"
-            "这个商品自己这一年要跟着走，四条都满足：① 所在子类目是季节性品类，旺季 = 品类的旺季月；"
-            f"② 最近连续 {sc['item_min_months']} 个月每月都在卖（每月 ≥{sc['item_min_days']} 天，只算在卖的日子，去掉大促日和断货日）；"
-            f"③ 每一段旺季的日均 ≥ 紧挨着它的前一段、后一段淡季日均的 {sc['item_ratio']:g} 倍，"
+    return ("“每年”要商品自己证明：日数据只有约 400 天、只看得到一个旺季，分不清是每年都这样还是那一年碰巧那段时间卖得好，"
+            "所以看卖家精灵的月度销量趋势（父体月销量，约 2 年），四条都满足：① 所在子类目是季节性品类（3 年类目销量），旺季 = 品类的旺季月；"
+            f"② 到最近一个月为止连续每月都有销量，其中至少有 {sc['item_min_cycles']} 年的旺季（只经历过一个旺季的不列）；"
+            f"③ 每一年的旺季日均 ≥ 紧挨着它的前一段、后一段淡季日均的 {sc['item_ratio']:g} 倍，"
             "而且看得到一次从淡季涨上去、一次从旺季掉下来（一直在涨或一直在跌的只有一边低，不算）；"
-            f"④ 淡季里每个月的日均都 ≤ 旺季日均的 {sc['item_off_max']:g} 倍（淡季里冲高过的不算）。")
+            f"④ 淡季里每个月的日均都 ≤ 最低那一年旺季日均的 {sc['item_off_max']:g} 倍（淡季里冲高过的不算，例如 Prime Day 那个月）。"
+            f"月度销量是整月合计，含大促日和断货日。只查季节性品类里上架满 {sc.get('item_min_age_days', 365)} 天的追踪商品。")
 
 
 def section_hints(cfg: dict) -> dict[str, str]:

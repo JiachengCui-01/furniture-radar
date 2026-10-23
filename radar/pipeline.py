@@ -8,11 +8,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import (analyze, category_history, clock, crypto, discovery, log, materials, monthly_lists, narrative, store,
-               tracking, verify, vision)
+from . import (analyze, category_history, clock, crypto, discovery, log, materials, monthly_lists, narrative, sales_trend,
+               store, tracking, verify, vision)
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
-from .detect import directions
+from .detect import directions, seasonality
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -208,7 +208,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
     #   持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
-    #   → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判
+    #   → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判 → 季节性品类里商品自己往年的月销量
     if disc and disc.get("nodes"):
         def spare(cap: int) -> int:
             return min(cap, max(0, vendor.budget.remaining - reserve))
@@ -223,6 +223,13 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
             monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
             if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months) and spare(len(disc["nodes"])):
                 monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
+        # 季节性商品要看商品自己往年的月销量（sales_trend.py）：季节性品类（类目历史够了才认得出）里上架满一年的追踪商品
+        sc = cfg["thresholds"].get("seasonality")
+        if sc and spare(int(bcfg.get("trend_calls", 0))):
+            profiles = {n["path"]: seasonality.profile(category_history.series(state, n["path"]), sc) for n in disc["nodes"]}
+            asins = sales_trend.candidates(state, pool, profiles, today, cfg)
+            if asins:
+                sales_trend.fetch(vendor, cfg, state, asins, today, spare(int(bcfg.get("trend_calls", 0))))
 
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)

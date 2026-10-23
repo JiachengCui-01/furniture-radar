@@ -320,6 +320,19 @@ class SyntheticWorld:
                       "rating": p.rating, "ratings": p.ratings_on(end, self.today), "nodeIdPath": p.node,
                       "nodeLabelPath": p.label, "imageUrl": ""}
             return self._ok({"asinDetail": detail, "dailyItemList": daily, "monthItemList": month_items})
+        if tool == "asin_sales_trend":  # 约 27 个月的父体月销量（上架以前的月份是 0），最后一个月是当月、还没结束
+            p = self.by_asin[req["asin"]]
+            end = self.data_end
+            y, m = end.year, end.month
+            points = []
+            for _ in range(27):
+                first = date(y, m, 1)
+                last = min(end, date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1))
+                units = sum(p.sales(first + timedelta(days=k), self.today) for k in range((last - first).days + 1))
+                points.append({"month": f"{y}-{m:02d}", "parentUnitSales": round(units), "childUnitSales": None,
+                               "price": p.price})
+                y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+            return self._ok({"asin": p.asin, "salesTrendPoints": points[::-1]})
         if tool == "asin_competitor":  # 同子类目的其他商品，近 30 天数据，按销售额排序
             seed = self.by_asin[req["asin"]]
             rows = [self._recent_row(p) for p in self.products

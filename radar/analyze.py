@@ -326,7 +326,7 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
                 _revision_tag(item, lost_judgments(item, alt), rev)
     for item, (_, rec) in zip(items, recs):
         _season_tag(item, profiles.get(item.get("node")), sc)
-        _item_season(item, rec, profiles.get(item.get("node")), ev["days"], sc, th.get("out_of_stock_bsr"))
+        _item_season(item, rec, profiles.get(item.get("node")), sc)
     seasons = ({path: seasonality.outlook(prof, data_date, sc) for path, prof in profiles.items()}
                if sc and data_date else {})
     deal = deal_factors(dailies_by_node(recs), ev["days"], data_date)
@@ -534,15 +534,14 @@ def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
         item["tags"].append(f"品类季节性（按往年规律，这段时间品类本来就是之前的 {expect:.1f} 倍{rest}）")
 
 
-def _item_season(item: dict, rec: dict, prof: dict | None, events, sc: dict | None, oos: float | None) -> None:
-    """季节性商品（seasonality.item_season）：item["item_season"] = 判断结果（季节性品类里有一整年数据的才有），
-    是的标“季节性（每年 X 月旺…）”。"""
-    d = Daily.from_record(rec.get("series"))
-    s = seasonality.item_season(d.without(events) if d is not None else None, prof, sc, oos) if sc else None
+def _item_season(item: dict, rec: dict, prof: dict | None, sc: dict | None) -> None:
+    """季节性商品（seasonality.item_season）：item["item_season"] = 判断结果（季节性品类里查过商品自己往年月销量的才有，
+    sales_trend.py），是的标“季节性（连续 N 年 X 月旺…）”。"""
+    s = seasonality.item_season(seasonality.trend_months(rec.get("sales_trend")), prof, sc) if sc else None
     item["item_season"] = s
     if s and s["seasonal"]:
-        item["tags"].append(f"季节性（每年 {seasonality.months_text(s['peak_months'])}旺，"
-                            f"旺季日均至少是前后淡季的 {s['ratio']:.1f} 倍）")
+        item["tags"].append(f"季节性（连续 {s['cycles']} 年 {seasonality.months_text(s['peak_months'])}旺，"
+                            f"每年旺季日均都至少是前后淡季的 {s['ratio']:.1f} 倍）")
 
 
 def is_seasonal(item: dict) -> bool:

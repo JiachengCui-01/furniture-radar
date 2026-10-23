@@ -61,6 +61,7 @@ DEFAULTS: dict = {
         "material_lookups": 300,
         "history_calls": 200,
         "monthly_list_calls": 200,
+        "trend_calls": 200,
         "stable_refresh_every": 1,
         "min_interval_seconds": 1.0,
         "rate_limit_wait_seconds": 60,
@@ -101,7 +102,7 @@ DEFAULTS: dict = {
                         "tag_ratio": 1.15, "ratio_shrink": 0.6, "calibrate_min_pairs": 30,
                         "calibrate_min_months": 24, "lead_days": 120,
                         "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2, "quieter": 0.8,
-                        "item_min_months": 12, "item_min_days": 14, "item_ratio": 2.0, "item_off_max": 0.8},
+                        "item_min_cycles": 2, "item_min_age_days": 365, "item_ratio": 2.0, "item_off_max": 0.8},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,

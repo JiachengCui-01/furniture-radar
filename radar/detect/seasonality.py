@@ -28,15 +28,18 @@
   按月的预测（开发方向的“到货前高峰”“上架后”、持续热销的调整）不打折，那是按月回测过的。
 预测 = 最近 3 个月按季节指数还原后的平均水平 × 目标月份的季节指数。回测（2026-10，28 个子类目，
   预测起点 2025-09~2026-03、提前 1~6 个月）误差中位数 10~12%，按现在水平外推是 12~16%；每个子类目给出自己的回测误差。
-季节性商品（item_season）= 每年固定一段时间卖得特别好、其他时间反而不行的商品。每个商品的日数据只有约 400 天（一整年），
-  自己看不出“每年都这样”，所以“每年”由所在品类的 3 年类目销量证明，商品自己这一年要跟着这个规律走，四条都满足：
-  ① 所在子类目是季节性品类，旺季 = 品类的旺季月；
-  ② 这个商品最近连续 item_min_months 个月每月都在卖（每月 ≥ item_min_days 天，只算在卖的日子：去掉大促日、断货日）；
-  ③ 每一段旺季（时间上连着的旺季月份）的日均 ≥ 紧挨着它的前一段、后一段淡季日均的 item_ratio 倍，
+季节性商品（item_season）= 每年固定一段时间卖得特别好、其他时间反而不行的商品。“每年”要商品自己证明：
+  日数据只有约 400 天，只看得到一个旺季，分不清是每年都这样、还是那一年碰巧那段时间卖得好（2026-10-23 的报告里
+  一个 2025 年 5 月才上架的梳妆台、一个 2024 年 11 月并没有冲高的长凳都被列了进来），所以用卖家精灵的月度销量趋势
+  （asin_sales_trend，父体月销量，约 27 个月，比日数据多一年；radar/sales_trend.py），四条都满足：
+  ① 所在子类目是季节性品类（3 年类目销量），旺季 = 品类的旺季月；
+  ② 到最近一个已结束的月份为止连续每个月都有销量，其中至少有 item_min_cycles 个旺季（前后至少挨着一段淡季的旺季段）；
+  ③ 每一年的旺季日均 ≥ 紧挨着它的前一段、后一段淡季日均的 item_ratio 倍，
      而且看得到至少一次从淡季涨上去、一次从旺季掉下来（只有一边低的是一直在涨或一直在跌）；
-  ④ 淡季里每个月的日均都 ≤ 旺季日均的 item_off_max 倍（其他时间反而不行：淡季里冲高过的不算）。
-  2026-10 的数据（13 个季节性品类里有一整年数据的 81 个商品）：只要 ③ 时 8 个，加上 ④ 剩 6 个（2 个梳妆台、4 个衣帽架），
-  去掉的两个衣帽架淡季的 8~9 月比冬天还高。
+  ④ 淡季里每个月的日均都 ≤ 最低那一年旺季日均的 item_off_max 倍（其他时间反而不行：淡季里冲高过的不算，例如 Prime Day 那个月）。
+  月度销量是整月合计，含大促日和断货日。2026-10-23 的数据（13 个季节性品类里上架满一年的 80 个追踪商品）：一个都不满足；
+  原来按“自己一年 + 品类 3 年”列出的 3 个：梳妆台只经历过一个旺季，长凳 2024 年旺季只是前后淡季的 1.7 倍、
+  2025 年 7 月和旺季一样高，衣帽架有一年旺季只是淡季的 1.6 倍。
 """
 from __future__ import annotations
 
@@ -285,61 +288,55 @@ def outlook(prof: dict | None, as_of: date, cfg: dict) -> dict | None:
     }
 
 
-def item_months(d, oos_bsr: float | None, min_days: int) -> list[list]:
-    """这个商品每个月的日均销量 [[YYYY-MM, 日均]]：只算在卖的日子（d 已去掉大促日；BSR ≥ oos_bsr 或缺失的断货日不算），
-    取最近一段连续的、每月在卖 ≥ min_days 天的月份（当月不够天数时从上个月往前数）。"""
-    by: dict[str, list[float]] = {}
-    for i, s in enumerate(d.sales):
-        b = d.bsr[i] if i < len(d.bsr) else None
-        if i in d.masked or s is None or b is None or (oos_bsr is not None and b >= oos_bsr):
-            continue
-        by.setdefault(month_key(d.day(i)), []).append(s)
-    ok = sorted(k for k, v in by.items() if len(v) >= min_days)
-    run: list[str] = []
-    for key in reversed(ok):
-        if run and key != _add_months(run[-1], -1):
+def trend_months(trend: dict | None) -> list[list]:
+    """卖家精灵 asin_sales_trend 的父体月销量（radar/sales_trend.py 存的 {"month": 查的那个月, "points": [[YYYY-MM, 月销量]]}）
+    → [[YYYY-MM, 日均]]：只取查的时候已经结束的月份，到最近一个月为止连续每个月都有销量的那一段（中间有一个月是 0 就从它之后算）。"""
+    if not trend or not trend.get("points"):
+        return []
+    closed = sorted((k, u) for k, u in trend["points"] if k < str(trend.get("month") or "9999-99"))
+    run: list[list] = []
+    for key, units in reversed(closed):
+        if not units or (run and key != _add_months(run[-1][0], -1)):
             break
-        run.append(key)
-    return [[k, round(statistics.mean(by[k]), 2)] for k in reversed(run)]
+        run.append([key, round(units / _month_days(key), 2)])
+    return run[::-1]
 
 
-def item_season(d, prof: dict | None, cfg: dict, oos_bsr: float | None = None) -> dict | None:
-    """季节性商品（模块说明的四条）。d：这个商品的日数据（已去掉大促日）。所在子类目不是季节性品类、
-    或这个商品没有连续 item_min_months 个月的数据时返回 None；否则返回
-    {"seasonal", "peak_months", "months": [[YYYY-MM, 日均, 是否旺季]], "ratio"（各段旺季 ÷ 前后淡季的最小倍数）,
-     "peak_avg", "off_avg", "off_max"（淡季最高那个月 ÷ 最低那段旺季）}。"""
-    if d is None or not prof or not prof.get("seasonal"):
-        return None
-    months = item_months(d, oos_bsr, int(cfg["item_min_days"]))
-    if len(months) < int(cfg["item_min_months"]):
+def item_season(months: list[list], prof: dict | None, cfg: dict) -> dict | None:
+    """季节性商品（模块说明的四条）。months：这个商品自己的每月日均 [[YYYY-MM, 日均]]（trend_months，约 2 年）。
+    所在子类目不是季节性品类、或这段月份里没有一个旺季前后挨着淡季时返回 None；否则返回
+    {"seasonal", "peak_months", "months": [[YYYY-MM, 日均, 是否旺季]], "cycles"（看到了几个旺季：前后至少挨着一段淡季的旺季段数）,
+     "ratio"（各年旺季 ÷ 前后淡季的最小倍数）, "peak_avg", "off_avg", "off_max"（淡季最高那个月 ÷ 最低那一年的旺季）}。"""
+    if not months or not prof or not prof.get("seasonal"):
         return None
     peaks = set(prof["peak_months"])
-    segs: list[tuple[bool, list[float]]] = []  # 时间上连着的旺季 / 淡季月份，各成一段
+    segs: list[tuple[bool, list[float]]] = []  # 时间上连着的旺季 / 淡季月份，各成一段（一年的旺季是一段）
     for key, avg in months:
         flag = int(key[5:]) in peaks
         if segs and segs[-1][0] == flag:
             segs[-1][1].append(avg)
         else:
             segs.append((flag, [avg]))
-    ratios, rise, fall = [], False, False
+    ratios, rise, fall, cycles = [], False, False, 0
     for j, (flag, values) in enumerate(segs):
-        if not flag:
+        neighbours = [nb for nb in (j - 1, j + 1) if 0 <= nb < len(segs)]
+        if not flag or not neighbours:
             continue
+        cycles += 1
         level = statistics.mean(values)
-        for nb in (j - 1, j + 1):
-            if 0 <= nb < len(segs):
-                off = statistics.mean(segs[nb][1])
-                ratios.append(level / off if off > 0 else math.inf)
-                rise, fall = rise or nb < j, fall or nb > j
+        for nb in neighbours:
+            off = statistics.mean(segs[nb][1])
+            ratios.append(level / off if off > 0 else math.inf)
+            rise, fall = rise or nb < j, fall or nb > j
     peak_levels = [statistics.mean(v) for f, v in segs if f]
     off_values = [v for f, vs in segs if not f for v in vs]
     if not ratios or not off_values:
         return None
     ratio = min(ratios)
     off_max = max(off_values) / min(peak_levels) if min(peak_levels) > 0 else math.inf
-    seasonal = (rise and fall and ratio >= float(cfg["item_ratio"]) - 1e-9
+    seasonal = (cycles >= int(cfg["item_min_cycles"]) and rise and fall and ratio >= float(cfg["item_ratio"]) - 1e-9
                 and off_max <= float(cfg["item_off_max"]) + 1e-9)
-    return {"seasonal": seasonal, "peak_months": sorted(peaks),
+    return {"seasonal": seasonal, "peak_months": sorted(peaks), "cycles": cycles,
             "months": [[k, v, int(k[5:]) in peaks] for k, v in months],
             "ratio": round(ratio, 2), "off_max": round(off_max, 2),
             "peak_avg": round(statistics.mean(v for f, vs in segs if f for v in vs), 1),

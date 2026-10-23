@@ -130,9 +130,10 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
         prof = result["profiles"][item["node"]]
         assert prof["seasonal"] and s_["peak_months"] == prof["peak_months"]  # ① 品类每年同样的月份高
         keys = [k for k, _, _ in s_["months"]]
-        assert len(keys) >= sc["item_min_months"]  # ② 连续 12 个月以上
-        assert all(seasonality._add_months(a, 1) == b for a, b in zip(keys, keys[1:]))
+        assert all(seasonality._add_months(a, 1) == b for a, b in zip(keys, keys[1:]))  # ② 连续每月都有销量
         runs = [(peak, [v for _, v, _ in grp]) for peak, grp in itertools.groupby(s_["months"], key=lambda m: m[2])]
+        assert sum(1 for j, (peak, _) in enumerate(runs) if peak and len(runs) > 1) >= sc["item_min_cycles"]  # 至少 2 年的旺季
+        assert state["asins"][item["asin"]]["sales_trend"]["points"]  # 用的是商品自己往年的月销量
         peak_levels = [statistics.mean(v) for peak, v in runs if peak]
         sides = set()
         for j, (peak, values) in enumerate(runs):  # ③ 每段旺季 ≥ 前后淡季的 2 倍，涨上去、掉下来都看得到
