@@ -208,6 +208,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
     #   持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
+    #   → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判
     if disc and disc.get("nodes"):
         def spare(cap: int) -> int:
             return min(cap, max(0, vendor.budget.remaining - reserve))
@@ -220,6 +221,8 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
             category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare(int(bcfg.get("history_calls", 0))))
         if not lists_ready and spare(int(bcfg.get("monthly_list_calls", 0))):
             monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
+            if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months) and spare(len(disc["nodes"])):
+                monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
 
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)
@@ -237,8 +240,15 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 主材质：增长商品 + 持续热销对照组，查亚马逊商品详情的 Material（查过的永久缓存）
     focus, reference = analysis_groups(items, cfg)
-    # 两组交替排：名额不够时两组都有一部分查到亚马逊 Material，主材质对比的口径不会一边倒
+    # 两组交替排：名额不够时两组都有一部分查到亚马逊 Material，主材质对比的口径不会一边倒；
+    # 名额还有剩，再查其余增长商品（开发方向的主材质用全部增长商品）和其余上榜商品（卡片上的主材质）
     both = [i for pair in itertools.zip_longest(focus, reference) for i in pair if i is not None]
+    listed = analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot") or analyze.is_seasonal(i)]
+    seen = {i["asin"] for i in both}
+    for item in listed:
+        if item["asin"] not in seen:
+            seen.add(item["asin"])
+            both.append(item)
     looked = materials.lookup(vendor, both, state, cfg, today, int(bcfg.get("material_lookups", 15)))
     if looked:
         log.info(f"材质查询 {looked} 个")

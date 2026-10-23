@@ -366,7 +366,7 @@ def test_local_runs_derive_pages_url_from_git_remote(cfg, monkeypatch):
 
 
 def test_untracked_heads_are_judged_from_monthly_lists(cfg, master_key, tmp_path):
-    """追踪池装不下的头部商品，用往月名单 + 近 30 天名单补判持续热销：第一期补往月名单，第二期开始判。
+    """追踪池装不下的头部商品，用往月名单 + 近 30 天名单补判持续热销：第一期补齐往月名单后接着查近 30 天名单，当期就判。
     补判的商品只在持续热销里（标“只有月度数据”），不算追踪商品、不进“全部追踪商品”，每个都符合写出来的条件。"""
     from radar import analyze, clock, monthly_lists, tracking
     from radar.series import closed_months, cv, log_growth
@@ -379,7 +379,7 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg, master_key, tmp_path
     pipeline.run(cfg, secrets, site, transport=world, now=START)
     state = store.load(site, crypto.parse_master_key(master_key))
     assert monthly_lists.complete(state, state["discovery"]["nodes"], state["discovery"]["period"], 6)
-    assert not (state["monthly_lists"].get("rolling") or {}).get("rows")  # 第一期只补往月名单
+    assert state["monthly_lists"]["rolling"]["rows"] and state["runs"][-1]["monthly_judged"]  # 补齐的那一期就判
     world.advance(3)
     pipeline.run(cfg, secrets, site, transport=world, now=START + timedelta(days=3))
     state = store.load(site, crypto.parse_master_key(master_key))
