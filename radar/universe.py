@@ -23,6 +23,7 @@ state["universe"] = {
 """
 from __future__ import annotations
 
+import statistics
 from datetime import date, timedelta
 
 from . import clock, log
@@ -211,6 +212,34 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
         if why:
             out.append((asin, max([f["g"]] + [r - 1 for r in shorts]), "；".join(why)))
     out.sort(key=lambda t: -t[1])
+    return out
+
+
+def node_tide(state: dict, today: date, cfg: dict, deal: dict | None = None, revision: dict | None = None) -> dict[str, float]:
+    """品类大盘：每个子类目里量够的商品（本期的全市场名单），近 30 天销量 ÷ 约 30 天前那份的中位数（基准同 features：
+    自己存的约 30 天前的快照，头一个月用上个月的月度名单）。潜力、上升中要先除以它再比门槛（“跑赢大盘”，analyze）。
+    名单的近 30 天含大促日，按 deal（analyze.deal_factors）扣掉；基准是上个月的月度名单（已修订完）时，
+    近 30 天里最后几天还会被卖家精灵下调，按 revision（本期测到的修订幅度）扣掉（两边都是自己存的快照时都含没修订的几天，不用扣）。
+    商品数不到 thresholds.tide.min_items 的子类目不算；最多算到 thresholds.tide.max 倍。本期没翻全市场名单时返回 {}。"""
+    tcfg = cfg["thresholds"].get("tide") or {}
+    uni = _uni(state)
+    if not tcfg.get("enabled", True) or uni.get("date") != today.isoformat() or not uni.get("rows"):
+        return {}
+    shrink = 1.0
+    if revision and revision.get("window"):
+        shrink = 1 - min(int(revision["window"]), 30) / 30 * (1 - float(revision.get("median") or 1))
+    by_node: dict[str, list[float]] = {}
+    for asin, row in uni["rows"].items():
+        f = features(state, asin, row, today)
+        if f["g"] is None or not row.get("node"):
+            continue
+        by_node.setdefault(row["node"], []).append((1 + f["g"]) * (shrink if f["base"] == "month" else 1.0))
+    deal = deal or {}
+    out = {}
+    for node, ratios in by_node.items():
+        if len(ratios) >= int(tcfg.get("min_items", 10)):
+            tide = statistics.median(ratios) / float(deal.get(node, deal.get("*", 1.0)) or 1.0)
+            out[node] = round(min(float(tcfg.get("max", 2.0)), tide), 3)
     return out
 
 

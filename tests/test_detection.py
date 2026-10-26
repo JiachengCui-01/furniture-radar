@@ -424,6 +424,23 @@ def test_zero_sale_runs_count_as_stock_out_for_rising_baseline(cfg):
     assert not _judge_growth(d, idx, d.as_of(), {}, {}, th, False)["rising"]
 
 
+def test_rising_must_beat_the_node_tide(cfg):
+    """跑赢大盘：子类目整体 ×1.4 时，×1.5 的上升中扣除后只有 ×1.07，不算，标“随大盘”；整体没涨（≤1）时照常算。"""
+    from radar.analyze import _judge_growth, evaluate
+
+    sales = [10] * 72 + [15] * 28
+    d = Daily.from_record({"start": "2026-06-01", "bsr": [5000] * 100, "sales": sales, "price": [50] * 100})
+    idx, th = len(sales) - 1, cfg["thresholds"]
+    assert _judge_growth(d, idx, d.as_of(), {}, {}, th, False)["rising"]["ratio"] == 1.5
+    assert _judge_growth(d, idx, d.as_of(), {}, {}, th, False, tide=0.9)["rising"]
+    g = _judge_growth(d, idx, d.as_of(), {}, {}, th, False, tide=1.4)
+    assert g["rising"] is None and g["tided"]["lost"][0][0] == "上升中"
+    rec = {"series": {"start": "2026-06-01", "bsr": [5000] * 100, "sales": sales, "price": [50] * 100},
+           "available": "2024-01-01", "node": "N"}
+    item = evaluate("X", rec, None, {}, cfg, d.as_of(), tide=1.4)
+    assert not item["rising"] and any(tag.startswith("随大盘（所在子类目整体 ×1.40") for tag in item["tags"])
+
+
 def test_restock_is_not_a_surge(cfg):
     """断货（日销 0、BSR 几百万）后恢复供货：看起来像暴涨，其实只是回到原来的水平。"""
     d = make([80] * 80 + [0] * 26 + [80] * 14)

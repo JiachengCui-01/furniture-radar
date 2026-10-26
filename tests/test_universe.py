@@ -46,3 +46,23 @@ def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     assert f["base"] == "month" and f["age"] == 31 and round(f["g"], 2) == 0.1  # 310 件 / 31 天 × 30 = 300
     picked = {a for a, _s, _w in universe.screen(state, rows, TODAY, cfg)}
     assert picked == {"C"}  # A 只 +10%（基准 31 天前要 15%）；B 跌了；C 近 7 天排名改善 25%
+
+
+def test_node_tide_is_the_median_change_of_the_node(cfg):
+    """品类大盘：子类目里量够的商品近 30 天比约 30 天前的中位数；扣大促系数；基准是上个月的月度名单（已修订完）时，
+    近 30 天里最后几天还会被下调，按修订幅度扣；商品太少的子类目不算；本期没翻名单时不算。"""
+    snaps = {30: {f"A{i}": 100 for i in range(12)} | {f"B{i}": 100 for i in range(3)}}
+    rows = {f"A{i}": {**_row(100 + 10 * i), "node": "N:A"} for i in range(12)}
+    rows.update({f"B{i}": {**_row(300), "node": "N:B"} for i in range(3)})
+    state = _state(snaps)
+    state["universe"].update(date=TODAY.isoformat(), rows=rows)
+    tides = universe.node_tide(state, TODAY, cfg)
+    assert tides == {"N:A": 1.55}  # 1.00~2.10 的中位数；N:B 只有 3 个商品
+    assert universe.node_tide(state, TODAY, cfg, deal={"*": 1.0, "N:A": 1.24}) == {"N:A": 1.25}
+    month = {"period": "202610", "end": "2026-10-31", "days": 30, "units": {f"A{i}": 100 for i in range(12)}}
+    state2 = _state({}, month)
+    state2["universe"].update(date=TODAY.isoformat(), rows=rows)
+    revised = universe.node_tide(state2, TODAY, cfg, revision={"window": 9, "median": 0.8})
+    assert revised == {"N:A": round(1.55 * (1 - 9 / 30 * 0.2), 3)}
+    state["universe"]["date"] = "2026-11-28"
+    assert universe.node_tide(state, TODAY, cfg) == {}

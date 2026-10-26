@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from . import category_history, clock, monthly_lists
+from . import category_history, clock, monthly_lists, universe
 from .detect import events as events_mod
 from .detect import fakehot, seasonality, traits
 from .detect.design import main_material
@@ -59,11 +59,13 @@ def _last(values: list):
 
 
 def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dict, st: dict, th: dict,
-                  stale: bool, relist: dict | None = None, age: int | None = None) -> dict:
+                  stale: bool, relist: dict | None = None, age: int | None = None, tide: float | None = None) -> dict:
     """突然爆火（及断货恢复 / 新品起量 / 形态不稳）、潜力、上升中、回落：都在同一份日数据上判断。
     relist：老品换链接（rules.relisted）——上架天数不代表商品是新的，不算潜力、新品爆发、新品起量。
     age：上架天数。“从零起量”的只有上架 ≤ new_listing_max_age_days 天的叫新品爆发 / 新品起量，
-         更老的叫老链接重新起量（停了很久又开始卖，不是新品；回测：之后照样在涨，所以照常算爆火，只是名字不同）。"""
+         更老的叫老链接重新起量（停了很久又开始卖，不是新品；回测：之后照样在涨，所以照常算爆火，只是名字不同）。
+    tide：所在子类目的大盘倍数（universe.node_tide）。大于 1 时潜力、上升中的增长倍数先除以它再比门槛（跑赢大盘）；
+          突然爆火不用：它要求 BSR 排名提升一倍，排名本来就是和整个市场比的。"""
     oos = th.get("out_of_stock_bsr")
     surge = evaluate_surge(d, idx, th["surge"], oos) if idx is not None else None
     restock = None
@@ -99,6 +101,18 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28, "window": 28,
                       "base_in": len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run))}
+    # 跑赢大盘：所在子类目整体在涨时，增长倍数先除以大盘倍数（只是随大流的不算潜力 / 上升中）
+    tided = None
+    if tide and tide > 1:
+        lost = []
+        if potential and potential.get("recent_ratio") is not None \
+                and potential["recent_ratio"] / tide < th["potential"]["min_recent_ratio"] - 1e-9:
+            lost.append(("潜力", potential["recent_ratio"], th["potential"]["min_recent_ratio"]))
+            potential = None
+        if rising and rising["ratio"] / tide < (th.get("rising") or {}).get("min_ratio", 1.3) - 1e-9:
+            lost.append(("上升中", rising["ratio"], (th.get("rising") or {}).get("min_ratio", 1.3)))
+            rising = None
+        tided = {"tide": tide, "lost": lost} if lost else None
     # 短时脉冲把近 28 天日均撑高了，不是持续的增长：也不算潜力 / 上升中
     if unshaped and unshaped.get("pulse"):
         potential = rising = None
@@ -108,17 +122,18 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     if faded:
         surge = potential = rising = None
     return {"surge": surge, "restock": restock, "new_ramp": new_ramp, "unshaped": unshaped,
-            "potential": potential, "rising": rising, "mom": mom, "faded": faded, "revived": revived}
+            "potential": potential, "rising": rising, "mom": mom, "faded": faded, "revived": revived, "tided": tided}
 
 
 def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
              data_date: date | None = None, events=frozenset(), season: dict | None = None,
-             threshold_month: str | None = None) -> dict:
+             threshold_month: str | None = None, tide: float | None = None) -> dict:
     """data_date：本期日数据的最新日期（所有追踪商品里最晚的一天），“数据陈旧”和它比；
     events：大促日（detect/events.py），爆火 / 潜力 / 上升中 / 回落 / 季节性 / 持续热销都在去掉这些天的日数据上判断；
     season：所在子类目最近几个月的季节指数（seasonality.hot_levels，不是季节性品类为 None）：
             原始销量不达持续热销的，再按季节调整后判一次（调整只会多收、不会少收）；
-    threshold_month：子类目门槛线（第 N 名的月销量）取自哪个月（月度名单的月份）。"""
+    threshold_month：子类目门槛线（第 N 名的月销量）取自哪个月（月度名单的月份）；
+    tide：所在子类目的大盘倍数（universe.node_tide），潜力、上升中要跑赢它（_judge_growth）。"""
     th = cfg["thresholds"]
     full = Daily.from_record(rec.get("series"))
     as_of = full.as_of() if full else None
@@ -131,12 +146,12 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     age = clock.days_between(clock.parse_day(rec.get("available")), as_of or today)
     relist = relisted(full, idx, n_ratings, age, th["relist"]) if th.get("relist") else None
 
-    g = _judge_growth(d, idx, as_of, rec, st, th, stale, relist, age)
+    g = _judge_growth(d, idx, as_of, rec, st, th, stale, relist, age, tide)
     # 大促拉动：近 56 天里有大促日、这个商品自己在大促日冲高了，而且算上大促日能达到爆火 / 潜力 / 上升中、去掉就达不到
     deal_lift = False
     if d is not full and idx is not None and not (g["surge"] or g["potential"] or g["rising"]) \
             and _spiked_on_events(full, idx, events, th["events"]):
-        g_full = _judge_growth(full, idx, as_of, rec, st, th, stale, relist, age)
+        g_full = _judge_growth(full, idx, as_of, rec, st, th, stale, relist, age, tide)
         deal_lift = bool(g_full["surge"] or g_full["potential"] or g_full["rising"])
     surge, restock, new_ramp, unshaped = g["surge"], g["restock"], g["new_ramp"], g["unshaped"]
     potential, rising, mom, faded = g["potential"], g["rising"], g["mom"], g["faded"]
@@ -199,6 +214,10 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         tags.append("老链接重新起量（未达爆火门槛）" if g["revived"] else "新品起量（未达爆火门槛）")
     if deal_lift:
         tags.append("大促拉动（去掉大促日后不达标）")
+    if g["tided"] and label not in ("surge", "potential") and not rising:
+        t = g["tided"]
+        tags.append(f"随大盘（所在子类目整体 ×{t['tide']:.2f}，" + "；".join(
+            f"{name} ×{ratio:.2f} 扣除后 ×{ratio / t['tide']:.2f}，不到 {need:g} 倍" for name, ratio, need in t["lost"]) + "）")
     if relist:
         tags.append(relist_text(relist))
     if hot and label != "hot":
@@ -252,6 +271,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "pkg": rec.get("pkg") or (disc_row or {}).get("pkg"),
         "fetched_run": rec.get("fetched_run"),
         "source": rec.get("pool_reason"),
+        "tide": tide,
     }
 
 
@@ -314,10 +334,13 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             return None
         return seasonality.hot_levels(profiles.get(rec.get("node")), data_date)
 
-    items = [evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"],
-                      season=hot_season(rec), threshold_month=threshold_month)
-             for asin, rec in recs]
     rev = usable_revision(revision, th)
+    deal = deal_factors(dailies_by_node(recs), ev["days"], data_date)
+    tides = universe.node_tide(state, today, cfg, deal, rev)  # 品类大盘：潜力、上升中要跑赢它
+
+    items = [evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"],
+                      season=hot_season(rec), threshold_month=threshold_month, tide=tides.get(rec.get("node")))
+             for asin, rec in recs]
     if rev:  # 最近几天的数还会被改：按本期测到的幅度校正后重判一次，原来成立、校正后不成立的写明
         for item, (asin, rec) in zip(items, recs):
             # 开发方向的增量和月销售额用校正后的近 28 天日均（去掉大促日，和 recent_avg28 同一口径）
@@ -325,19 +348,20 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             item["revised_avg28"] = _avg(fixed, fixed.as_of_index(), 28)
             if revision_sensitive(item):
                 alt = evaluate(asin, revised_rec(rec, rev["window"], rev["median"]), products.get(asin), stats, cfg, today,
-                               data_date=data_date, events=ev["days"], season=hot_season(rec), threshold_month=threshold_month)
+                               data_date=data_date, events=ev["days"], season=hot_season(rec), threshold_month=threshold_month,
+                               tide=tides.get(rec.get("node")))
                 _revision_tag(item, lost_judgments(item, alt), rev)
     for item, (_, rec) in zip(items, recs):
         _season_tag(item, profiles.get(item.get("node")), sc)
         _item_season(item, rec, profiles.get(item.get("node")), sc)
     seasons = ({path: seasonality.outlook(prof, data_date, sc) for path, prof in profiles.items()}
                if sc and data_date else {})
-    deal = deal_factors(dailies_by_node(recs), ev["days"], data_date)
     monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, profiles, threshold_month, deal,
                                                 rev)
     items += monthly
     return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date, "seasons": seasons,
-            "profiles": profiles, "season_calibration": calibration, "monthly_judged": judged, "monthly_status": status}
+            "profiles": profiles, "season_calibration": calibration, "monthly_judged": judged, "monthly_status": status,
+            "tides": tides}
 
 
 def truncated_rec(rec: dict, upto: date) -> dict | None:

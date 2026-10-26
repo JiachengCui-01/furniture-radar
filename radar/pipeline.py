@@ -280,7 +280,8 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"] + mix["screen"], "revision": revision,
                 "universe": len(uni.get("rows") or {}) if screened is not None else None,
                 "universe_pages": uni.get("pages") if screened is not None else None,
-                "universe_failed": len(uni.get("failed") or []) if screened is not None else None}
+                "universe_failed": len(uni.get("failed") or []) if screened is not None else None,
+                "tides": result.get("tides") or {}}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
@@ -604,6 +605,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
         same_month = [r for r in state["runs"] if (r.get("date") or "")[:7] == month]
         coverage = {"refreshed": sum(1 for r in state["asins"].values() if r.get("fetched_run") == last["seq"]),
                     "calls": state["calls"].get(month) if len(same_month) == 1 else None, "budget": None}
+    coverage = {**coverage, "tides": result.get("tides") or {}}
     prev_run = state["runs"][-2] if len(state["runs"]) >= 2 else None
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=last["id"], run_seq=last["seq"],
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),

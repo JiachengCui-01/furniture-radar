@@ -740,6 +740,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
              f"范围：本期全市场名单没翻成（预算不够），机会候选退回月度名单和近 30 天榜单里{floor}的商品，"
              f"分数最高的 {pool.get('opportunity_every_run', 0)} 个每期都看、其余轮流查，不是全部量够的商品都看了。")
     windows = " 或 ".join(map(str, s["windows"]))
+    tide = "（所在子类目整体在涨时，先除以品类大盘倍数，见“判定方法”）" if (th.get("tide") or {}).get("enabled", True) else ""
     short = (f"对比期在卖不到 {th['short_base_days']} 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。"
              if th.get("short_base_days") else "")
     adjust = ("。季节性品类（见“季节日历”）的商品，原始销量不达标的，再按季节调整后判一次：每个月的销量（和近 28 天、门槛线）"
@@ -750,7 +751,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                  f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
                  f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}按爆发强度排序。",
         "potential": scope + f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
-                     f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
+                     f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
                      f"没有回落；异常分 <{f['suspect_score']}。{short}按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平、"
                f"且这个月量够（≥{h.get('min_units', 0):g} 件或销售额 ≥${h.get('min_revenue') or 0:,.0f}）；"
@@ -761,7 +762,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                f"没有日数据，卡片上标“只有月度数据”：没有走势图、不判回落，异常信号只看留评率一项（追踪商品还看评论增速、评分跳升、短时脉冲等）。正在回落的（规则见“判定方法”）标“最近回落”，不影响上榜。按近 6 个月月均销量排序。",
         "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
                 f"仅为数据异常提示，需人工核实。按异常分排序。",
-        "growth": scope + f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍"
+        "growth": scope + f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍{tide}"
                   f"且 ≥{r['min_daily_sales']} 件、没有回落。{short}“外观与工艺依据”就是从这些商品统计的。按势头排序。"
                   f"季节性品类里、按往年规律对比期间品类本来就会涨 ≥{sc.get('tag_ratio', 1.15):g} 倍的，标“品类季节性”并写明扣除季节后的倍数（见“数据说明”）。",
         "seasonal": "每年固定一段时间卖得特别好、其他时间反而不行的商品。不是板块：不论它本期在哪个板块、还是只在观察"
@@ -794,6 +795,10 @@ def _method(cfg: dict) -> str:
 每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）；判定用当期拉到的数，再把最近这几天按测到的幅度校正后重判一次，
 原来成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销 / 最近回落（比回落规则本身），卡片上标“最近 N 天的数还会被改：…校正后不算 X”，
 钉钉消息里那一行也提醒，不排除（验证：标了的 4 个里 3 个修订后真的不成立，没标的 16 个里 2 个变了）。开发方向的增量和月销售额也用校正后的近 28 天日均。测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正、不标。</li>
+<li><b>品类大盘</b>：每个子类目里量够的商品（全市场名单）近 30 天销量是约 30 天前的几倍，取中位数（扣掉大促日；
+商品不到 {(th.get('tide') or {}).get('min_items', 10)} 个的子类目不算）。潜力、上升中的增长倍数先除以它（大于 1 时）再比门槛——
+整个子类目一起涨时随大流的商品不算，卡片上标“随大盘”。突然爆火不用：它要求 BSR 排名提升一倍，排名本来就是和整个市场比的。
+回测（2025-11~2026-09 每周回放）：去掉的潜力之后 28 天 74% 保持住（其余 86%），上升中 79%（其余 81%）——主要是定义上的要求，不是预测更准。</li>
 <li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
 爆火、潜力、上升中都只和真正在卖的日子比{f"；潜力、上升中（和开发方向的增量）的对比期里，连着 ≥{th['out_of_stock_zero_run']} 天销量 0 的日子也算断货（断货头几天 BSR 还没涨上去）" if th.get('out_of_stock_zero_run') else ""}。</li>
 <li><b>追踪名额</b>：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
@@ -887,6 +892,12 @@ def render(ctx: dict) -> str:
         facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
     if counts.get("low"):
         facts.append(f"评分不达标未上榜 {counts['low']} 个")
+    tides = cov.get("tides") or {}
+    if tides:
+        names = {n["path"]: n.get("name_cn") or n.get("name") or n["path"] for n in ctx.get("season_nodes") or []}
+        up = sorted(((t, p) for p, t in tides.items() if t > 1.0), reverse=True)
+        facts.append(f"品类大盘（{len(tides)} 个子类目算得出）：" + ("、".join(f"{names.get(p, p)} ×{t:.2f}" for t, p in up[:6])
+                     + ("…" if len(up) > 6 else "") + " 整体在涨，潜力 / 上升中要跑赢它" if up else "没有子类目整体在涨"))
     rev = cov.get("revision")
     if rev and rev.get("window"):
         facts.append(f"卖家精灵会回头改最近几天的日数据：上期拉到的数据，这期再拉时 {rev['changed']:.0%} 的商品被改过，"
