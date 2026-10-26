@@ -85,18 +85,20 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     unshaped = None
     if surge and not surge["kind"]:  # 不符合任何一种爆火形态
         unshaped, surge = surge, None
-    potential = evaluate_potential(rec, d, as_of, th["potential"], oos) if idx is not None and not relist else None
+    potential = (evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
+                 if idx is not None and not relist else None)
     if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断
         surge = potential = None
         new_ramp = None
     rising = None
     if idx is not None and not stale and not surge and not restock:
         rcfg = th.get("rising") or {}
-        avg28, prev28 = _avg(d, idx, 28), _avg(d, idx - 28, 28, oos)
+        zero_run = int(th.get("out_of_stock_zero_run") or 0)
+        avg28, prev28 = _avg(d, idx, 28), _avg(d, idx - 28, 28, oos, zero_run)
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28, "window": 28,
-                      "base_in": len(d.in_stock_window("sales", idx - 28, 28, oos))}
+                      "base_in": len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run))}
     # 短时脉冲把近 28 天日均撑高了，不是持续的增长：也不算潜力 / 上升中
     if unshaped and unshaped.get("pulse"):
         potential = rising = None
@@ -245,7 +247,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "recent_avg7": (surge or {}).get("recent_avg") if surge else _avg(d, idx, 7),
         "recent_avg28": _avg(d, idx, 28),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
-        "prev_avg28": _avg(d, idx - 28, 28, th.get("out_of_stock_bsr")) if idx is not None else None,
+        "prev_avg28": (_avg(d, idx - 28, 28, th.get("out_of_stock_bsr"), int(th.get("out_of_stock_zero_run") or 0))
+                       if idx is not None else None),
         "pkg": rec.get("pkg") or (disc_row or {}).get("pkg"),
         "fetched_run": rec.get("fetched_run"),
         "source": rec.get("pool_reason"),
@@ -266,11 +269,11 @@ def _spiked_on_events(d: Daily, idx: int, events, cfg: dict, lookback: int = 56)
     return False
 
 
-def _avg(d: Daily | None, idx: int | None, days: int, oos_bsr: float | None = None) -> float | None:
-    """[idx-days+1, idx] 的日均销量；给了 oos_bsr 时跳过断货的日子（用于对比期）。"""
+def _avg(d: Daily | None, idx: int | None, days: int, oos_bsr: float | None = None, zero_run: int = 0) -> float | None:
+    """[idx-days+1, idx] 的日均销量；给了 oos_bsr 时跳过断货的日子（用于对比期；zero_run 见 Daily.in_stock_window）。"""
     if d is None or idx is None:
         return None
-    values = d.in_stock_window("sales", idx, days, oos_bsr)
+    values = d.in_stock_window("sales", idx, days, oos_bsr, zero_run)
     return round(sum(values) / len(values), 2) if values else None
 
 

@@ -8,7 +8,7 @@
 | +2 | 两期之间新增评论 / 新增销量 ≥ 15%（或几乎无销量却涨评论） | 第 2 期起 |
 | +1 | 45 天内评分上升 ≥0.2 且评论数 ≥50 | 第 2 期起 |
 | +1 | 1~3 天脉冲后迅速回落（不在大促日，见 events.py） | ✓ |
-| +2 | 评论核查：近 60 天评论 ≥30% 集中在 3 天 | ✓（需额外调用） |
+| +2 | 评论核查：评论最多的 3 天 ≥30%，且比随机分布时 3 天最多的条数（99% 分位）还多 | ✓（需额外调用） |
 | +1 | 评论核查：非验证购买占比 ≥50% | ✓（需额外调用） |
 | 标签 | 评论数暴增 ≥30% 且父体/变体数变化 → 变体合并（不计分） | 第 2 期起 |
 
@@ -18,7 +18,9 @@
 """
 from __future__ import annotations
 
+import random
 from datetime import date, timedelta
+from functools import lru_cache
 
 from .. import clock
 from ..series import Daily, find_pulses, sum_sales_between
@@ -145,15 +147,45 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     # 6. 评论核查
     check = (rec.get("checks") or {}).get("review")
     if check and check.get("n", 0) >= 10:
-        if check.get("burst_share", 0) >= cfg["review_burst_share"]:
-            add("review_burst", 2, f"近 60 天评论有 {check['burst_share']:.0%} 集中在 3 天内"
-                                   f"（{', '.join(check.get('burst_days', [])[:3])}）")
+        usual = burst_limit(check, cfg)
+        if usual is not None:
+            add("review_burst", 2, f"近 {check['span']} 天抽到的 {check['n']} 条评论里 {check['top3']} 条集中在 3 天"
+                                   f"（{', '.join(check.get('burst_days', [])[:3])}），"
+                                   f"随机分布时 3 天最多约 {usual} 条")
         if check.get("unverified_share", 0) >= cfg["unverified_share"]:
             add("unverified", 1, f"抽查评论中非验证购买占 {check['unverified_share']:.0%}")
         if check.get("vine_share", 0) >= 0.3:
             tags.append("Vine 评论多")
 
     return _finish(signals, tags, cfg)
+
+
+@lru_cache(maxsize=None)
+def uniform_top3(n: int, days: int, quantile: float = 0.99, sims: int = 4000) -> int:
+    """n 条评论随机落在 days 天里时，评论最多的 3 天合计的 quantile 分位数（固定种子模拟，结果可复现）。"""
+    rnd = random.Random(n * 1000 + days)
+    tops = []
+    for _ in range(sims):
+        counts = [0] * days
+        for _ in range(n):
+            counts[rnd.randrange(days)] += 1
+        tops.append(sum(sorted(counts, reverse=True)[:3]))
+    tops.sort()
+    return tops[min(sims - 1, int(quantile * sims))]
+
+
+def burst_limit(check: dict, cfg: dict) -> int | None:
+    """评论集中：评论最多的 3 天 ≥ review_burst_share，而且比“随机分布时 3 天最多有几条”（review_burst_quantile 分位）还多。
+    返回那个随机分布的上限（集中）或 None（不集中 / 旧的核查结果没有记 top3、span，判不了）。
+    以前只看“前 3 天占 ≥30%”：10 条评论分在 10 天，前 3 天正好 30%，一定达标；评论接口一页只给最新 20 条，
+    覆盖的日子更短、更显得集中。实测 2026-10 核查过的 9 个（≥10 条）有 8 个被判集中，按随机分布比只剩 1~2 个。"""
+    n, top3, span = check.get("n") or 0, check.get("top3"), check.get("span")
+    if top3 is None or not span or n < 1:
+        return None
+    usual = uniform_top3(int(n), int(span), float(cfg.get("review_burst_quantile", 0.99)))
+    if top3 / n >= cfg["review_burst_share"] - 1e-9 and top3 > usual:
+        return usual
+    return None
 
 
 def _finish(signals: list[dict], tags: list[str], cfg: dict) -> dict:

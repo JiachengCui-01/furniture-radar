@@ -479,6 +479,42 @@ def test_category_history_backfills_from_spare_budget(cfg):
     assert "2023-10" not in state[H.STATE_KEY]["months"] and "2026-11" in state[H.STATE_KEY]["months"]
 
 
+def test_category_history_pages_deeper_for_missing_nodes_and_retries_failures(cfg):
+    """翻满 max_pages 页还缺要追踪的子类目：接着翻到 max_pages_missing 页（以前翻满就记成补完，那个子类目缺了这个月，
+    36 个月凑不齐，永远判不成季节性品类）；查询失败不算翻完，下期接着补；以前只记了 scanned 的也接着往后翻。"""
+    import json
+    from datetime import date
+    from radar import category_history as H
+    from radar.vendor import Budget, Vendor
+
+    def rows(page):
+        return [{"nodeIdPath": f"R:{page}:{i}", "totalUnits": 1} for i in range(50)]
+
+    def world(fail=()):
+        def transport(tool, args):
+            req = args.get("request", args)
+            if (req["month"], req["page"]) in fail:
+                return json.dumps({"code": "ERROR", "message": "服务繁忙"})
+            items = rows(req["page"]) + ([{"nodeIdPath": "R:deep", "totalUnits": 7}] if req["page"] == 6 else [])
+            return json.dumps({"code": "OK", "data": {"items": items[:50] if req["page"] != 6 else items}})
+        return transport
+
+    hcfg = cfg["thresholds"]["seasonality"]
+    hcfg.update(history_months=2, max_pages=4, max_pages_missing=8)
+    nodes = [{"path": "R:deep", "root": "R"}, {"path": "R:1:0", "root": "R"}]
+    state = {}
+    H.backfill(Vendor(world(fail={("202609", 3)}), Budget(100), live=False), cfg, state, nodes, date(2026, 10, 5), 100)
+    hist = state[H.STATE_KEY]
+    assert "2026-09" not in hist["scanned"] and hist["pages"]["2026-09|R"] == 2   # 第 3 页失败：停在第 2 页，不算补完
+    assert hist["months"]["2026-08"]["R:deep"] == 7 and not H.complete(state, "2026-09", "R", {"R:deep"}, hcfg)
+    H.backfill(Vendor(world(), Budget(100), live=False), cfg, state, nodes, date(2026, 10, 5), 100)
+    assert hist["months"]["2026-09"]["R:deep"] == 7 and H.complete(state, "2026-09", "R", {"R:deep", "R:1:0"}, hcfg)
+    legacy = {H.STATE_KEY: {"months": {"2026-09": {"R:1:0": 1}}, "scanned": {"2026-09": ["R"]}}}
+    vendor = Vendor(world(), Budget(100), live=False)
+    H.backfill(vendor, cfg, legacy, nodes, date(2026, 10, 5), 100)
+    assert legacy[H.STATE_KEY]["months"]["2026-09"]["R:deep"] == 7  # 以前翻满 4 页就记成补完的：从第 5 页接着翻
+
+
 def test_package_fields_are_parsed_from_product_rows():
     """卖家精灵的包装尺寸 / 包装重量 / FBA 配送费：解析成英寸、磅、美元，体积换算成立方英尺和立方米。"""
     from radar import discovery, shipping

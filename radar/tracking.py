@@ -164,6 +164,8 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
             return False
         if low_rating(*current_rating(rec, row), th):
             return False
+        if not keep_product(row or rec, cfg):  # 不在范围内的（软包、配件……）：商品级条件改了以后，以前进过池的也不再追踪
+            return False
         reason[asin] = why
         order.append(asin)
         parents.add(key)

@@ -22,19 +22,30 @@ def _truthy(value) -> bool:
     return str(value).strip().lower() in ("true", "1", "yes", "y")
 
 
-def summarize_reviews(rows: list[dict], as_of: date) -> dict:
+REVIEW_WINDOW = 60
+REVIEW_PAGE = 20  # 实测 review 接口一页最多 20 条（传 size=50 也是 20），新的在前
+
+
+def summarize_reviews(rows: list[dict], as_of: date, total: int | None = None) -> dict:
+    """近 60 天评论的概况。total：接口说这段时间一共有几条（一页只给最新的 20 条）。
+    没拿全时这一页只覆盖最近一段日子：span = 这一页最早一条到 as_of 的天数，“集中在 3 天”按 span 天比，不按 60 天。"""
     recent = []
     for row in rows:
         day = clock.ms_to_day(row.get("date"))
-        if day and as_of - timedelta(days=60) <= day <= as_of:
+        if day and as_of - timedelta(days=REVIEW_WINDOW) <= day <= as_of:
             recent.append((day, row))
     n = len(recent)
     if n == 0:
         return {"n": 0}
     per_day = Counter(day for day, _ in recent)
     top = per_day.most_common(3)
+    truncated = total > len(rows) if total is not None else len(rows) >= REVIEW_PAGE
+    span = max(7, (as_of - min(day for day, _ in recent)).days + 1) if truncated else REVIEW_WINDOW
     return {
         "n": n,
+        "top3": sum(c for _, c in top),
+        "span": span,
+        "total": total,
         "burst_share": round(sum(c for _, c in top) / n, 3),
         "burst_days": [d.isoformat() for d, _ in top],
         "unverified_share": round(sum(1 for _, r in recent if not _truthy(r.get("verified"))) / n, 3),
@@ -84,7 +95,8 @@ def run_checks(vendor: Vendor, jobs: list[tuple[str, str]], state: dict, cfg: di
                     "review", nested=False, marketplace=cfg["marketplace"], asin=asin, size=50, page=1,
                     startTimestamp=int(start.timestamp() * 1000)), purpose="评论核查")
                 if reply.ok:
-                    checks["review"] = {**summarize_reviews(reply.rows, as_of), "checked": today.isoformat()}
+                    total = reply.data.get("total") if isinstance(reply.data, dict) else None
+                    checks["review"] = {**summarize_reviews(reply.rows, as_of, total), "checked": today.isoformat()}
                     done += 1
             else:
                 reply = vendor.call("asin_detail", vendor.args("asin_detail", nested=False,

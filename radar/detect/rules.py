@@ -276,7 +276,8 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
     }
 
 
-def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: float | None = None) -> dict | None:
+def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: float | None = None,
+                       zero_run: int = 0) -> dict | None:
     available = clock.parse_day(rec.get("available"))
     age = clock.days_between(available, as_of)
     if age is None or not (cfg["min_age_days"] <= age <= cfg["max_age_days"]):
@@ -292,7 +293,7 @@ def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: flo
         return None
 
     # 近 28 天 vs 再之前 28 天（不重叠，断货 / 还没开卖的日子不算），外加完整月份的月环比
-    base = d.in_stock_window("sales", idx - 28, 28, oos_bsr)
+    base = d.in_stock_window("sales", idx - 28, 28, oos_bsr, zero_run)
     prev28 = mean(base)
     recent_ratio = avg28 / prev28 if prev28 else None
     launch_month = clock.month_key(available)

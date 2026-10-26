@@ -24,6 +24,14 @@ scope:
   exclude_label_regex: '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart|display|laborator|science'
   # 商品标题匹配下面的词直接剔除（软包、布艺抽屉、塑料等）
   exclude_product_regex: '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\bplastic\b|\bresin\b|folding bed|rollaway|mattress set|& mattress|with (?:memory foam |foam |a )?mattress\b'
+  # 软包的床 / 床头板 / 长凳 / 椅凳：标题里有皮革、丝绒、泰迪绒等面料，而且是床、床头板、长凳、椅凳。
+  # 只是表面贴皮的柜子（PU 皮面五斗柜、皮面床头柜）不算。回测（已知的 4,392 个商品标题）：剔除 25 个，都是软包床 / 床头板 / 软包长凳
+  upholstered_material_regex: '(?i)\b(?:faux|pu|vegan|synthetic) leather\b|\bleatherette\b|\bvelvet\b|\bboucl[eé]|\bsherpa\b|\bchenille\b'
+  upholstered_item_regex: '(?i)\b(?:beds?|bed frames?|headboards?|bench(?:es)?|banquettes?|chairs?|stools?|ottomans?)\b'
+  # 配件不是家具：升降台（桌面上的站立办公增高架）、显示器增高架、电视支架腿 / 壁挂架、储物柜隔板。
+  # 配件词出现在任何家具名词之前才算（“带显示器架的电脑桌”是桌子，不剔除）。回测：剔除 27 个，没有误剔
+  accessory_regex: '(?i)desk (?:converter|riser)|monitor (?:stand )?riser|laptop stand|tv stand legs|\btv legs\b|tabletop tv stand|\btv (?:wall )?mounts?\b|locker (?:organizer )?shel(?:f|ves)'
+  furniture_noun_regex: '(?i)\b(?:desk(?! converter| riser| organizer)|table|nightstand|dresser|cabinet|bookcase|bookshelf|tv stand(?! legs)|console|bench|bed|wardrobe|armoire|sideboard|buffet|hutch|vanity|chest|credenza|shelving unit|etagere)\b'
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
   extra_nodes: []
   #  - path: "1055398:1063306:1063318:3733551"
@@ -131,6 +139,10 @@ thresholds:
   # 断货：BSR ≥ 这个值或没有排名的日子（断货 / 停售 / 还没开卖）不算进“之前的水平”（爆火、潜力、上升中的对比期）。
   # 实测：一个上架 6 年的床头柜停售一年（BSR 约 1000 万、销量 0），9 月重新开卖后，对比期一半是 0，被算成“稳在高位”
   out_of_stock_bsr: 1000000
+  # 潜力、上升中（和开发方向的增量）的对比期里，连着 ≥N 天销量 0 的日子也算断货：断货头几天 BSR 还没涨到 100 万
+  # （实测销量 0 的日子 27% 的 BSR 不到 100 万），会把“之前的水平”拉低。回测（2025-11~2026-09 每周回放，1,687 次增长判定）：
+  # 少了 5 次上升中，之后 28 天只有 40% 保持住（其余 84%）。突然爆火不用它：它有自己的“断货恢复”判断，用了反而去掉 3 次之后都保持住的
+  out_of_stock_zero_run: 3
   # 评分门槛：不达标的商品不进入任何榜单（爆火 / 潜力 / 热销 / 异常 / 外观分析样本），
   # 也不占追踪名额，由排在后面的商品依次补位。评分优先取最新日数据，没有评论的新品不受限。
   min_rating: 4.0
@@ -249,7 +261,8 @@ thresholds:
     pulse_min_sales: 6
     pulse_revert: 1.3
     merge_jump: 0.3                  # 评论数暴增 ≥30% 且父体/变体变化 → 变体合并
-    review_burst_share: 0.3          # 近 60 天评论 ≥30% 集中在 3 天
+    review_burst_share: 0.3          # 评论集中：评论最多的 3 天 ≥30%，
+    review_burst_quantile: 0.99      #   且比随机分布时 3 天最多的条数（这个分位）还多。评论接口一页只给最新 20 条，按这一页覆盖的天数比
     unverified_share: 0.5            # 非验证购买评论占比
 
   # 外观与工艺依据：增长商品“更多”的特征怎么算（报告里的说明直接取这些数字）
@@ -295,7 +308,8 @@ thresholds:
   # 算每个月份的季节指数（12 个月平均 = 1）。以前用追踪商品的日数据，只有 13 个月、都是现在还在卖的，季节和品类自己的涨跌分不开。
   seasonality:
     history_months: 36               # 保留最近 N 个已结束月份的类目历史（每期从剩余预算里补缺的，最多 budget.history_calls 次）
-    max_pages: 4                     # 每个根类目每个月最多翻几页（每页 50 个子类目）
+    max_pages: 4                     # 每个根类目每个月先翻几页（每页 50 个子类目）
+    max_pages_missing: 8             # 翻完上面几页还缺要追踪的子类目（那个月它排得靠后），最多翻到第几页
     # 季节性品类：四条都满足才算，不满足的子类目不做任何季节判断、不调整
     min_months: 36                   # ① 类目历史至少 N 个月（要整 3 年：只有 2 年时只有一对年份可比，回测里多认出 7 个其实没有季节的子类目）
     min_consistency: 0.5             # ② 每 12 个月切一段，各段形状两两的相关系数平均 ≥ N（实测梳妆台 0.96、衣帽架 0.95，计算机工作站 0.01）

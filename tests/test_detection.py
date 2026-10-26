@@ -387,6 +387,41 @@ def test_review_burst_summary():
            [{"date": ms(END - timedelta(days=10 + i)), "verified": "False", "vine": "False", "star": "5"} for i in range(8)]
     summary = summarize_reviews(rows, END)
     assert summary["n"] == 20 and summary["burst_share"] >= 0.7 and summary["unverified_share"] == 0.4
+    # 一页 20 条拿满了（接口一页最多 20 条）：只覆盖最近 18 天，按 18 天比
+    assert summary["top3"] == 14 and summary["span"] == 18
+    assert summarize_reviews(rows, END, total=20)["span"] == 60  # 这段时间一共就 20 条：覆盖了整个 60 天
+
+
+def test_review_burst_compares_with_a_random_spread(cfg):
+    """评论集中：前 3 天的条数要比“随机分布时 3 天最多有几条”还多。以前只看前 3 天占 ≥30%：
+    10 条评论分在 10 天，前 3 天正好 30%，一定达标（实测核查过的 9 个有 8 个被判集中）。"""
+    f = cfg["thresholds"]["fake"]
+
+    def flagged(check):
+        rec = {"checks": {"review": check}}
+        return "review_burst" in {x["code"] for x in fakehot.score(rec, None, None, None, None, f)["signals"]} or \
+            fakehot.burst_limit(check, f) is not None
+
+    assert not flagged({"n": 10, "top3": 3, "span": 60, "burst_share": 0.3})    # 10 天各 1 条
+    assert not flagged({"n": 11, "top3": 5, "span": 60, "burst_share": 0.455})  # 随机也常见
+    assert flagged({"n": 17, "top3": 8, "span": 60, "burst_share": 0.471})      # 17 条里 8 条在 3 天
+    assert not flagged({"n": 20, "top3": 10, "span": 20, "burst_share": 0.5})   # 20 条挤在最近 20 天：每天约 1 条，正常
+    assert flagged({"n": 20, "top3": 10, "span": 60, "burst_share": 0.5})
+    assert not flagged({"n": 20, "burst_share": 0.9})                           # 旧的核查结果没记 top3 / span：判不了
+
+
+def test_zero_sale_runs_count_as_stock_out_for_rising_baseline(cfg):
+    """断货头几天 BSR 还没涨到 100 万：对比期里连着 ≥3 天销量 0 的日子也算断货，不把“之前的水平”拉低。
+    这里之前 28 天里 12 天连着没卖（BSR 只有 30 万），其余每天 10 件；近 28 天每天 10 件——不是上升。"""
+    from radar.analyze import _judge_growth
+
+    sales = [10] * 60 + [10] * 8 + [0] * 12 + [10] * 8 + [10] * 28
+    bsr = [5000] * 68 + [300000] * 12 + [5000] * 36
+    d = Daily.from_record({"start": "2026-06-01", "bsr": bsr, "sales": sales, "price": [50] * len(sales)})
+    idx = len(sales) - 1
+    th = cfg["thresholds"]
+    assert _judge_growth(d, idx, d.as_of(), {}, {}, {**th, "out_of_stock_zero_run": 0}, False)["rising"]
+    assert not _judge_growth(d, idx, d.as_of(), {}, {}, th, False)["rising"]
 
 
 def test_restock_is_not_a_surge(cfg):

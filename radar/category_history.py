@@ -6,9 +6,13 @@
 
 state["category_history"] = {
     "months":  {"2026-09": {子类目 nodeIdPath: 月销量}},   只存本期追踪范围里的子类目
-    "scanned": {"2026-09": [翻完了所有页的根类目]},
+    "scanned": {"2026-09": [翻完了的根类目]},
+    "pages":   {"2026-09|根类目": 翻到第几页 或 "end"（翻到底了）},
 }
-一个月份、一个根类目算补完：这个根类目下要追踪的子类目都找到了，或者翻完了所有页（最多 max_pages 页）。
+一个月份、一个根类目算补完：这个根类目下要追踪的子类目都找到了，或者翻到底了 / 翻满 max_pages_missing 页还找不到。
+先翻 max_pages 页；还缺子类目（那个月它的销售额排在 max_pages×50 名以后）就接着翻到 max_pages_missing 页
+（以前翻满 max_pages 页就记成补完：实测办公类一个子类目缺了 2024-10、2024-12 两个月，36 个月凑不齐，永远判不成季节性品类）。
+查询失败（被拒 / 连不上）不算翻完，下期接着补。
 每期补最近 history_months 个已结束月份里还缺的（近的先补），只用核心刷新做完后剩下的预算、最多 budget.history_calls 次
 （3 年约 110 次，两期补完），不影响追踪商品的刷新。月度发现查到的当月数据直接记进来，不另花调用。
 """
@@ -56,9 +60,19 @@ def _hist(state: dict) -> dict:
     return hist
 
 
-def complete(state: dict, month: str, root: str, want: set[str]) -> bool:
+def _deep(cfg_or_none: dict | None) -> int:
+    hcfg = cfg_or_none or {}
+    return int(hcfg.get("max_pages_missing") or 2 * int(hcfg.get("max_pages", 4)))
+
+
+def complete(state: dict, month: str, root: str, want: set[str], hcfg: dict | None = None) -> bool:
+    """要追踪的子类目都有了，或者这个根类目翻到底了 / 翻满 max_pages_missing 页（hist["pages"] 记着）。
+    以前的记录只有 scanned、没有 pages 的（翻满 max_pages 页就记成补完的），缺子类目时不算补完，接着往后翻。"""
     hist = _hist(state)
-    return want <= set(hist["months"].get(month) or {}) or root in (hist["scanned"].get(month) or [])
+    if want <= set(hist["months"].get(month) or {}):
+        return True
+    page = (hist.get("pages") or {}).get(f"{month}|{root}")
+    return root in (hist["scanned"].get(month) or []) and (page == "end" or (isinstance(page, int) and page >= _deep(hcfg)))
 
 
 def record(state: dict, month: str, rows: list[dict], wanted: set[str]) -> None:
@@ -94,27 +108,43 @@ def backfill(vendor: Vendor, cfg: dict, state: dict, nodes: list[dict], today: d
     for old in [m for m in hist["months"] if m not in months]:  # 太早的不再保留
         hist["months"].pop(old, None)
         hist["scanned"].pop(old, None)
+        for key in [k for k in hist.get("pages") or {} if k.startswith(f"{old}|")]:
+            hist["pages"].pop(key)
     start = vendor.billable_calls
-    max_pages = int(hcfg.get("max_pages", 4))
+    max_pages, deep = int(hcfg.get("max_pages", 4)), _deep(hcfg)
+    pages = hist.setdefault("pages", {})
     try:
         for month in months:
             for root, want in targets.items():
-                page = 0
-                while not complete(state, month, root, want) and page < max_pages:
+                key = f"{month}|{root}"
+                if complete(state, month, root, want, hcfg):
+                    continue
+                # 接着上次翻到的页往后翻；以前只记了 scanned 的（翻满了 max_pages 页）从 max_pages 页之后接着翻
+                done = pages.get(key)
+                page = done if isinstance(done, int) else (max_pages if root in (hist["scanned"].get(month) or []) else 0)
+                while not want <= set(hist["months"].get(month) or {}) and page < deep:
                     if vendor.billable_calls - start >= limit:
                         raise BudgetExhausted("类目历史：本期名额用完")
-                    page += 1
                     reply = vendor.call("market_research", request(
                         marketplace=cfg["marketplace"], nodeIdPath=root, nodeIdPathEqual="false",
-                        month=month.replace("-", ""), size=PAGE_SIZE, page=page,
+                        month=month.replace("-", ""), size=PAGE_SIZE, page=page + 1,
                         order={"field": "total_amount", "desc": True}), purpose="类目历史")
+                    if not reply.ok and reply.status != "empty":
+                        log.warn(f"类目历史 {month} 第 {page + 1} 页查询失败（{reply.status}），下期再补")
+                        break  # 不算翻完
+                    page += 1
+                    pages[key] = page
                     record(state, month, reply.rows, want)
-                    if len(reply.rows) < PAGE_SIZE or page >= max_pages:
+                    if len(reply.rows) < PAGE_SIZE:
+                        pages[key] = "end"
+                        break
+                if pages.get(key) == "end" or (isinstance(pages.get(key), int) and pages[key] >= deep):
+                    if root not in (hist["scanned"].get(month) or []):
                         hist["scanned"].setdefault(month, []).append(root)
     except BudgetExhausted:
         pass
     calls = vendor.billable_calls - start
     if calls:
-        have = sum(1 for m in months if all(complete(state, m, r, w) for r, w in targets.items()))
+        have = sum(1 for m in months if all(complete(state, m, r, w, hcfg) for r, w in targets.items()))
         log.info(f"类目历史：补了 {calls} 次调用，{have}/{len(months)} 个月已齐")
     return calls

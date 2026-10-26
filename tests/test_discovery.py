@@ -292,3 +292,27 @@ def test_failed_queries_are_not_taken_as_empty_lists(cfg):
     failed = []
     rows = universe.fetch(Vendor(down, Budget(50), live=False), cfg, again["nodes"], failed=failed)
     assert rows == {} and failed == [again["nodes"][0]["path"]]
+
+
+def test_upholstered_seating_and_accessories_are_out_of_scope(cfg):
+    """软包的床 / 床头板 / 长凳（面料词 + 这几类商品词）和配件（升降台、显示器增高架、电视支架腿、储物柜隔板）不在范围内；
+    表面贴皮的柜子、带显示器架的桌子照样在。这几条是读的时候过滤的，改了不改变监控范围的指纹（不触发重新发现）。"""
+    out = ["Allewie Queen Size Faux Leather Bed Frame, Adjustable Headboard",
+           "King Size Headboard Only, Velvet Wall Mount Headboard, Black",
+           "Blue Velvet Dining Bench with Back, Tufted Banquette Seating",
+           "VIVO Black 32 in Standing Desk Converter, DESK-V000K",
+           "OPNICE Desk Organizer and Accessories, 2-Tier Computer Monitor Stand Riser with Drawer",
+           "PERLESMITH Universal TV Stand Legs for 32-70 inch TVs to 99lbs with Mount",
+           "Svartur Adjustable Locker Shelf Pink Height and Width Adjustable"]
+    keep = ["Grey Dresser with Power Outlets and LED Lights 13 Drawers Long Dresser for Bedroom Faux Leather",
+            "7.8\" W Faux Leather Narrow Nightstand, Modern Fully-Assembled Bedside Table with 2 Drawers",
+            "Lufeiya Black Gaming Desk with LED Lights and Power Outlets, Home Office Desks with Monitor Stand",
+            "Small Desk with Drawers for Small Spaces, 44'' Wood Desk with File Drawer & Monitor Stand",
+            "Homleke Shoe Storage Bench, 4 Doors & Thickened Padded Seat Cushion",
+            "Modern Nightstand with Open Space Small Desk Organizer Shelf, Bamboo Desktop Organizer"]
+    assert not any(discovery.keep_product({"title": t}, cfg) for t in out)
+    assert all(discovery.keep_product({"title": t}, cfg) for t in keep)
+    plain = {**cfg, "scope": {k: v for k, v in cfg["scope"].items() if k not in discovery.READ_TIME_FILTERS}}
+    assert discovery.scope_key(plain) == discovery.scope_key(cfg)
+    disc = {"products": {"A": {"asin": "A", "title": out[3]}, "B": {"asin": "B", "title": keep[0]}}}
+    assert set(discovery.apply_product_filter(disc, cfg)["products"]) == {"B"}

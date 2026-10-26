@@ -30,20 +30,45 @@ def clean_text(value) -> str:
     return " ".join(html.unescape(str(value or "")).split())
 
 
+# 读的时候就过滤的商品级条件（keep_product / apply_product_filter）：改了不用重新发现，不算进监控范围的指纹
+READ_TIME_FILTERS = ("upholstered_material_regex", "upholstered_item_regex", "accessory_regex", "furniture_noun_regex")
+
+
 def scope_key(cfg: dict) -> str:
     """监控范围的指纹：范围或发现参数一改，就在本期重新发现，而不是等到下个月。"""
     keys = ("top_per_node", "order_field", "merge_variations", "newcomer_max_nodes", "newcomers_per_node",
             "newcomer_min_revenue")
-    body = {"scope": cfg["scope"], "discovery": {k: cfg["discovery"].get(k) for k in keys}}
+    scope = {k: v for k, v in cfg["scope"].items() if k not in READ_TIME_FILTERS}
+    body = {"scope": scope, "discovery": {k: cfg["discovery"].get(k) for k in keys}}
     return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
 
 def keep_product(item: dict | None, cfg: dict) -> bool:
-    """商品级过滤：标题里是软包、布艺抽屉、塑料等不在监控范围内的，直接剔除。"""
+    """商品级过滤：标题里是软包、布艺抽屉、塑料等不在监控范围内的，直接剔除；
+    软包的床 / 床头板 / 长凳 / 椅凳（面料词 + 这几类商品词都有）；配件（配件词出现在任何家具名词之前）。"""
     if not item:
         return False
-    pattern = cfg["scope"].get("exclude_product_regex")
-    return not (pattern and re.search(pattern, item.get("title") or ""))
+    scope = cfg["scope"]
+    title = item.get("title") or ""
+    pattern = scope.get("exclude_product_regex")
+    if pattern and re.search(pattern, title):
+        return False
+    soft, seat = scope.get("upholstered_material_regex"), scope.get("upholstered_item_regex")
+    if soft and seat and re.search(soft, title) and re.search(seat, title):
+        return False
+    accessory = re.search(scope["accessory_regex"], title) if scope.get("accessory_regex") else None
+    if accessory:
+        noun = re.search(scope["furniture_noun_regex"], title) if scope.get("furniture_noun_regex") else None
+        if noun is None or accessory.start() < noun.start():
+            return False
+    return True
+
+
+def apply_product_filter(disc: dict | None, cfg: dict) -> dict | None:
+    """月度名单里不在范围内的商品去掉（商品级条件改了以后，已经拉到的名单也按新条件算，不用重新发现）。"""
+    if disc and disc.get("products"):
+        disc["products"] = {a: p for a, p in disc["products"].items() if keep_product(p, cfg)}
+    return disc
 
 
 def depth(path: str) -> int:

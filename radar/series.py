@@ -63,15 +63,32 @@ class Daily:
         lo = max(0, end - length + 1)
         return [v for i, v in enumerate(values[lo:end + 1], lo) if i not in self.masked]
 
-    def in_stock_window(self, name: str, end: int, length: int, oos_bsr: float | None) -> list:
+    def in_stock_window(self, name: str, end: int, length: int, oos_bsr: float | None, zero_run: int = 0) -> list:
         """同 window()，但跳过断货的日子：BSR 缺失或 ≥ oos_bsr（断货 / 停售 / 还没开卖，BSR 会飙到几百万）。
-        对比期用它：没在卖的日子不能当“之前的水平”。oos_bsr 为空时等于 window()。"""
+        对比期用它：没在卖的日子不能当“之前的水平”。oos_bsr 为空时等于 window()。
+        zero_run：连着 ≥ 这么多天销量 0 的那几天也算断货（断货头几天 BSR 还没涨到 oos_bsr；实测销量 0 的日子 27% 的 BSR 不到 100 万）。"""
         if not oos_bsr:
             return self.window(name, end, length)
         values = getattr(self, name)
         lo = max(0, end - length + 1)
+        idle = self.zero_runs(zero_run) if zero_run else frozenset()
         return [v for i, v in enumerate(values[lo:end + 1], lo)
-                if v is not None and self.bsr[i] is not None and self.bsr[i] < oos_bsr]
+                if v is not None and self.bsr[i] is not None and self.bsr[i] < oos_bsr and i not in idle]
+
+    def zero_runs(self, k: int) -> frozenset:
+        """连着 ≥k 天销量是 0 的那些日子的下标。"""
+        out, i, sales = set(), 0, self.sales
+        while i < len(sales):
+            if sales[i] == 0:
+                j = i
+                while j + 1 < len(sales) and sales[j + 1] == 0:
+                    j += 1
+                if j - i + 1 >= k:
+                    out.update(range(i, j + 1))
+                i = j + 1
+            else:
+                i += 1
+        return frozenset(out)
 
     def without(self, days) -> "Daily":
         """去掉这些日子（置为缺失）后的副本，原序列不变。用于大促日：均值、中位数、形态都跳过它们。"""

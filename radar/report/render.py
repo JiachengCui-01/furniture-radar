@@ -795,7 +795,7 @@ def _method(cfg: dict) -> str:
 原来成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销 / 最近回落（比回落规则本身），卡片上标“最近 N 天的数还会被改：…校正后不算 X”，
 钉钉消息里那一行也提醒，不排除（验证：标了的 4 个里 3 个修订后真的不成立，没标的 16 个里 2 个变了）。开发方向的增量和月销售额也用校正后的近 28 天日均。测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正、不标。</li>
 <li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
-爆火、潜力、上升中都只和真正在卖的日子比。</li>
+爆火、潜力、上升中都只和真正在卖的日子比{f"；潜力、上升中（和开发方向的增量）的对比期里，连着 ≥{th['out_of_stock_zero_run']} 天销量 0 的日子也算断货（断货头几天 BSR 还没涨上去）" if th.get('out_of_stock_zero_run') else ""}。</li>
 <li><b>追踪名额</b>：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
 + 全部类目里销量最大的）+ 机会候选。机会候选来自<b>全市场名单</b>：每期把全部子类目里近 30 天销量 ≥{cfg['pool']['opportunity_min_units']} 件
 或销售额 ≥${cfg['pool'].get('opportunity_min_revenue') or 0:,.0f} 的商品都翻一遍，存下每个商品的近 30 天销量；名单里的增长率和日数据对不上，

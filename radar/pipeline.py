@@ -98,7 +98,7 @@ def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | No
         else:
             log.warn("发现：重新拉名单时预算不够，先用原来的，下期再拉")
     if current and current.get("complete") and current["period"] >= target:
-        return current
+        return discovery.apply_product_filter(current, cfg)
     for period in (target, clock.step_period(target, -1)):
         if current and current.get("complete") and current["period"] >= period:
             break
@@ -119,7 +119,7 @@ def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | No
             if not current or not current.get("complete"):
                 state["discovery"] = result
         break
-    return state.get("discovery")
+    return discovery.apply_product_filter(state.get("discovery"), cfg)
 
 
 def _report_id(day_text: str, existing: list[str]) -> str:
@@ -587,12 +587,14 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
         log.warn("还没有任何报告，无法重新生成")
         return RunResult(skipped_reason="还没有报告")
     last = state["runs"][-1]
-    disc = state.get("discovery")
+    disc = discovery.apply_product_filter(state.get("discovery"), cfg)
     today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()
     extra_rows = tracking.fresh_rows(state)
     # 只用那一期真正拉了日数据的商品（labels 里还有月度名单补判的，它们可能留着更早进池时的旧日数据）；
     # 之后有一期中途中止（RunAborted）时，它进池的商品记的是下一期的期数，也算
-    pool = [a for a in last.get("labels") or {} if int((state["asins"].get(a) or {}).get("last_pool_run", -1)) >= last["seq"]]
+    # 商品级范围条件改了的，按新条件去掉（和 run 的选池一样）
+    pool = [a for a in last.get("labels") or {} if int((state["asins"].get(a) or {}).get("last_pool_run", -1)) >= last["seq"]
+            and discovery.keep_product(state["asins"].get(a), cfg)]
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, (last.get("coverage") or {}).get("revision"))
     items = result["items"]
     remember_monthly(state, items, disc, last["seq"])
