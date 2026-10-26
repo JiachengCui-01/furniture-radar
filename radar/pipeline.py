@@ -25,12 +25,30 @@ from .vendor import Budget, BudgetExhausted, QuotaExhausted, Transport, Vendor, 
 FORGET_RUNS = 20  # 连续这么多期没进池的 ASIN 从状态里删除
 
 
-class RunAborted(RuntimeError):
-    """核心数据没拉完就中止（账户额度用完 / 卖家精灵一直连不上）：不出报告，但已拉到的数据和调用次数已经存进 site。"""
+REMIND_DAYS = 7  # 一直被同一个原因挡住时，隔这么多天再提醒一次
 
-    def __init__(self, reason: str, calls: int):
+
+class RunAborted(RuntimeError):
+    """核心数据没拉完就中止（账户额度用完 / 卖家精灵一直连不上 / 拉到的日数据太少）：不出报告，但已拉到的数据和调用次数已经存进 site。
+    kind：quota / outage / thin；repeat：同一个原因上次已经提醒过、还不到 REMIND_DAYS 天（这次不必再发钉钉告警）。"""
+
+    def __init__(self, reason: str, calls: int, kind: str = "outage", repeat: bool = False):
         super().__init__(reason)
-        self.calls = calls
+        self.calls, self.kind, self.repeat = calls, kind, repeat
+
+
+def _abort(site: Path, master: bytes, state: dict, month: str, calls_before: int, calls: int, today, reason: str,
+           kind: str) -> RunAborted:
+    """记下调用次数和“被挡住”的原因（state["blocked"]），存盘，返回要抛出的 RunAborted。
+    同一个原因上次已经提醒过、还不到 REMIND_DAYS 天的，标 repeat（命令行不再让工作流失败，免得每天一条一样的告警）。"""
+    state["calls"][month] = calls_before + calls
+    prev = state.get("blocked") or {}
+    last = clock.parse_day(prev.get("alerted_on"))
+    repeat = bool(prev.get("kind") == kind and last and (today - last).days < REMIND_DAYS)
+    state["blocked"] = {"kind": kind, "since": prev.get("since") if prev.get("kind") == kind else today.isoformat(),
+                        "alerted_on": prev.get("alerted_on") if repeat else today.isoformat(), "reason": reason[:300]}
+    store.save(site, master, state)
+    return RunAborted(reason, calls, kind, repeat)
 
 
 @dataclass
@@ -231,16 +249,14 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
             state["revisions"] = ((state.get("revisions") or []) + [{**revision, "date": today.isoformat()}])[-12:]
             log.info(f"日数据修订：上期最后 {revision['window']} 天，{revision['changed']:.0%} 的商品被改过，中位数 ×{revision['median']}")
     except (QuotaExhausted, McpUnavailable) as exc:
-        state["calls"][month] = used_this_month + vendor.billable_calls
-        store.save(site, master, state)
-        raise RunAborted(f"{type(exc).__name__}: {exc}", vendor.billable_calls) from exc
+        raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
+                     f"{type(exc).__name__}: {exc}", "quota" if isinstance(exc, QuotaExhausted) else "outage") from exc
     # 空报告保护：该拉的日数据只拉到很少（一个个都连不上、预算给得太少……）时不出这一期，免得发一份看起来正常、其实是旧数据的报告。
     # 回测：以往 8 期每期都刷新了计划里 ≥98% 的商品
     share = float(cfg["report"].get("min_refresh_share", 0.6))
     if refreshed < max(1, share * len(plan)):
-        state["calls"][month] = used_this_month + vendor.billable_calls
-        store.save(site, master, state)
-        raise RunAborted(f"日数据只刷新了 {refreshed}/{len(plan)} 个（要 ≥{share:.0%}），数据不够，不出这一期", vendor.billable_calls)
+        raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
+                     f"日数据只刷新了 {refreshed}/{len(plan)} 个（要 ≥{share:.0%}），数据不够，不出这一期", "thin")
 
     # 核心刷新做完后剩下的预算：补充数据（backfill_extras）。账户额度用完时跳过，照常出报告
     if disc and disc.get("nodes"):
@@ -323,6 +339,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     state["runs"] = state["runs"][-20:]
     state["run_seq"] = run_seq
     state["last_success"] = now_utc.isoformat(timespec="seconds")
+    state.pop("blocked", None)
     state["calls"][month] = used_this_month + vendor.billable_calls
     # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
     # 轮查靠它排先后。很久没进池的整条删除。
@@ -626,6 +643,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        monthly_judged=result.get("monthly_judged"),
                        retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
+    scrub_history_keys(cfg, site, master, (state.get("reports") or [])[:-1])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)
     store.save(site, master, state)

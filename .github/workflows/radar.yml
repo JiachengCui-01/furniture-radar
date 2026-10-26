@@ -42,6 +42,7 @@ jobs:
     outputs:
       published: ${{ steps.run.outputs.published }}
       saved: ${{ steps.run.outputs.saved }}
+      reason: ${{ steps.run.outputs.reason }}
       report_id: ${{ steps.run.outputs.report_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -216,7 +217,8 @@ jobs:
           DINGTALK_ROBOT_3: ${{ secrets.DINGTALK_ROBOT_3 }}
           DINGTALK_ROBOT_4: ${{ secrets.DINGTALK_ROBOT_4 }}
           DINGTALK_ROBOT_5: ${{ secrets.DINGTALK_ROBOT_5 }}
+          REASON: ${{ needs.radar.outputs.reason }}
         run: |
-          python -m radar alert --stage "${{ needs.radar.result != 'success' && '数据采集/分析' || needs.deploy.result != 'success' && '网站部署' || '钉钉推送' }}" \
+          python -m radar alert --reason "$REASON" --stage "${{ needs.radar.result != 'success' && '数据采集/分析' || needs.deploy.result != 'success' && '网站部署' || '钉钉推送' }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             ${{ needs.radar.outputs.published == 'true' && '--published' || '' }} ${{ needs.radar.outputs.saved == 'true' && '--saved' || '' }}

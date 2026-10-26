@@ -278,6 +278,8 @@ def test_failure_alert_says_whether_the_report_was_updated():
     assert "已拉到的数据和调用次数已保存" in dingtalk.failure_text("雷达", "数据采集/分析", saved=True)
     assert "没能保存到 site 分支" in dingtalk.failure_text("雷达", "数据采集/分析", published=True)
     assert "没有生成报告" in dingtalk.failure_text("雷达", "数据采集/分析")
+    quota = dingtalk.failure_text("雷达", "数据采集/分析", saved=True, reason="quota")
+    assert "接口调用次数用完了" in quota and "不是程序出错" in quota
 
 
 def test_ci_logs_never_contain_product_data(cfg, master_key, tmp_path, capsys, monkeypatch):
@@ -487,6 +489,14 @@ def test_account_limit_skips_the_run_or_only_the_extras(cfg, master_key, tmp_pat
     assert not (tmp_path / "a" / "reports").exists()
     saved = store.load(tmp_path / "a", crypto.parse_master_key(master_key))
     assert saved["calls"]["2026-10"] == aborted.value.calls == 6 and not saved.get("last_success")
+    assert aborted.value.kind == "quota" and not aborted.value.repeat and saved["blocked"]["kind"] == "quota"
+    # 第二天还被挡住：同一个原因 7 天内已经提醒过，标 repeat（命令行不再让工作流失败、不再发一样的告警）；7 天后再提醒一次
+    for days, repeat in ((1, True), (3, True), (8, False)):
+        with pytest.raises(pipeline.RunAborted) as again:
+            pipeline.run(cfg, secrets, tmp_path / "a", transport=_AccountLimit(world, after=0), now=START + timedelta(days=days))
+        assert again.value.repeat is repeat
+    blocked = store.load(tmp_path / "a", crypto.parse_master_key(master_key))["blocked"]
+    assert blocked["since"] == "2026-10-04" and blocked["alerted_on"] == "2026-10-12"
     out = pipeline.run(cfg, secrets, tmp_path / "b", now=START,
                        transport=_AccountLimit(world, tools=("asin_detail", "review", "asin_sales_trend")))
     assert out.published and (tmp_path / "b" / "reports" / f"{out.report_id}.html").exists()
@@ -581,3 +591,18 @@ def test_previous_run_is_replayed_for_items_not_tracked_last_time(world_run, mas
     cut = analyze.truncated_rec(rec, day)
     assert cut["series"]["sales"] == rec["series"]["sales"][: len(rec["series"]["sales"]) - 5]
     assert all(m[0] <= day.isoformat()[:7] for m in cut["months"])
+
+
+def test_cli_stays_quiet_when_the_same_block_was_already_reported(monkeypatch, tmp_path):
+    """同一个原因 7 天内已经提醒过：命令行返回 0（工作流不失败、不再发钉钉告警），但照样写出 saved=true 让工作流保存数据。"""
+    from radar import cli
+
+    out = tmp_path / "gh_out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("REPORT_KEY", crypto.generate_master_key())
+    for repeat, code in ((False, 1), (True, 0)):
+        def boom(*a, **k):
+            raise pipeline.RunAborted("QuotaExhausted: 接口访问次数已达上限", 1, "quota", repeat)
+        monkeypatch.setattr(pipeline, "run", boom)
+        assert cli.main(["run", "--site-dir", str(tmp_path / "site"), "--github-output"]) == code
+    assert out.read_text(encoding="utf-8").count("saved=true\nreason=quota") == 2

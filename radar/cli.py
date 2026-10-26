@@ -39,7 +39,10 @@ def cmd_run(args, cfg, secrets) -> int:
         log.warn(f"{exc}。本期没有生成报告（已调用 {exc.calls} 次，数据已保存），下一次定时检查会重新运行")
         if args.github_output and os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-                fh.write("published=false\nsaved=true\n")
+                fh.write(f"published=false\nsaved=true\nreason={exc.kind}\n")
+        if exc.repeat:  # 同一个原因前几天已经发过告警：这次只记日志，不让工作流失败（不再发一样的钉钉告警）
+            log.warn(f"和上次同一个原因，{pipeline.REMIND_DAYS} 天内已经提醒过，这次不再发告警")
+            return 0
         return 1
     _github_output(args, result)
     return 0
@@ -67,7 +70,7 @@ def cmd_alert(args, cfg, secrets) -> int:
         log.warn("未配置 DINGTALK_WEBHOOK，无法发送失败告警")
         return 0
     text = dingtalk.failure_text(cfg["report"]["title"], args.stage, args.run_url or "", published=args.published,
-                                 saved=args.saved)
+                                 saved=args.saved, reason=args.reason or "")
     dingtalk.send(secrets.dingtalk_webhooks, secrets.dingtalk_secrets, dingtalk.text_message(text))
     return 0
 
@@ -255,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", default="运行")
     p.add_argument("--published", action="store_true", help="报告已经生成（之后的步骤出错）")
     p.add_argument("--saved", action="store_true", help="没出报告，但中止前拉到的数据已保存")
+    p.add_argument("--reason", default="", help="中止的原因：quota / outage / thin")
     p.add_argument("--run-url", default="")
     p.set_defaults(func=cmd_alert)
 

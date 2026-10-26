@@ -152,7 +152,8 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     return "\n".join(lines)
 
 
-def failure_text(title: str, stage: str, run_url: str = "", *, published: bool = False, saved: bool = False) -> str:
+def failure_text(title: str, stage: str, run_url: str = "", *, published: bool = False, saved: bool = False,
+                 reason: str = "") -> str:
     """失败告警：按哪一步出的错说清楚报告到底更新了没有（以前一律写“报告未更新”，钉钉只是部分群没推送成功也这么说）。
     published：报告生成了；saved：没出报告，但中止前拉到的数据已保存。"""
     tail = f"\n运行日志：{run_url}" if run_url else ""
@@ -163,6 +164,14 @@ def failure_text(title: str, stage: str, run_url: str = "", *, published: bool =
                 "可在 GitHub Actions 里手动运行一次（mode 选 rerender）重新部署")
     elif published:
         what = "报告生成了，但没能保存到 site 分支（推送被拒），本期没有发布；下一次定时检查会重新运行"
+    elif saved and reason == "quota":
+        what = ("卖家精灵账户的接口调用次数用完了（卖家精灵返回“接口访问次数已达上限”，不是程序出错），本期没有生成报告。"
+                "以前的数据和报告都在；额度恢复前每天的定时检查只试 1 次、7 天内不再重复提醒，恢复后自动出报告。"
+                "请在卖家精灵后台确认套餐的调用额度和重置时间（和 AI工作台 共用一个 key）")
+    elif saved and reason == "outage":
+        what = "卖家精灵一直连不上，本期中途中止，没有生成报告；已拉到的数据和调用次数已保存，下一次定时检查会接着运行"
+    elif saved and reason == "thin":
+        what = "这期拉到的日数据太少（不到计划的六成），没有生成报告，免得发一份旧数据的报告；已拉到的数据已保存，下一次定时检查会重新运行"
     elif saved:
         what = ("本期中途中止（卖家精灵额度用完、一直连不上，或拉到的日数据太少），没有生成报告；"
                 "已拉到的数据和调用次数已保存，下一次定时检查会接着运行")
