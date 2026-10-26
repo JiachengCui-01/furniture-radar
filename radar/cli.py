@@ -235,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", help="运行一期：拉数据、分析、生成加密报告")
     p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))
-    p.add_argument("--force", action="store_true", help="忽略“每 3 天一次”的间隔")
+    p.add_argument("--force", action="store_true", help="忽略“每 N 天一次”的间隔（config.yaml 的 schedule.min_days_between_runs）")
     p.add_argument("--budget", type=int, help="覆盖本期调用预算")
     p.add_argument("--notify", action="store_true", help="完成后立即推送钉钉")
     p.add_argument("--github-output", action="store_true", help=argparse.SUPPRESS)

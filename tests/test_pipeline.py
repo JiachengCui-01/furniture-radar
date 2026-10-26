@@ -606,3 +606,24 @@ def test_cli_stays_quiet_when_the_same_block_was_already_reported(monkeypatch, t
         monkeypatch.setattr(pipeline, "run", boom)
         assert cli.main(["run", "--site-dir", str(tmp_path / "site"), "--github-output"]) == code
     assert out.read_text(encoding="utf-8").count("saved=true\nreason=quota") == 2
+
+
+def test_weekly_schedule_counts_calls_in_the_quota_month(cfg, master_key, tmp_path):
+    """每周一期：满 7 天（留 3 小时余量）才运行；调用次数按卖家精灵套餐的月份（北京时间的自然月）记——
+    北京时间 11-01 12:40 跑的这一期（美国时间还是 10-31）算 11 月；要翻上个月全市场月度名单当基准的那一期给多一点预算。"""
+    from datetime import datetime, timezone
+
+    from radar.config import load_config
+
+    assert load_config()["schedule"]["min_days_between_runs"] == 7  # 线上每周一期
+    cfg["schedule"]["min_days_between_runs"] = 7
+    state = {"last_success": "2026-10-23T04:44:28+00:00"}
+    assert pipeline.is_due(state, cfg, datetime(2026, 10, 30, 2, 0, tzinfo=timezone.utc))[0]          # 6 天 21 小时
+    assert not pipeline.is_due(state, cfg, datetime(2026, 10, 29, 4, 40, tzinfo=timezone.utc))[0]     # 6 天
+    when = datetime(2026, 11, 1, 4, 40, tzinfo=timezone.utc)
+    world = SyntheticWorld(when.date())
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=when)
+    state = store.load(tmp_path, crypto.parse_master_key(master_key))
+    assert set(state["calls"]) == {"2026-11"} and state["runs"][-1]["date"] == "2026-10-31"
+    assert state["runs"][-1]["coverage"]["budget"] == cfg["budget"]["bootstrap_run"]

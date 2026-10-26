@@ -2,7 +2,7 @@ name: 家具爆品雷达
 
 on:
   schedule:
-    # 每天 UTC 00:17（北京时间 08:17）检查一次；距上次成功运行满 3 天（config.yaml 可改）才真正拉数据
+    # 每天 UTC 00:17（北京时间 08:17）检查一次；距上次成功运行满 7 天（config.yaml 可改）才真正拉数据
     - cron: "17 0 * * *"
   workflow_dispatch:
     inputs:
@@ -38,7 +38,7 @@ jobs:
     permissions:
       contents: write   # 把加密数据和报告推到 site 分支
       actions: write    # 保活：防止 60 天无活动后定时任务被停用
-    timeout-minutes: 240  # 全市场名单以后每期约 1,500~2,700 次调用，每次约 1.5 秒，加上限流等待和主图识别约 1~1.5 小时
+    timeout-minutes: 240  # 每期最多约 1,500 次调用，每次约 1.5 秒，加上限流等待和主图识别约 40~60 分钟
     outputs:
       published: ${{ steps.run.outputs.published }}
       saved: ${{ steps.run.outputs.saved }}

@@ -6,13 +6,16 @@
 现在每期把全部子类目里近 30 天销量 ≥ opportunity_min_units 件或销售额 ≥ opportunity_min_revenue 美元的商品翻一遍
 （product_research 不传月份，按父体一行；每 50 个商品 1 次调用，约 130 次），存下每个商品的近 30 天销量（快照）；
 名单里的“增长率”和日数据对不上（试跑：414 个里 267 个差 20 个百分点以上），所以增长用自己存的往期快照算：
-  g   = 本期近 30 天销量 ÷ 基准 − 1。基准：自己存的、约 30 天前（29~36 天）的那份；头一个月没有时，
-        用上个月的月度名单（同样的门槛翻全，按天数折成 30 天）或别的 21~45 天前的快照（screen_ladder 按基准的新旧定门槛）；
-  r6 / r12 = 近 6 / 12 天的日均 ÷ 6 / 12 天前那份的日均（掉出窗口的那几天按那份的日均估）。
-只给可能达标的商品拉日数据（screen）：稳定以后 = g ≥ screen_growth、半年内上架且没跌、r6 或 r12 ≥ screen_short 之一；
-头一个月再加上名单的近 7 天 BSR 改善 ≥ screen_bsr_cr%。新进名单（没有基准）的都拉。
-回测（试跑的 2,039 个门槛以上商品、195 个增长商品，名单快照按“最近 9 天会被改成 0.82”模拟）：
-稳定以后不漏、拉 34%；头一个月基准 21~36 天前 99~100%、拉 40~53%，基准 41~45 天前 99~100%、拉 59~66%。
+  g   = 本期近 30 天销量 ÷ 基准 − 1。基准：自己存的、约 pool.screen_base_days 天前（27~36 天）的那份；头一个月没有时，
+        用上个月的月度名单（同样的门槛翻全，按天数折成 30 天）或别的 21~47 天前的快照（screen_ladder 按基准的新旧定门槛）；
+  短期倍数 rN（N = pool.screen_short_days，每周一期是 7 / 14）= 近 a 天的日均 ÷ a 天前那份的日均，a 是那份快照实际隔了几天
+        （N±2 天里最接近的一份；掉出窗口的那几天按那份的日均估）。
+只给可能达标的商品拉日数据（screen）：稳定以后 = g ≥ screen_growth、半年内上架且没跌、任一短期倍数 ≥ screen_short 之一；
+基准是上个月的月度名单时（头三周）再加上名单的近 7 天 BSR 改善 ≥ screen_bsr_cr%。新进名单（没有基准）的都拉。
+回测（2026-10-23 全覆盖试跑：门槛以上 2,051 个商品、195 个增长商品，自己存的快照按“最近 9 天会被改成 0.82”模拟，按每周一期）：
+稳定以后（28 天前的快照 + 7 / 14 天）不漏、拉 42%（和每 3 天一期的 30 天 + 6 / 12 天一样）；头一个月：
+9 月名单 32 / 39 / 46 天前 + 门槛 15% / 10% / 10% + 排名改善，不漏、拉 52% / 57% / 59%，预算只够拉 900 个时按优先级拉，召回 98~99.5%；
+自己 21 天前的快照 + 门槛 10%，不漏、拉 45%。
 
 state["universe"] = {
     "date": 本期日期, "pages": 本期翻了几页,
@@ -33,9 +36,9 @@ from .vendor import Vendor, request
 STATE_KEY = "universe"
 PAGE_SIZE = 50
 QUERY_CAP = 1990  # 一个查询最多翻出约 2000 个不同的商品（40 页），再往后是重复的行
-SNAP_KEEP_DAYS = 48
-STEADY = (29, 36)        # “约 30 天前”的快照
-FALLBACK = (21, 45)      # 头一个月能用的基准（再新的比不出 30 天的增长，再旧的漏得多）
+SNAP_KEEP_DAYS = 50
+STEADY = (27, 36)        # “约 30 天前”的快照（每周一期时是 28 或 35 天前那份）
+FALLBACK = (21, 47)      # 头一个月能用的基准（再新的比不出 30 天的增长；每周一期时 9 月名单第三周已是 46 天前）
 
 
 def _uni(state: dict) -> dict:
@@ -199,16 +202,18 @@ def _ladder(cfg: dict, age: int) -> float:
     return float(cfg["screen_ladder"][-1][1])
 
 
-def features(state: dict, asin: str, row: dict, today: date) -> dict:
-    """g（比基准的增长）、基准是什么（own = 自己存的快照 / month = 上个月的月度名单）、基准有几天、r6、r12。"""
+def features(state: dict, asin: str, row: dict, today: date, base_days: int = 28,
+             short_days: tuple = (7, 14)) -> dict:
+    """g（比基准的增长）、基准是什么（own = 自己存的快照 / month = 上个月的月度名单）、基准有几天、
+    short = {N: 近 a 天日均 ÷ a 天前那份的日均}（N = short_days，a = 那份快照实际隔的天数，N±2 天里最接近的）。"""
     uni = _uni(state)
     snaps = [((today - clock.parse_day(s["date"])).days, s["units"]) for s in uni["snaps"]
              if s["date"] != today.isoformat() and clock.parse_day(s["date"])]
     u = float(row.get("units") or 0)
-    out = {"u": u, "g": None, "base": None, "age": None, "r6": None, "r12": None}
-    # 基准的先后：约 30 天前自己存的 → 24~45 天前自己存的 → 上个月的月度名单（21~45 天前结束）→ 21~23 天前自己存的
+    out = {"u": u, "g": None, "base": None, "age": None, "short": {}}
+    # 基准的先后：约 base_days 天前自己存的 → 24~47 天前自己存的 → 上个月的月度名单（21~47 天前结束）→ 21~23 天前自己存的
     kind = "own"
-    pick = _nearest(snaps, asin, *STEADY, 30) or _nearest(snaps, asin, 24, FALLBACK[1], 30)
+    pick = _nearest(snaps, asin, *STEADY, base_days) or _nearest(snaps, asin, 24, FALLBACK[1], base_days)
     if pick is None:
         base = uni.get("baseline") or {}
         end = clock.parse_day(base.get("end"))
@@ -219,10 +224,11 @@ def features(state: dict, asin: str, row: dict, today: date) -> dict:
             pick = _nearest(snaps, asin, FALLBACK[0], 23, 30)
     if pick:
         out.update(g=u / pick[1] - 1, base=kind, age=pick[0])
-    for w in (6, 12):
-        s = _nearest(snaps, asin, w - 1, w + 1, w)
+    for w in short_days:
+        s = _nearest(snaps, asin, w - 2, w + 2, w)
         if s:
-            out[f"r{w}"] = ((u - s[1] + s[1] / 30 * w) / w) / (s[1] / 30)
+            a, base = s  # 按那份快照实际隔的天数算（每 3 天一期和每周一期都对）
+            out["short"][w] = ((u - base + base / 30 * a) / a) / (base / 30)
     return out
 
 
@@ -231,12 +237,13 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
     pcfg = cfg["pool"]
     growth, short = float(pcfg["screen_growth"]), float(pcfg["screen_short"])
     young_days, bsr_cr = int(pcfg["opportunity_max_age_days"]), float(pcfg["screen_bsr_cr"])
+    base_days, short_days = int(pcfg.get("screen_base_days", 28)), tuple(pcfg.get("screen_short_days") or (7, 14))
     out = []
     for asin, row in rows.items():
-        f = features(state, asin, row, today)
+        f = features(state, asin, row, today, base_days, short_days)
         age = clock.days_between(clock.parse_day(row.get("available")), today)
         young = age is not None and age <= young_days
-        shorts = [r for r in (f["r6"], f["r12"]) if r is not None]
+        shorts = list(f["short"].values())
         if f["g"] is None:
             out.append((asin, 10.0, "新进名单（没有基准）"))
             continue
@@ -248,8 +255,8 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
         if young and f["g"] >= -1e-9:
             why.append("半年内上架、没跌")
         if any(r >= short - 1e-9 for r in shorts):
-            why.append(f"近 6/12 天 ×{max(shorts):.1f}")
-        if not steady and (row.get("bsr_cr") or 0) >= bsr_cr:
+            why.append(f"近 {' / '.join(map(str, f['short']))} 天 ×{max(shorts):.1f}")
+        if f["base"] == "month" and (row.get("bsr_cr") or 0) >= bsr_cr:  # 基准是上个月的名单时（头三周）
             why.append(f"近 7 天排名改善 {row['bsr_cr']:.0f}%")
         if why:
             out.append((asin, max([f["g"]] + [r - 1 for r in shorts]), "；".join(why)))

@@ -73,6 +73,11 @@ def is_due(state: dict, cfg: dict, now_utc: datetime) -> tuple[bool, str]:
     return False, f"距上次运行仅 {elapsed.total_seconds() / 86400:.1f} 天，未满 {cfg['schedule']['min_days_between_runs']} 天"
 
 
+def bcfg_tz(cfg: dict) -> str:
+    """调用次数按哪个时区的月份记：budget.quota_timezone（卖家精灵套餐按自然月、北京时间），没配时用美国时间。"""
+    return cfg["budget"].get("quota_timezone") or cfg["vendor_timezone"]
+
+
 def needs_discovery(state: dict, cfg: dict, today) -> bool:
     """本期要不要重新发现（首期、换了监控范围、新的月份数据、月初拉的名单该重拉了）：要的话给更多预算。"""
     current = state.get("discovery")
@@ -183,13 +188,16 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     today = clock.to_tz(now_utc, cfg["vendor_timezone"]).date()
     run_seq = int(state.get("run_seq") or 0) + 1
-    month = clock.month_key(today)
+    # 调用次数按卖家精灵套餐的月份记（套餐次数按自然月分配、每月 1 号 0 点重置：按北京时间算，和数据的美国时间月份不一样）
+    month = clock.month_key(clock.to_tz(now_utc, bcfg_tz(cfg)).date())
     used_this_month = int(state["calls"].get(month, 0))
     bcfg = cfg["budget"]
     if budget is not None:
         limit = budget
     else:
-        base = bcfg["bootstrap_run"] if needs_discovery(state, cfg, today) else bcfg["per_run"]
+        # 要重新发现子类目、或者头一个月要拉上个月的全市场月度名单当基准的那一期，给多一点预算
+        busy = needs_discovery(state, cfg, today) or universe.baseline_period(state, today) is not None
+        base = bcfg["bootstrap_run"] if busy else bcfg["per_run"]
         limit = min(base, max(0, bcfg["monthly_cap"] - used_this_month))
 
     live = transport is None

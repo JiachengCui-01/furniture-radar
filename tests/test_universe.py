@@ -16,20 +16,23 @@ def _row(units, available="2024-01-01", bsr_cr=0):
     return {"units": units, "available": available, "bsr_cr": bsr_cr}
 
 
-def test_steady_screen_uses_own_snapshot_from_about_30_days_ago(cfg):
-    """稳定以后：比 30 天前自己存的那份高 ≥15%、半年内上架且没跌、近 6 / 12 天比之前高 1.3 倍，满足一个就拉；新进名单的都拉。
-    近 7 天排名改善只在头一个月用。"""
-    snaps = {30: {"UP": 1000, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000},
-             6: {"UP": 1100, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000},
-             12: {"UP": 1100, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000}}
+def test_steady_screen_uses_own_snapshot_from_about_28_days_ago(cfg):
+    """每周一期、稳定以后：比 28 天前自己存的那份高 ≥15%、半年内上架且没跌、近 7 / 14 天比之前高 1.3 倍，满足一个就拉；
+    新进名单的都拉。近 7 天排名改善只在基准是上个月月度名单（头三周）时用。"""
+    snaps = {28: {"UP": 1000, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000},
+             7: {"UP": 1100, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000},
+             14: {"UP": 1100, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000}}
     rows = {"UP": _row(1200), "FLAT": _row(1050), "YOUNG": _row(1000, "2026-08-01"),
-            "JUMP": _row(1300), "BSR": _row(1000, bsr_cr=60), "NEW": _row(400)}
-    rows["JUMP"]["units"] = 1100  # 30 天只 +10%，但近 6 天：(1100 − 1000 + 200) / 6 ÷ (1000 / 30) = 1.5 倍
+            "JUMP": _row(1100), "BSR": _row(1000, bsr_cr=60), "NEW": _row(400)}
+    # JUMP：28 天只 +10%，但近 7 天：(1100 − 1000 + 1000 / 30 × 7) / 7 ÷ (1000 / 30) ≈ 1.43 倍
     picked = {a: why for a, _s, why in universe.screen(_state(snaps), rows, TODAY, cfg)}
     assert set(picked) == {"UP", "YOUNG", "JUMP", "NEW"}
-    assert picked["NEW"].startswith("新进名单") and "比 30 天前 +20%" in picked["UP"]
+    assert picked["NEW"].startswith("新进名单") and "比 28 天前 +20%" in picked["UP"]
     f = universe.features(_state(snaps), "JUMP", rows["JUMP"], TODAY)
-    assert f["base"] == "own" and f["age"] == 30 and round(f["r6"], 2) == 1.5
+    assert f["base"] == "own" and f["age"] == 28 and round(f["short"][7], 2) == 1.43
+    # 快照隔的天数和 7 不一样（例如隔了 8 天）：按实际的 8 天算
+    f8 = universe.features(_state({28: {"J": 1000}, 8: {"J": 1000}}), "J", _row(1100), TODAY)
+    assert round(f8["short"][7], 3) == round(((1100 - 1000 + 1000 / 30 * 8) / 8) / (1000 / 30), 3)
 
 
 def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
@@ -37,6 +40,7 @@ def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     再加上近 7 天排名改善；结束不到 21 天的月份比不出 30 天的增长，不用。"""
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 10, 26)) == "202609"
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 5)) == "202609"   # 10 月才结束 5 天
+    assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 16)) == "202609"  # 每周一期第三周：9 月名单 47 天
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 25)) == "202610"
     assert universe.baseline_period(_state({24: {"A": 1}}), TODAY) is None                        # 有 21 天以上的快照了
     base = {"period": "202610", "end": "2026-10-31", "days": 31, "units": {"A": 310, "B": 310, "C": 310}}
