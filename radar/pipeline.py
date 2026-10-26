@@ -98,6 +98,12 @@ def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | No
         else:
             log.warn("发现：重新拉名单时预算不够，先用原来的，下期再拉")
     if current and current.get("complete") and current["period"] >= target:
+        if len(current.get("done_units") or []) < len(current.get("nodes") or []):
+            try:  # 以前发现的名单还没有“按件数的头部”（持续热销门槛按件数排名用）：补上，每个子类目 1 次
+                calls = discovery.fill_units(vendor, cfg, current)
+                log.info(f"发现：补了按件数排的头部名单（{calls} 次调用）")
+            except BudgetExhausted:
+                log.warn("发现：补按件数排的头部名单时预算不够，下期再补")
         return discovery.apply_product_filter(current, cfg)
     for period in (target, clock.step_period(target, -1)):
         if current and current.get("complete") and current["period"] >= period:
@@ -228,6 +234,13 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         state["calls"][month] = used_this_month + vendor.billable_calls
         store.save(site, master, state)
         raise RunAborted(f"{type(exc).__name__}: {exc}", vendor.billable_calls) from exc
+    # 空报告保护：该拉的日数据只拉到很少（一个个都连不上、预算给得太少……）时不出这一期，免得发一份看起来正常、其实是旧数据的报告。
+    # 回测：以往 8 期每期都刷新了计划里 ≥98% 的商品
+    share = float(cfg["report"].get("min_refresh_share", 0.6))
+    if refreshed < max(1, share * len(plan)):
+        state["calls"][month] = used_this_month + vendor.billable_calls
+        store.save(site, master, state)
+        raise RunAborted(f"日数据只刷新了 {refreshed}/{len(plan)} 个（要 ≥{share:.0%}），数据不够，不出这一期", vendor.billable_calls)
 
     # 核心刷新做完后剩下的预算：补充数据（backfill_extras）。账户额度用完时跳过，照常出报告
     if disc and disc.get("nodes"):
@@ -278,6 +291,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     report_id = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
     coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"] + mix["screen"], "revision": revision,
+                "young": [len(uni.get("young") or {}), mix["young"]] if screened is not None and uni.get("young") else None,
                 "universe": len(uni.get("rows") or {}) if screened is not None else None,
                 "universe_pages": uni.get("pages") if screened is not None else None,
                 "universe_failed": len(uni.get("failed") or []) if screened is not None else None,
@@ -479,9 +493,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
                       for old_id in list(reversed(state.get("reports") or [])) if old_id != report_id][:6]
 
     page = report_render.render(ctx)
-    envelope = crypto.encrypt(crypto.report_key(master, report_id), page.encode("utf-8"),
-                              crypto.report_aad(report_id))
-    _write_shell(cfg, site, report_id, envelope, latest_id=report_id)
+    _write_shell(cfg, site, report_id, shell.seal(master, report_id, page), latest_id=report_id)
     return ctx
 
 
@@ -521,9 +533,9 @@ def reseal(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> int:
         count += 1
     for path in sorted((site / "reports").glob("*.html")):
         payload = shell.read_payload(path.read_text(encoding="utf-8"))
-        rid, key, aad = payload["id"], crypto.report_key(master, payload["id"]), crypto.report_aad(payload["id"])
-        page = HISTORY_KEY_RE.sub(r'href="\1"', crypto.decrypt(key, shell.envelope_of(payload), aad).decode("utf-8"))
-        _write_shell(cfg, site, rid, crypto.encrypt(key, page.encode("utf-8"), aad), payload.get("latest") or rid)
+        rid = payload["id"]
+        page = HISTORY_KEY_RE.sub(r'href="\1"', shell.unseal(master, payload))
+        _write_shell(cfg, site, rid, shell.seal(master, rid, page), payload.get("latest") or rid)
         count += 1
     log.info(f"已重新加密 {count} 个文件")
     return count
@@ -541,12 +553,10 @@ def scrub_history_keys(cfg: dict, site: Path, master: bytes, report_ids: list[st
         if not path.exists():
             continue
         payload = shell.read_payload(path.read_text(encoding="utf-8"))
-        key, aad = crypto.report_key(master, payload["id"]), crypto.report_aad(payload["id"])
-        page = crypto.decrypt(key, shell.envelope_of(payload), aad).decode("utf-8")
+        page = shell.unseal(master, payload)
         clean = HISTORY_KEY_RE.sub(r'href="\1"', page)
-        if clean != page:
-            _write_shell(cfg, site, payload["id"], crypto.encrypt(key, clean.encode("utf-8"), aad),
-                         payload.get("latest") or payload["id"])
+        if clean != page:  # 顺带压缩
+            _write_shell(cfg, site, payload["id"], shell.seal(master, payload["id"], clean), payload.get("latest") or payload["id"])
             count += 1
     if count:
         log.info(f"往期报告里的密钥链接已去掉：{count} 份")
@@ -572,7 +582,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
-                                                         "universe", "universe_pages", "universe_failed")},
+                                                         "universe", "universe_pages", "universe_failed", "young")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }

@@ -66,7 +66,8 @@ def cmd_alert(args, cfg, secrets) -> int:
     if not secrets.dingtalk_webhooks:
         log.warn("未配置 DINGTALK_WEBHOOK，无法发送失败告警")
         return 0
-    text = dingtalk.failure_text(cfg["report"]["title"], args.stage, args.run_url or "")
+    text = dingtalk.failure_text(cfg["report"]["title"], args.stage, args.run_url or "", published=args.published,
+                                 saved=args.saved)
     dingtalk.send(secrets.dingtalk_webhooks, secrets.dingtalk_secrets, dingtalk.text_message(text))
     return 0
 
@@ -110,9 +111,7 @@ def cmd_demo(args, cfg, secrets) -> int:
 
 
 def _decrypt_page(page: str, master: bytes) -> str:
-    payload = shell.read_payload(page)
-    key = crypto.report_key(master, payload["id"])
-    return crypto.decrypt(key, payload, crypto.report_aad(payload["id"])).decode("utf-8")
+    return shell.unseal(master, shell.read_payload(page))
 
 
 def cmd_decrypt(args, cfg, secrets) -> int:
@@ -254,6 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("alert", help="发送运行失败告警（不含数据）")
     p.add_argument("--stage", default="运行")
+    p.add_argument("--published", action="store_true", help="报告已经生成（之后的步骤出错）")
+    p.add_argument("--saved", action="store_true", help="没出报告，但中止前拉到的数据已保存")
     p.add_argument("--run-url", default="")
     p.set_defaults(func=cmd_alert)
 

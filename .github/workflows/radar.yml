@@ -24,11 +24,9 @@ on:
         type: string
         default: ""
 
-permissions:
-  contents: write   # 把加密数据和报告推到 site 分支
-  pages: write      # 部署 GitHub Pages
-  id-token: write
-  actions: write    # 保活：防止 60 天无活动后定时任务被停用
+# 每个任务只给它要用的权限（以前四个任务都有写权限；推送钉钉、发告警的任务也会装依赖、跑代码）。
+# 第三方 action 固定到具体的提交（# 后面是对应的版本号），不跟着标签变
+permissions: {}
 
 concurrency:
   group: radar
@@ -37,14 +35,18 @@ concurrency:
 jobs:
   radar:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 把加密数据和报告推到 site 分支
+      actions: write    # 保活：防止 60 天无活动后定时任务被停用
     timeout-minutes: 240  # 全市场名单以后每期约 1,500~2,700 次调用，每次约 1.5 秒，加上限流等待和主图识别约 1~1.5 小时
     outputs:
       published: ${{ steps.run.outputs.published }}
+      saved: ${{ steps.run.outputs.saved }}
       report_id: ${{ steps.run.outputs.report_id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.11"
           cache: pip
@@ -130,7 +132,7 @@ jobs:
           cp -r site/. _pages/
           rm -rf _pages/data
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: steps.run.outputs.published == 'true'
         with:
           path: _pages
@@ -145,6 +147,9 @@ jobs:
     needs: radar
     if: needs.radar.outputs.published == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write      # 部署 GitHub Pages
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -152,15 +157,17 @@ jobs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5
 
   notify:
     needs: [radar, deploy]
     if: needs.radar.outputs.published == 'true' && (github.event_name == 'schedule' || inputs.notify)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read    # 取代码和 site 分支
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.11"
           cache: pip
@@ -189,9 +196,11 @@ jobs:
     needs: [radar, deploy, notify]
     if: failure()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
         with:
           python-version: "3.11"
           cache: pip
@@ -209,4 +218,5 @@ jobs:
           DINGTALK_ROBOT_5: ${{ secrets.DINGTALK_ROBOT_5 }}
         run: |
           python -m radar alert --stage "${{ needs.radar.result != 'success' && '数据采集/分析' || needs.deploy.result != 'success' && '网站部署' || '钉钉推送' }}" \
-            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            ${{ needs.radar.outputs.published == 'true' && '--published' || '' }} ${{ needs.radar.outputs.saved == 'true' && '--saved' || '' }}

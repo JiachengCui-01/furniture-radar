@@ -32,7 +32,7 @@ from .vendor import Vendor
 
 FLAG_LABELS = ("surge", "potential", "fake")
 FRESH_SOURCES = ("riser", "fresh_new", "similar")  # 近 30 天数据（截至当天）
-REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "screen": "全市场初筛", "similar": "爆款相似款",
+REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "screen": "全市场初筛", "young": "早期名单", "similar": "爆款相似款",
              "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
 
 
@@ -96,7 +96,8 @@ def opportunity_rank(cands: list[dict], today) -> list[dict]:
 
 def fresh_rows(state: dict) -> dict[str, dict]:
     """本期的近 30 天行：上升榜 / 新品榜优先，其次相似款，再次全市场名单（universe.py）。"""
-    rows = dict((state.get("universe") or {}).get("rows") or {})
+    rows = dict((state.get("universe") or {}).get("young") or {})
+    rows.update((state.get("universe") or {}).get("rows") or {})
     rows.update({p["asin"]: p for p in (state.get("similar") or {}).get("items") or []})
     rows.update({p["asin"]: p for p in (state.get("risers") or {}).get("items") or []})
     return rows
@@ -215,6 +216,10 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
             if len(order) >= size:
                 break
             add(asin, "screen", size)
+        for asin, _score, _why in universe.screen_young(uni.get("young") or {}, cfg):  # 早期名单：全市场初筛之后
+            if len(order) >= size:
+                break
+            add(asin, "young", size)
         return order, {a: reason[a] for a in order}
     cands = opportunity_candidates(disc, state, cfg, today)
     every = int(pcfg.get("opportunity_every_run", 0))

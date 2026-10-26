@@ -35,7 +35,8 @@ def node_stats(disc: dict | None, cfg: dict) -> dict[str, dict]:
     for node, items in by_node.items():
         per_parent: dict[str, float] = {}
         for p in items:
-            if "top" in p["sources"]:
+            # 门槛 = 按月销量排的第 N 名：销售额前 50（"top"）+ 月销量前 50（"units"）合起来按件数排，同一父体只算一次
+            if "top" in p["sources"] or "units" in p["sources"]:
                 key = p.get("parent") or p["asin"]
                 per_parent[key] = max(per_parent.get(key, 0), p["units"] or 0)
         units = sorted(per_parent.values(), reverse=True)

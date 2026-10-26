@@ -753,7 +753,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
         "potential": scope + f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
                      f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
                      f"没有回落；异常分 <{f['suspect_score']}。{short}按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
-        "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平、"
+        "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平（按月销量排名，同一父体只算一次）、"
                f"且这个月量够（≥{h.get('min_units', 0):g} 件或销售额 ≥${h.get('min_revenue') or 0:,.0f}）；"
                f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
                f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}{adjust}。"
@@ -888,6 +888,8 @@ def render(ctx: dict) -> str:
         failed = f"；{cov['universe_failed']} 个子类目有页查询失败、没翻全" if cov.get("universe_failed") else ""
         facts.append(f"全市场名单：近 30 天量够的商品 {cov['universe']} 个（翻名单 {cov.get('universe_pages') or 0} 次调用{failed}），"
                      f"初筛出 {cov.get('candidates') or 0} 个可能在增长，本期拉了日数据的 {cov.get('opportunity') or 0} 个")
+        if cov.get("young"):
+            facts.append(f"早期名单：上架半年内、量还不够全市场门槛的商品 {cov['young'][0]} 个，近 7 天排名改善够多、拉了日数据的 {cov['young'][1]} 个")
     elif cov.get("candidates"):
         facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
     if counts.get("low"):

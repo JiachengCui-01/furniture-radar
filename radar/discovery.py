@@ -262,6 +262,8 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
                     _add(disc["products"], item)
             disc["done_top"].append(node["path"])
 
+        fill_units(vendor, cfg, disc, failed)
+
         newcomer_nodes = sorted(disc["nodes"], key=lambda n: -n["units"])[: disc_cfg["newcomer_max_nodes"]]
         for node in newcomer_nodes:
             if node["path"] in disc["done_new"]:
@@ -286,6 +288,32 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
     disc["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     log.info(f"发现：基线商品 {len(disc['products'])} 个（{'完整' if disc['complete'] else '部分'}）")
     return disc
+
+
+def fill_units(vendor: Vendor, cfg: dict, disc: dict, failed: list[str] | None = None) -> int:
+    """每个子类目再按月销量取前 N 个（来源 "units"）：持续热销的门槛“子类目第 20 名的月销量”要按件数排名，
+    只在销售额前 50 里排会偏低——便宜、走量的商品进不了销售额前 50（2026-10-23 全市场名单：床头柜第 20 名实际 2,686 件，
+    销售额前 50 里的第 20 名只有 1,762 件，低 34%；五斗柜低 13%；衣帽架一样）。每个子类目 1 次调用，月度发现时带上；
+    以前发现的名单没有这一份的，下一期补（disc["done_units"] 记着查过的子类目）。返回调用次数。"""
+    start = vendor.billable_calls
+    done = disc.setdefault("done_units", [])
+    for node in disc["nodes"]:
+        if node["path"] in done:
+            continue
+        reply = vendor.call("product_research", request(
+            marketplace=cfg["marketplace"], nodeIdPath=node["path"], nodeIdPathEqual="false", month=disc["period"],
+            size=cfg["discovery"]["top_per_node"], page=1, variation=_variation(cfg),
+            order={"field": "total_units", "desc": True}), purpose="按件数的头部")
+        if _failed(reply):
+            if failed is not None:
+                failed.append(node["path"])
+            continue
+        for rank, row in enumerate(reply.rows, start=1):
+            item = normalize_product(row, node, "units", rank)
+            if keep_product(item, cfg):
+                _add(disc["products"], item)
+        done.append(node["path"])
+    return vendor.billable_calls - start
 
 
 def owning_node(path: str, nodes: list[dict]) -> dict | None:

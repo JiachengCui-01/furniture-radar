@@ -152,6 +152,20 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     return "\n".join(lines)
 
 
-def failure_text(title: str, stage: str, run_url: str = "") -> str:
+def failure_text(title: str, stage: str, run_url: str = "", *, published: bool = False, saved: bool = False) -> str:
+    """失败告警：按哪一步出的错说清楚报告到底更新了没有（以前一律写“报告未更新”，钉钉只是部分群没推送成功也这么说）。
+    published：报告生成了；saved：没出报告，但中止前拉到的数据已保存。"""
     tail = f"\n运行日志：{run_url}" if run_url else ""
-    return f"【{title}】本期自动运行失败（{stage}），报告未更新，请检查 GitHub Actions。{tail}"
+    if stage == "钉钉推送":
+        what = "报告已更新，网站上能打开，但有钉钉群没推送成功，请检查这个群的机器人配置"
+    elif stage == "网站部署":
+        what = ("报告已生成并保存，但网站没部署成功，钉钉里的链接可能打不开；"
+                "可在 GitHub Actions 里手动运行一次（mode 选 rerender）重新部署")
+    elif published:
+        what = "报告生成了，但没能保存到 site 分支（推送被拒），本期没有发布；下一次定时检查会重新运行"
+    elif saved:
+        what = ("本期中途中止（卖家精灵额度用完、一直连不上，或拉到的日数据太少），没有生成报告；"
+                "已拉到的数据和调用次数已保存，下一次定时检查会接着运行")
+    else:
+        what = "本期运行出错，没有生成报告"
+    return f"【{title}】{what}。请检查 GitHub Actions。{tail}"

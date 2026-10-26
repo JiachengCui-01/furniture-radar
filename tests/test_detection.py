@@ -407,7 +407,35 @@ def test_review_burst_compares_with_a_random_spread(cfg):
     assert flagged({"n": 17, "top3": 8, "span": 60, "burst_share": 0.471})      # 17 条里 8 条在 3 天
     assert not flagged({"n": 20, "top3": 10, "span": 20, "burst_share": 0.5})   # 20 条挤在最近 20 天：每天约 1 条，正常
     assert flagged({"n": 20, "top3": 10, "span": 60, "burst_share": 0.5})
-    assert not flagged({"n": 20, "burst_share": 0.9})                           # 旧的核查结果没记 top3 / span：判不了
+    assert not flagged({"n": 20, "burst_share": 0.9})                           # 旧的核查结果拿满一页、没记 top3 / span：判不了
+    assert flagged({"n": 17, "burst_share": 0.471})                             # 不到一页：近 60 天的都拿到了，照样能判
+
+
+def test_review_ratio_signals_skip_family_data_inherited_reviews_and_double_counting(cfg):
+    """留评率 / 新品评论比：当月新增评论比商品总评论还多的是父体数据，不计；评论核查看到的近 60 天评论不到应有的一半，
+    是继承来的（实测上架 57 天 339 条评论，抽查近 60 天只有 4 条），不计；两项同时成立第二项只计 1 分；Vine 评论先扣掉。"""
+    f = cfg["thresholds"]["fake"]
+    sales = [40] * 60
+    d = Daily.from_record({"start": "2026-08-01", "bsr": [5000] * 60, "sales": sales, "price": [50] * 60})
+    end = d.as_of()
+    row = {"ratings_rate": 15.0, "ratings_cv": 330}
+    rec = {"available": "2026-08-01", "variations": 1, "months": [["2026-08", 1240], ["2026-09", 1160]],
+           "obs": [{"date": end.isoformat(), "ratings": 339, "rating": 4.6}]}
+
+    def codes(r, rw=row):
+        out = fakehot.score(r, d, end, rw, 2.0, f)
+        return {s["code"]: s["points"] for s in out["signals"]}, out["tags"]
+
+    got, _ = codes(rec)
+    assert got == {"review_rate": 2, "new_listing_reviews": 1}                 # 同一个证据：第二项只计 1 分（合计 3 = 疑似）
+    got, tags = codes({**rec, "checks": {"review": {"n": 4, "total": 4, "vine_share": 0.0}}})
+    assert got == {} and any("继承" in t for t in tags)
+    got, tags = codes({**rec, "obs": [{"date": end.isoformat(), "ratings": 16, "rating": 4.6}]})
+    assert "review_rate" not in got and "留评率数据是父体的，不计分" in tags
+    vine = {**rec, "obs": [{"date": end.isoformat(), "ratings": 260, "rating": 4.6}],
+            "checks": {"review": {"n": 20, "total": 300, "vine_share": 0.85}}}
+    got, _ = codes(vine, {"ratings_rate": 12.0, "ratings_cv": 260})            # 255 条是 Vine：扣掉后都不到门槛
+    assert got == {}
 
 
 def test_zero_sale_runs_count_as_stock_out_for_rising_baseline(cfg):

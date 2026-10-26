@@ -244,21 +244,40 @@ def test_not_due_is_skipped(cfg, master_key, tmp_path):
 
 
 def test_budget_is_respected(cfg, master_key, tmp_path):
+    """预算是硬上限；预算太少、一个商品的日数据都没拉到时不出报告（空报告保护），拉到的名单和调用次数照样保存。"""
     world = SyntheticWorld(START.date())
-    result = pipeline.run(cfg, Secrets(report_key=master_key), tmp_path, transport=world, now=START, budget=25)
-    assert result.published and result.calls <= 25 and len(world.calls) <= 25
+    with pytest.raises(pipeline.RunAborted) as aborted:
+        pipeline.run(cfg, Secrets(report_key=master_key), tmp_path, transport=world, now=START, budget=25)
+    assert aborted.value.calls <= 25 and len(world.calls) <= 25
+    assert not (tmp_path / "reports").exists()
+    assert store.load(tmp_path, crypto.parse_master_key(master_key))["calls"]["2026-10"] == aborted.value.calls
 
 
 def test_unfinished_discovery_resumes_next_run(cfg, master_key, tmp_path):
     world = SyntheticWorld(START.date())
     secrets = Secrets(report_key=master_key)
-    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START, budget=4)
+    with pytest.raises(pipeline.RunAborted):  # 预算只够发现的一部分：不出报告，发现的进度照样保存
+        pipeline.run(cfg, secrets, tmp_path, transport=world, now=START, budget=4)
     state = store.load(tmp_path, crypto.parse_master_key(master_key))
     assert state["discovery"]["complete"] is False
     world.advance(3)
-    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=3), budget=60)
+    try:
+        pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=3), budget=60)
+    except pipeline.RunAborted:
+        pass  # 60 次补完发现以后日数据可能还不够，这里只看发现接着补上了
     state = store.load(tmp_path, crypto.parse_master_key(master_key))
     assert state["discovery"]["complete"] is True and state["discovery"]["period"] == "202609"
+
+
+def test_failure_alert_says_whether_the_report_was_updated():
+    """失败告警按哪一步出错说清楚报告更新了没有：钉钉推送失败时报告其实已经更新了。"""
+    from radar.notify import dingtalk
+
+    assert "报告已更新" in dingtalk.failure_text("雷达", "钉钉推送")
+    assert "rerender" in dingtalk.failure_text("雷达", "网站部署")
+    assert "已拉到的数据和调用次数已保存" in dingtalk.failure_text("雷达", "数据采集/分析", saved=True)
+    assert "没能保存到 site 分支" in dingtalk.failure_text("雷达", "数据采集/分析", published=True)
+    assert "没有生成报告" in dingtalk.failure_text("雷达", "数据采集/分析")
 
 
 def test_ci_logs_never_contain_product_data(cfg, master_key, tmp_path, capsys, monkeypatch):
@@ -535,6 +554,7 @@ def test_old_reports_lose_their_embedded_history_keys(world_run, master_key, cfg
     plain = _decrypt_page(path.read_text(encoding="utf-8"), master)
     leaky = plain.replace(f'href="{first.report_id}.html"', f'href="{first.report_id}.html#k=SECRETKEY_abc-123"')
     assert leaky != plain
+    # 以前的报告：没压缩、带往期密钥
     pipeline._write_shell(cfg, site, payload["id"], crypto.encrypt(key, leaky.encode("utf-8"), aad), payload["latest"])
     assert pipeline.scrub_history_keys(cfg, site, master, [second.report_id]) == 1
     assert _decrypt_page(path.read_text(encoding="utf-8"), master) == plain

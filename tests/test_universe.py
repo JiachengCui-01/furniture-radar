@@ -66,3 +66,34 @@ def test_node_tide_is_the_median_change_of_the_node(cfg):
     assert revised == {"N:A": round(1.55 * (1 - 9 / 30 * 0.2), 3)}
     state["universe"]["date"] = "2026-11-28"
     assert universe.node_tide(state, TODAY, cfg) == {}
+
+
+def test_young_list_finds_fresh_listings_below_the_floor(cfg):
+    """早期名单：上架半年内、量还不够全市场门槛的商品（已在全市场名单里的、标题不在范围内的、同一父体的不要），
+    近 7 天排名改善够多的才拉日数据。"""
+    import json
+    from radar.vendor import Budget, Vendor
+
+    def row(asin, units, bsr_cr, title="Wood Nightstand", parent=None, revenue=None):
+        return {"asin": asin, "parent": parent or asin, "title": title, "units": units, "revenue": revenue or units * 60,
+                "bsrCr": bsr_cr, "availableDate": 1785542400000}
+
+    seen = []
+
+    def transport(tool, args):
+        req = args["request"]
+        seen.append(req)
+        if req.get("availableMonth") != 6 or req.get("page", 1) > 1:
+            return json.dumps({"code": "OK", "data": {"items": []}})
+        if req["order"]["field"] == "total_units":
+            items = [row("Y1", 250, 70), row("Y2", 120, 10), row("IN", 280, 90), row("SOFA", 150, 80, "Velvet Bench"),
+                     row("Y1B", 200, 75, parent="Y1")]
+        else:
+            items = [row("R1", 60, 55, revenue=20000)]
+        return json.dumps({"code": "OK", "data": {"items": items}})
+
+    cfg["pool"]["young"] = {**cfg["pool"]["young"], "enabled": True}
+    young = universe.fetch_young(Vendor(transport, Budget(20), live=False), cfg, [{"path": "N", "name": "Nightstands"}], {"IN"})
+    assert set(young) == {"Y1", "Y2", "R1"}
+    assert seen[0]["minUnits"] == 100 and seen[0]["maxUnits"] == 299 and seen[0]["availableMonth"] == 6
+    assert [a for a, _s, _w in universe.screen_young(young, cfg)] == ["Y1", "R1"]  # 近 7 天排名改善 ≥50%

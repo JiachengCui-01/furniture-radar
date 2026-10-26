@@ -105,6 +105,48 @@ def fetch(vendor: Vendor, cfg: dict, nodes: list[dict], period: str | None = Non
     return out
 
 
+def fetch_young(vendor: Vendor, cfg: dict, nodes: list[dict], exclude: set[str], failed: list[str] | None = None) -> dict[str, dict]:
+    """早期名单（pool.young）：全市场名单的门槛（近 30 天 ≥300 件或 ≥4 万美元）是 30 天合计，刚爆起来的新品要攒够才进得来——
+    回测（2025-11~2026-09 每周回放）：约三分之一的突然爆火开始时还不够门槛，中位数晚 7 天（2~3 期）才进全市场名单，其中八成上架不到半年。
+    所以每个子类目再翻一份：上架 ≤ max_age_months 个月、近 30 天 ≥ min_units 件或 ≥ min_revenue 美元、但不够全市场门槛的商品。
+    不在全市场名单（exclude）里的才留；同一父体只留一个；标题不在范围内的剔除。"""
+    ycfg, pcfg = cfg["pool"].get("young") or {}, cfg["pool"]
+    floor_units = int(pcfg["opportunity_min_units"])
+    out: dict[str, dict] = {}
+    parents: set[str] = set()
+    for node in nodes:
+        common = {"availableMonth": int(ycfg.get("max_age_months", 6))}
+        raw = _page_all(vendor, cfg, node, "total_units",
+                        {**common, "minUnits": int(ycfg.get("min_units", 100)), "maxUnits": floor_units - 1}, None, failed)
+        if ycfg.get("min_revenue"):
+            raw += _page_all(vendor, cfg, node, "total_amount",
+                             {**common, "minRevenue": ycfg["min_revenue"], "maxUnits": int(ycfg.get("min_units", 100)) - 1},
+                             None, failed)
+        for rank, row in enumerate(raw, start=1):
+            item = normalize_product(row, node, "young", rank)
+            if not keep_product(item, cfg) or item["asin"] in exclude:
+                continue
+            if (item.get("revenue") or 0) >= float(pcfg.get("opportunity_min_revenue") or float("inf")):
+                continue  # 销售额已经够全市场门槛的在全市场名单里
+            key = item.get("parent") or item["asin"]
+            if item["asin"] in out or key in parents:
+                continue
+            out[item["asin"]] = item
+            parents.add(key)
+    return out
+
+
+def screen_young(rows: dict[str, dict], cfg: dict) -> list[tuple[str, float, str]]:
+    """早期名单里要拉日数据的：近 7 天 BSR 改善 ≥ pool.young.bsr_cr%（名单行自带，不花调用），改善多的在前。
+    回测（同上，按日数据模拟近 7 天排名变化）：不够全市场门槛时就开始的增长里，这一条能提前约 6 天抓到 46 个突然爆火，
+    早期名单里每期约 12% 的商品会被拉日数据。"""
+    need = float((cfg["pool"].get("young") or {}).get("bsr_cr", 50))
+    out = [(asin, float(row["bsr_cr"]), f"早期名单：上架半年内，近 7 天排名改善 {row['bsr_cr']:.0f}%")
+           for asin, row in rows.items() if (row.get("bsr_cr") or 0) >= need - 1e-9]
+    out.sort(key=lambda t: -t[1])
+    return out
+
+
 def baseline_period(state: dict, today: date) -> str | None:
     """头一个月要不要拉上个月的月度名单当基准：还没有一份 FALLBACK[0] 天以上的快照、也没有能用的基准时，
     返回结束于 21~45 天前的那个月（YYYYMM，最近的那个）。"""
@@ -258,4 +300,10 @@ def run(vendor: Vendor, cfg: dict, state: dict, nodes: list[dict], today: date) 
     record(state, rows, today, vendor.billable_calls - mid, failed)
     log.info(f"全市场名单：近 30 天量够的商品 {len(rows)} 个（{vendor.billable_calls - mid} 次调用"
              + (f"；{len(failed)} 个子类目查询失败、没翻全" if failed else "") + "）")
+    young = _uni(state)["young"] = {}  # 先清掉上期的：这期没翻完时不拿旧的排名改善去选
+    if (cfg["pool"].get("young") or {}).get("enabled"):
+        start = vendor.billable_calls
+        young = fetch_young(vendor, cfg, nodes, set(rows), failed)
+        log.info(f"早期名单：上架半年内、量还不够全市场门槛的商品 {len(young)} 个（{vendor.billable_calls - start} 次调用）")
+    _uni(state)["young"] = young
     return rows

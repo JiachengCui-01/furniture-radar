@@ -60,3 +60,17 @@ openReport({json.dumps(key_text)}, {json.dumps(payload)}).then(r => {{
     result = json.loads(out.stdout)
     assert result["html"] == "<h1>家具爆品雷达</h1>"
     assert result["key"] == crypto.report_key_text(master, report_id)
+
+
+def test_reports_are_compressed_and_old_ones_still_open():
+    """报告先压缩再加密（1.5 MB 的报告压缩后约 0.2 MB）；以前没压缩的报告照样能解开。"""
+    from radar.report import shell
+
+    master = crypto.parse_master_key(crypto.generate_master_key())
+    page = "<html><body>" + "<div class=card>家具爆品雷达 床头柜</div>" * 3000 + "</body></html>"
+    sealed = shell.seal(master, "2026-10-26", page)
+    shell_page = shell.encrypted_page("t", sealed, "2026-10-26", "2026-10-26")
+    assert sealed["z"] == "deflate" and len(shell_page) < len(page.encode("utf-8")) / 5
+    assert shell.unseal(master, shell.read_payload(shell_page)) == page
+    old = crypto.encrypt(crypto.report_key(master, "2026-10-08"), page.encode("utf-8"), crypto.report_aad("2026-10-08"))
+    assert shell.unseal(master, shell.read_payload(shell.encrypted_page("t", old, "2026-10-08", "2026-10-26"))) == page
