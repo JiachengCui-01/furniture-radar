@@ -30,14 +30,16 @@ def _github_output(args, result) -> None:
 
 
 def cmd_run(args, cfg, secrets) -> int:
-    from .vendor import QuotaExhausted
-
     try:
         result = pipeline.run(cfg, secrets, args.site_dir, force=args.force, budget=args.budget,
                               notify=args.notify)
-    except QuotaExhausted as exc:
-        # 核心数据（名单、日数据）还没拉完账户额度就用完了：不出这一期（不拿旧数据凑报告），工作流失败 → 钉钉失败告警
-        log.warn(f"{exc}。卖家精灵账户的调用额度用完了，本期没有生成报告，额度恢复后的下一次定时检查会重新运行")
+    except pipeline.RunAborted as exc:
+        # 核心数据（名单、日数据）还没拉完就中止（账户额度用完 / 卖家精灵一直连不上）：不出这一期（不拿旧数据凑报告），
+        # 工作流失败 → 钉钉失败告警。已拉到的数据和调用次数已存进 site，工作流照样保存（saved=true），下一次定时检查接着跑
+        log.warn(f"{exc}。本期没有生成报告（已调用 {exc.calls} 次，数据已保存），下一次定时检查会重新运行")
+        if args.github_output and os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                fh.write("published=false\nsaved=true\n")
         return 1
     _github_output(args, result)
     return 0

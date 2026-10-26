@@ -171,7 +171,7 @@ def test_rerender_keeps_report_id_and_schedule(cfg, master_key, tmp_path):
     assert after["last_success"] == before["last_success"] and after["run_seq"] == before["run_seq"]
     assert after["calls"] == before["calls"]  # 没有调用卖家精灵
     plain = _decrypt_page(path.read_text(encoding="utf-8"), master)
-    assert "与上期对比" in plain and "2026-10-05.html#k=" in plain
+    assert "与上期对比" in plain and 'href="2026-10-05.html"' in plain and "#k=" not in plain  # 往期链接不带密钥
 
 
 def test_amazon_material_attribute_beats_title():

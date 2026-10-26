@@ -120,6 +120,12 @@ class Vendor:
     _cache: dict = field(default_factory=dict)
     _last_call_at: float = 0.0
     quota_error: str = ""  # 账户额度用完后记下原因，之后的调用不再发出去，直接抛 QuotaExhausted
+    # 连不上卖家精灵（网络 / 5xx）：单次失败当作这一个调用失败（返回 status="error"，由调用方跳过、下期再查），
+    # 连续失败这么多次才认为服务挂了、抛出 McpUnavailable 中止本期。一期要调用 2000 多次、跑一个多小时，
+    # 不能因为一次网络抖动整期作废
+    max_transport_failures: int = 8
+    transport_waits: tuple = (5.0, 20.0)  # 同一个调用连不上时，分别等几秒再试
+    _transport_failures: int = 0
     _schemas: dict | None = None
 
     def wants_request(self, tool: str, default: bool) -> bool:
@@ -209,12 +215,15 @@ class Vendor:
         wait = self.min_interval - (time.monotonic() - self._last_call_at)
         if wait > 0:
             time.sleep(wait)
-        last_error: Exception | None = None
-        for attempt in range(2):
+        last_error: McpUnavailable | None = None
+        for attempt in range(len(self.transport_waits) + 1):
             try:
                 self._last_call_at = time.monotonic()
-                return self.transport(tool, arguments)
+                payload = self.transport(tool, arguments)
+                self._transport_failures = 0
+                return payload
             except McpToolError as exc:
+                self._transport_failures = 0
                 message = str(exc)
                 if any(hint in message.lower() for hint in _QUOTA_HINTS) and not _rate_limited(message):
                     self.quota_error = f"卖家精灵拒绝调用：{message}"
@@ -225,9 +234,14 @@ class Vendor:
                 if exc.status_code in (401, 403):
                     raise
                 last_error = exc
-                time.sleep(3 * (attempt + 1))
+                if attempt < len(self.transport_waits):
+                    time.sleep(self.transport_waits[attempt])
         assert last_error is not None
-        raise last_error
+        self._transport_failures += 1
+        if self._transport_failures >= self.max_transport_failures:
+            raise last_error
+        log.warn(f"卖家精灵连不上（{tool}），跳过这一个：{str(last_error)[:120]}")
+        return Reply(tool, arguments, "error", detail=str(last_error)[:300], billable=True)
 
     @property
     def billable_calls(self) -> int:

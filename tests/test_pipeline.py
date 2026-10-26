@@ -214,7 +214,7 @@ def test_report_is_encrypted_and_decryptable(world_run, master_key):
     assert "B0DEMO" not in page and "突然爆火" not in page   # 公开文件里只有密文
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
     assert "突然爆火" in plain and "B0DEMO" in plain and "与上期对比" in plain
-    assert "2026-10-05.html#k=" in plain                    # 往期报告链接自带密钥
+    assert 'href="2026-10-05.html"' in plain and "2026-10-05.html#k=" not in plain  # 往期链接不带密钥（不能一期期往回连）
     index = (site / "index.html").read_text(encoding="utf-8")
     assert "2026-10-08" in index and "B0DEMO" not in index
     assert b"B0DEMO" not in (site / "data" / "state.enc").read_bytes()
@@ -457,16 +457,17 @@ class _AccountLimit:
 
 
 def test_account_limit_skips_the_run_or_only_the_extras(cfg, master_key, tmp_path):
-    """名单和日数据还没拉完账户额度就用完了：不出这一期（不拿旧数据凑报告），抛给命令行让工作流失败、发钉钉告警；
+    """名单和日数据还没拉完账户额度就用完了：不出这一期（不拿旧数据凑报告），抛给命令行让工作流失败、发钉钉告警，
+    但已经拉到的数据和花掉的调用次数照样存下来（本月调用数不少记，下期接着用）；
     核心数据拉完后才用完（材质、核查、往年月销量这些补充查询）：跳过补充查询，照常出报告。"""
-    from radar.vendor import QuotaExhausted
-
     cfg["budget"].update(per_run=400, bootstrap_run=400)
     secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
     world = SyntheticWorld(START.date())
-    with pytest.raises(QuotaExhausted):
+    with pytest.raises(pipeline.RunAborted) as aborted:
         pipeline.run(cfg, secrets, tmp_path / "a", transport=_AccountLimit(world, after=5), now=START)
-    assert not (tmp_path / "a" / "reports").exists() and not store.state_path(tmp_path / "a").exists()
+    assert not (tmp_path / "a" / "reports").exists()
+    saved = store.load(tmp_path / "a", crypto.parse_master_key(master_key))
+    assert saved["calls"]["2026-10"] == aborted.value.calls == 6 and not saved.get("last_success")
     out = pipeline.run(cfg, secrets, tmp_path / "b", now=START,
                        transport=_AccountLimit(world, tools=("asin_detail", "review", "asin_sales_trend")))
     assert out.published and (tmp_path / "b" / "reports" / f"{out.report_id}.html").exists()
@@ -488,3 +489,75 @@ def test_reseal_changes_ciphertext_but_not_content(cfg, master_key, tmp_path):
     assert store.load(tmp_path, master)["run_seq"] == 1
     assert _decrypt_page(after_page, master) == _decrypt_page(before_page, master)
     assert shell.read_payload(after_page)["latest"] == out.report_id
+
+
+class _Flaky:
+    """卖家精灵偶尔连不上：第 fail_at 次调用（或从 down_from 次起全部）抛 McpUnavailable。"""
+
+    def __init__(self, world, fail_at=(), down_from=None):
+        self.world, self.fail_at, self.down_from, self.n = world, set(fail_at), down_from, 0
+
+    def __call__(self, tool, arguments):
+        from radar.mcp_client import McpUnavailable
+
+        self.n += 1
+        if self.n in self.fail_at or (self.down_from is not None and self.n >= self.down_from):
+            raise McpUnavailable("Could not reach the MCP server")
+        return self.world(tool, arguments)
+
+
+def test_network_blips_skip_one_call_and_an_outage_saves_what_was_fetched(cfg, master_key, tmp_path, monkeypatch):
+    """一期要调用 2000 多次：偶尔一次连不上只跳过那一个（下期再查），照常出报告；
+    一直连不上才中止，中止前拉到的数据和调用次数照样存下来。"""
+    from radar import vendor as vendor_mod
+
+    monkeypatch.setattr(vendor_mod.time, "sleep", lambda s: None)
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    world = SyntheticWorld(START.date())
+    out = pipeline.run(cfg, secrets, tmp_path / "a", transport=_Flaky(world, fail_at={12, 13, 14, 40, 41, 42}), now=START)
+    assert out.published
+    with pytest.raises(pipeline.RunAborted):
+        pipeline.run(cfg, secrets, tmp_path / "b", transport=_Flaky(world, down_from=30), now=START)
+    saved = store.load(tmp_path / "b", crypto.parse_master_key(master_key))
+    assert saved["calls"]["2026-10"] > 0 and not saved.get("runs")
+
+
+def test_old_reports_lose_their_embedded_history_keys(world_run, master_key, cfg):
+    """以前的报告里“往期”链接带着前几期的密钥：出新一期时解密、去掉密钥再加密回去，内容其余不变。"""
+    from radar.report import shell
+
+    _world, secrets, site, first, second = world_run
+    master = crypto.parse_master_key(master_key)
+    path = site / "reports" / f"{second.report_id}.html"
+    payload = shell.read_payload(path.read_text(encoding="utf-8"))
+    key, aad = crypto.report_key(master, payload["id"]), crypto.report_aad(payload["id"])
+    plain = _decrypt_page(path.read_text(encoding="utf-8"), master)
+    leaky = plain.replace(f'href="{first.report_id}.html"', f'href="{first.report_id}.html#k=SECRETKEY_abc-123"')
+    assert leaky != plain
+    pipeline._write_shell(cfg, site, payload["id"], crypto.encrypt(key, leaky.encode("utf-8"), aad), payload["latest"])
+    assert pipeline.scrub_history_keys(cfg, site, master, [second.report_id]) == 1
+    assert _decrypt_page(path.read_text(encoding="utf-8"), master) == plain
+    assert pipeline.scrub_history_keys(cfg, site, master, [second.report_id]) == 0
+
+
+def test_previous_run_is_replayed_for_items_not_tracked_last_time(world_run, master_key, cfg):
+    """回看判定：把日数据截到本期那天再判一次，结果必须和本期的判定一样（同一套规则、同一份数据）；
+    截到更早的日子时，那之后的日数据、评论观测、月销量都不能用上。"""
+    from radar import analyze, clock, tracking
+
+    _world, _secrets, site, _first, _second = world_run
+    state = store.load(site, crypto.parse_master_key(master_key))
+    last = state["runs"][-1]
+    today = clock.parse_day(last["date"])
+    pool = [a for a in last["labels"] if (state["asins"].get(a) or {}).get("series")]
+    result = analyze.analyze(state, state["discovery"], pool, cfg, today, tracking.fresh_rows(state))
+    items = [i for i in result["items"] if i.get("daily", True)]
+    same = analyze.retro_labels(state, state["discovery"], [i["asin"] for i in items], cfg, today, result["data_date"],
+                                tracking.fresh_rows(state), result["events"]["days"], result["profiles"])
+    assert same == {i["asin"]: i["label"] for i in items}
+    rec = state["asins"][items[0]["asin"]]
+    day = result["data_date"] - timedelta(days=5)
+    cut = analyze.truncated_rec(rec, day)
+    assert cut["series"]["sales"] == rec["series"]["sales"][: len(rec["series"]["sales"]) - 5]
+    assert all(m[0] <= day.isoformat()[:7] for m in cut["months"])

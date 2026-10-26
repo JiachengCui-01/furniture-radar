@@ -112,3 +112,36 @@ def test_account_limit_stops_without_waiting_and_blocks_later_calls():
     with pytest.raises(QuotaExhausted):
         vendor.call("product_research", request(marketplace="US", nodeIdPath="1"))
     assert len(transport.seen) == 1
+
+
+def test_connection_errors_fail_one_call_until_the_service_looks_down(monkeypatch):
+    """连不上（网络 / 5xx）：同一个调用等一会儿重试，还不行就当这一个调用失败（status="error"，由调用方跳过）；
+    连续 max_transport_failures 个调用都连不上才抛 McpUnavailable 中止本期。401/403 是密钥问题，直接抛。"""
+    from radar import vendor as vendor_mod
+
+    monkeypatch.setattr(vendor_mod.time, "sleep", lambda s: None)
+
+    def down(tool, arguments):
+        raise McpUnavailable("Could not reach the MCP server")
+
+    vendor = Vendor(down, Budget(100), live=False, max_transport_failures=3)
+    assert vendor.call("asin_prediction", {"asin": "A"}).status == "error"
+    assert vendor.call("asin_prediction", {"asin": "B"}).status == "error"
+    with pytest.raises(McpUnavailable):
+        vendor.call("asin_prediction", {"asin": "C"})
+
+    replies = [McpUnavailable("x"), fixture_text("product_research")]
+
+    def once(tool, arguments):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    assert Vendor(once, Budget(100), live=False).call("product_research", {"page": 1}).ok  # 重试一次就好了
+
+    def bad_key(tool, arguments):
+        raise McpUnavailable("401", status_code=401)
+
+    with pytest.raises(McpUnavailable):
+        Vendor(bad_key, Budget(100), live=False).call("review", {"asin": "X"})

@@ -43,13 +43,24 @@ def _uni(state: dict) -> dict:
     return uni
 
 
-def _page_all(vendor: Vendor, cfg: dict, node: dict, order: str, limits: dict, period: str | None) -> list[dict]:
+def _page_all(vendor: Vendor, cfg: dict, node: dict, order: str, limits: dict, period: str | None,
+              failed: list[str] | None = None) -> list[dict]:
+    """一个查询翻到底。某一页查询失败（被拒 / 连不上）时重试一次，还不行就停在这里，子类目记进 failed：
+    这一期这个子类目的名单不全（没翻到的商品这期不初筛，下期快照里没它们的基准就当新进名单拉日数据）。"""
     rows, seen = [], set()
     for page in range(1, 60):
-        reply = vendor.call("product_research", request(
-            marketplace=cfg["marketplace"], nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
-            size=PAGE_SIZE, page=page, variation="Y" if cfg["discovery"].get("merge_variations", True) else None,
-            order={"field": order, "desc": True}, **limits), purpose="全市场名单")
+        for attempt in range(2):
+            reply = vendor.call("product_research", request(
+                marketplace=cfg["marketplace"], nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
+                size=PAGE_SIZE, page=page, variation="Y" if cfg["discovery"].get("merge_variations", True) else None,
+                order={"field": order, "desc": True}, **limits), purpose="全市场名单")
+            if reply.ok or reply.status == "empty":
+                break
+        if not reply.ok and reply.status != "empty":
+            log.warn(f"全市场名单：{node.get('name') or node['path']} 第 {page} 页查询失败（{reply.status} {reply.detail[:80]}），这个子类目这期没翻全")
+            if failed is not None and node["path"] not in failed:
+                failed.append(node["path"])
+            break
         new = [r for r in reply.rows if r.get("asin") and r["asin"] not in seen]
         seen.update(r["asin"] for r in new)
         rows += new
@@ -58,27 +69,29 @@ def _page_all(vendor: Vendor, cfg: dict, node: dict, order: str, limits: dict, p
     return rows
 
 
-def fetch(vendor: Vendor, cfg: dict, nodes: list[dict], period: str | None = None) -> dict[str, dict]:
+def fetch(vendor: Vendor, cfg: dict, nodes: list[dict], period: str | None = None,
+          failed: list[str] | None = None) -> dict[str, dict]:
     """全部子类目里量够的商品：近 30 天（period 为空）或某个已结束月份。量够 = 销量 ≥ opportunity_min_units，
     或销售额 ≥ opportunity_min_revenue（接口的条件是“且”，所以分两次查：按销量查一次，再查销量不够、销售额够的）。
-    同一父体只留一个；标题不在范围内的剔除。"""
+    同一父体只留一个；标题不在范围内的剔除。failed：有页查询失败、没翻全的子类目（nodeIdPath）记进这里。"""
     pcfg = cfg["pool"]
     min_units, min_revenue = int(pcfg["opportunity_min_units"]), pcfg.get("opportunity_min_revenue")
     out: dict[str, dict] = {}
     parents: set[str] = set()
     for node in nodes:
-        raw = _page_all(vendor, cfg, node, "total_units", {"minUnits": min_units}, period)
+        raw = _page_all(vendor, cfg, node, "total_units", {"minUnits": min_units}, period, failed)
         while len(raw) >= QUERY_CAP:  # 到了一个查询的上限：按销量往下接着查
             low = min(int(r.get("units") or 0) for r in raw)
             have = {r["asin"] for r in raw}
-            more = [r for r in _page_all(vendor, cfg, node, "total_units", {"minUnits": min_units, "maxUnits": low}, period)
+            more = [r for r in _page_all(vendor, cfg, node, "total_units", {"minUnits": min_units, "maxUnits": low}, period,
+                                         failed)
                     if r["asin"] not in have]
             raw += more
             if len(more) < QUERY_CAP - PAGE_SIZE:
                 break
         if min_revenue:
             raw += _page_all(vendor, cfg, node, "total_amount",
-                             {"minRevenue": min_revenue, "maxUnits": max(0, min_units - 1)}, period)
+                             {"minRevenue": min_revenue, "maxUnits": max(0, min_units - 1)}, period, failed)
         for rank, row in enumerate(raw, start=1):
             item = normalize_product(row, node, "universe", rank)
             if not keep_product(item, cfg):
@@ -118,13 +131,13 @@ def record_baseline(state: dict, period: str, rows: dict[str, dict]) -> None:
                                "units": {a: r.get("units") or 0 for a, r in rows.items()}}
 
 
-def record(state: dict, rows: dict[str, dict], today: date, pages: int) -> None:
-    """存本期的名单和快照（同一天跑两次只留后一次），只留最近 SNAP_KEEP_DAYS 天的快照。"""
+def record(state: dict, rows: dict[str, dict], today: date, pages: int, failed: list[str] | None = None) -> None:
+    """存本期的名单和快照（同一天跑两次只留后一次），只留最近 SNAP_KEEP_DAYS 天的快照。failed：没翻全的子类目。"""
     uni = _uni(state)
     snaps = [s for s in uni["snaps"] if s["date"] != today.isoformat()
              and (today - clock.parse_day(s["date"])).days <= SNAP_KEEP_DAYS]
     snaps.append({"date": today.isoformat(), "units": {a: r.get("units") or 0 for a, r in rows.items()}})
-    uni.update(date=today.isoformat(), pages=pages, rows=rows, snaps=snaps)
+    uni.update(date=today.isoformat(), pages=pages, rows=rows, snaps=snaps, failed=list(failed or []))
 
 
 def _nearest(snaps: list[tuple[int, dict]], asin: str, lo: int, hi: int, target: int) -> tuple[int, float] | None:
@@ -207,11 +220,13 @@ def run(vendor: Vendor, cfg: dict, state: dict, nodes: list[dict], today: date) 
     period = baseline_period(state, today)
     if period:
         rows = fetch(vendor, cfg, nodes, period)
-        record_baseline(state, period, rows)
+        record_baseline(state, period, rows)  # 有子类目没翻全时，没基准的商品当新进名单（都拉日数据），不会漏
         log.info(f"全市场名单：头一个月还没有 30 天前的快照，拉了 {period[:4]}-{period[4:]} 的月度名单当基准（{len(rows)} 个商品，"
                  f"{vendor.billable_calls - start} 次调用）")
     mid = vendor.billable_calls
-    rows = fetch(vendor, cfg, nodes)
-    record(state, rows, today, vendor.billable_calls - mid)
-    log.info(f"全市场名单：近 30 天量够的商品 {len(rows)} 个（{vendor.billable_calls - mid} 次调用）")
+    failed: list[str] = []
+    rows = fetch(vendor, cfg, nodes, failed=failed)
+    record(state, rows, today, vendor.billable_calls - mid, failed)
+    log.info(f"全市场名单：近 30 天量够的商品 {len(rows)} 个（{vendor.billable_calls - mid} 次调用"
+             + (f"；{len(failed)} 个子类目查询失败、没翻全" if failed else "") + "）")
     return rows

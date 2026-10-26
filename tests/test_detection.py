@@ -421,6 +421,18 @@ def test_period_diff_lists_each_product_once():
     assert len(listed) == len(set(listed))
 
 
+def test_items_not_tracked_last_run_use_the_replayed_previous_label():
+    """追踪范围扩大后，上期没追踪的商品按回看的上期判定比：上期就已经爆火的算“依旧”，不算新进入；
+    上期追踪过的照旧用上期报告里的判定（回看结果不覆盖它）。"""
+    from radar.detect import diff
+    prev = {"id": "p", "labels": {"A": ["surge", 0], "B": ["watch", 0]}}
+    now = {"A": "surge", "B": "surge", "N1": "surge", "N2": "surge", "N3": "potential"}
+    d = diff.compare(prev, now, retro={"N1": "surge", "N2": "watch", "N3": "surge", "A": "watch", "B": "surge"})
+    assert d["still"] == ["A", "N1"]
+    assert d["new"]["surge"] == ["B", "N2"] and d["new"]["potential"] == ["N3"]
+    assert d["moved_from"] == {"N3": "surge"} and d["retro"] == ["N1", "N2", "N3"]
+
+
 def test_section_popups_list_every_item_by_default(cfg):
     """顶部数字和小窗里的个数要一致：report.top_n 默认 0 = 全部列出（实测持续热销 31 个，小窗只列了前 15 个）。"""
     assert cfg["report"]["top_n"] == 0

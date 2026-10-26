@@ -178,6 +178,11 @@ def _add(products: dict, item: dict | None) -> None:
         existing["sources"].append(item["sources"][0])
 
 
+def _failed(reply) -> bool:
+    """查询失败（被拒 / 连不上），不是“查到了、但没有数据”。"""
+    return not reply.ok and reply.status != "empty"
+
+
 def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = None) -> dict | None:
     """返回发现结果；该月份数据还没发布时返回 None。预算不够时返回 complete=False 的部分结果。"""
     mp = cfg["marketplace"]
@@ -190,6 +195,7 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
         disc = {"period": period, "complete": False, "nodes": [], "done_top": [], "done_new": [],
                 "products": {}, "fetched_at": None, "scope_key": key}
 
+    failed: list[str] = []  # 查询失败（被拒 / 连不上）的子类目：不当成“这个子类目没有商品”
     try:
         if not disc["nodes"]:
             raw: list[dict] = []
@@ -199,6 +205,11 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
                     reply = vendor.call("market_research", request(
                         marketplace=mp, nodeIdPath=root["path"], nodeIdPathEqual="false", month=period,
                         size=50, page=page, order={"field": "total_amount", "desc": True}), purpose="子类目")
+                    if _failed(reply):
+                        # 少了一个根类目的子类目，选出来的范围就不对：这期不选，下期整个重来
+                        log.warn(f"发现：{root.get('label') or root['path']} 的子类目查询失败（{reply.status}），下期再选")
+                        disc["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                        return disc
                     for row in reply.rows:
                         node = parse_node(row, root)
                         if node:
@@ -217,6 +228,9 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
                 marketplace=mp, nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
                 size=disc_cfg["top_per_node"], page=1, variation=_variation(cfg),
                 order={"field": disc_cfg["order_field"], "desc": True}), purpose="头部商品")
+            if _failed(reply):
+                failed.append(node["path"])  # 不记“已查”：下期接着查这个子类目
+                continue
             for rank, row in enumerate(reply.rows, start=1):
                 item = normalize_product(row, node, "top", rank)
                 if keep_product(item, cfg):
@@ -231,12 +245,17 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
                 marketplace=mp, nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
                 size=disc_cfg["newcomers_per_node"], minRevenue=disc_cfg["newcomer_min_revenue"],
                 variation=_variation(cfg), order={"field": "available_date", "desc": True}), purpose="新品")
+            if _failed(reply):
+                failed.append(node["path"])
+                continue
             for rank, row in enumerate(reply.rows, start=1):
                 item = normalize_product(row, node, "new", rank)
                 if keep_product(item, cfg):
                     _add(disc["products"], item)
             disc["done_new"].append(node["path"])
-        disc["complete"] = True
+        if failed:
+            log.warn(f"发现：{len(failed)} 次子类目商品查询失败，名单不全，下期接着补")
+        disc["complete"] = not failed
     except BudgetExhausted:
         log.warn("发现阶段预算用完，下期继续")
     disc["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")

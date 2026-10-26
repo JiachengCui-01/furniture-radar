@@ -37,7 +37,7 @@ concurrency:
 jobs:
   radar:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # 平常每期约 600~700 次调用、补历史的那一期约 1100 次，每次约 1.5 秒，加上限流等待和主图识别约 20~40 分钟
+    timeout-minutes: 240  # 全市场名单以后每期约 1,500~2,700 次调用，每次约 1.5 秒，加上限流等待和主图识别约 1~1.5 小时
     outputs:
       published: ${{ steps.run.outputs.published }}
       report_id: ${{ steps.run.outputs.report_id }}
@@ -53,11 +53,27 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 取回历史数据（site 分支，已加密）
+        id: fetch
         run: |
+          # 只有“site 分支确实不存在”（ls-remote 返回 2）才当首次运行；网络 / 权限出错（返回 128）时重试，还不行就失败，
+          # 不能当成首次运行从空数据开始、再强制推送把历史数据和往期报告全覆盖掉
           mkdir -p site
-          if git ls-remote --exit-code --heads origin site >/dev/null 2>&1; then
+          for i in 1 2 3; do
+            code=0
+            git ls-remote --exit-code --heads origin site >/dev/null 2>&1 || code=$?
+            if [ "$code" = 0 ] || [ "$code" = 2 ]; then break; fi
+            sleep 10
+          done
+          if [ "$code" = 0 ]; then
             git fetch --quiet --depth 1 origin site
             git archive FETCH_HEAD | tar -x -C site
+            echo "sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          elif [ "$code" = 2 ]; then
+            echo "site 分支还不存在：首次运行"
+            echo "sha=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::查不到 site 分支（git ls-remote 返回 $code），本期不运行，免得从空数据开始覆盖历史"
+            exit 1
           fi
 
       - name: 运行雷达
@@ -78,20 +94,25 @@ jobs:
           fi
 
       - name: 保存到 site 分支（只保留最新一次提交，仓库不会越来越大）
-        if: steps.run.outputs.published == 'true'
+        # 出了报告的保存；核心数据没拉完就中止的（saved=true：账户额度用完 / 卖家精灵一直连不上）也保存已拉到的数据和调用次数
+        if: always() && (steps.run.outputs.published == 'true' || steps.run.outputs.saved == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           REPORT_KEY: ${{ secrets.REPORT_KEY }}
+          FETCHED_SHA: ${{ steps.fetch.outputs.sha }}
+          MESSAGE: "${{ steps.run.outputs.report_id && format('radar: {0}', steps.run.outputs.report_id) || 'radar: 中止前已拉到的数据' }}"
         run: |
           # GitHub 推送保护偶尔把密文里的一段随机字符认成访问密钥（实测 2026-10-23 被拒过一次）：被拒时换一个随机 IV 重新加密再推。
-          # 三次都推不上就让这一步失败（不再部署网站，并触发钉钉失败告警），不能悄悄当成功
+          # 三次都推不上就让这一步失败（不再部署网站，并触发钉钉失败告警），不能悄悄当成功。
+          # 带租约推送：远端 site 分支还是开头取回的那个提交才覆盖（首次运行要求远端还没有 site 分支），
+          # 中间被别的运行改过就失败，不会把别人的数据覆盖掉
           for i in 1 2 3; do
             rm -rf site/.git
             git -C site init -q -b site
             git -C site add -A
             git -C site -c user.name="radar-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -q -m "radar: ${{ steps.run.outputs.report_id }}"
-            if git -C site push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site:site; then
+              commit -q -m "$MESSAGE"
+            if git -C site push -q --force-with-lease="site:${FETCHED_SHA}" "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" site:site; then
               rm -rf site/.git
               exit 0
             fi

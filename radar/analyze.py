@@ -337,6 +337,47 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             "profiles": profiles, "season_calibration": calibration, "monthly_judged": judged, "monthly_status": status}
 
 
+def truncated_rec(rec: dict, upto: date) -> dict | None:
+    """这个商品“截至 upto 那天”的样子：日数据、评论观测、月销量都只留到那天（月销量留到那天所在的月份）。
+    那天之前没有日数据的返回 None。"""
+    d = Daily.from_record(rec.get("series"))
+    if d is None:
+        return None
+    end = d.index_of(upto)
+    if end < 0:
+        return None
+    s = rec["series"]
+    series = {**s, **{k: list(s.get(k) or [])[: end + 1] for k in ("bsr", "sales", "price")}}
+    if Daily.from_record(series) is None or Daily.from_record(series).as_of() is None:
+        return None
+    month = clock.month_key(upto)
+    obs = [o for o in rec.get("obs") or [] if (clock.parse_day(o.get("date")) or upto) <= upto]
+    return {**rec, "series": series, "obs": obs, "months": [m for m in rec.get("months") or [] if str(m[0]) <= month]}
+
+
+def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, then: date, data_then: date,
+                 extra_rows: dict | None = None, events=frozenset(), profiles: dict | None = None) -> dict[str, str]:
+    """上期没追踪的商品，按本期拉到的日数据回看上期那天（then，日数据截至 data_then）会被判成什么。
+    “与上期对比”用它：追踪范围扩大后，上期没追踪的商品一上榜就算“新进入”，其实可能上期就已经是了。
+    判定规则、大促日、子类目门槛和本期一样，只是数据截到那天（那几天的日数据已经修订过，比上期当时拉到的更准）。"""
+    stats = node_stats(disc, cfg)
+    products = {**(extra_rows or {}), **((disc or {}).get("products") or {})}
+    th = cfg["thresholds"]
+    period = str((disc or {}).get("period") or "")
+    threshold_month = f"{period[:4]}-{period[4:6]}" if len(period) == 6 else None
+    out = {}
+    for asin in asins:
+        cut = truncated_rec(state["asins"].get(asin) or {}, data_then)
+        if cut is None:
+            continue
+        season = None
+        if th["hot"].get("deseasonalize"):
+            season = seasonality.hot_levels((profiles or {}).get(cut.get("node")), data_then)
+        out[asin] = evaluate(asin, cut, products.get(asin), stats, cfg, then, data_date=data_then, events=events,
+                             season=season, threshold_month=threshold_month)["label"]
+    return out
+
+
 def usable_revision(revision: dict | None, th: dict) -> dict | None:
     """本期测到的修订够不够用：测到的商品 ≥ revision_min_items 个、最近有被改的天数、幅度 ≥ revision_min_change。"""
     if not revision or not revision.get("window") or (revision.get("items") or 0) < int(th.get("revision_min_items", 30)):

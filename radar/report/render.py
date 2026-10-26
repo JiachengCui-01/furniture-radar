@@ -691,6 +691,9 @@ def _changes(diff: dict, by_asin: dict) -> str:
         parts.append(line("不再爆火 ", diff["cooled"]))
     if diff.get("covered"):
         parts.append(line("持续热销本期起也用月度名单补判（上期没判过，不算新进入）", diff["covered"]))
+    if diff.get("retro"):
+        parts.append(f"<li>上面有 {len(diff['retro'])} 个商品上期没追踪：它们上期在哪个板块，是用本期拉到的日数据回看上期那天判的"
+                     "（同样的规则；那几天的数据已经过卖家精灵修订），回看上期就已经是的算“依旧”，不算新进入</li>")
     if not parts:
         return '<p class="empty">与上期相比没有明显变化。</p>'
     return f'<p class="hint">对比上期 {esc(diff.get("prev_id", ""))}</p><ul>{"".join(parts)}</ul>'
@@ -725,14 +728,17 @@ def season_rule(sc: dict) -> str:
             f"月度销量是整月合计，含大促日和断货日。只查季节性品类里上架满 {sc.get('item_min_age_days', 365)} 天的追踪商品。")
 
 
-def section_hints(cfg: dict) -> dict[str, str]:
-    """每个小窗顶部的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。共用概念见 _method。"""
+def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
+    """每个小窗顶部的入选条件（和判定代码一一对应，数字直接取自 config.yaml）。共用概念见 _method。
+    universe：本期翻成了全市场名单；没翻成（预算不够）时机会候选退回月度名单和近 30 天榜单，范围的说法跟着变。"""
     th = cfg["thresholds"]
     s, h, p, f, r = th["surge"], th["hot"], th["potential"], th["fake"], th["rising"]
     sc = th.get("seasonality") or {}
     pool = cfg["pool"]
-    scope = (f"范围：全部子类目里近 30 天销量 ≥{pool['opportunity_min_units']} 件或销售额 ≥${pool.get('opportunity_min_revenue') or 0:,.0f} 的商品"
-             f"（全市场名单，每期都翻一遍，初筛后拉日数据判定；量不够的不在范围内）。")
+    floor = f"近 30 天销量 ≥{pool['opportunity_min_units']} 件或销售额 ≥${pool.get('opportunity_min_revenue') or 0:,.0f}"
+    scope = (f"范围：全部子类目里{floor}的商品（全市场名单，每期都翻一遍，初筛后拉日数据判定；量不够的不在范围内）。" if universe else
+             f"范围：本期全市场名单没翻成（预算不够），机会候选退回月度名单和近 30 天榜单里{floor}的商品，"
+             f"分数最高的 {pool.get('opportunity_every_run', 0)} 个每期都看、其余轮流查，不是全部量够的商品都看了。")
     windows = " 或 ".join(map(str, s["windows"]))
     short = (f"对比期在卖不到 {th['short_base_days']} 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。"
              if th.get("short_base_days") else "")
@@ -865,7 +871,7 @@ def render(ctx: dict) -> str:
     counts = sec["counts"]
     cfg = ctx["cfg"]
     by_asin = {i["asin"]: i for i in ctx["items"]}
-    hints = section_hints(cfg)
+    hints = section_hints(cfg, universe=bool(ctx["coverage"].get("universe")))
     kpi = "".join(
         f'<button type="button" class="kpi" data-pop="{k}" style="--c:var(--{k})"><b>{counts[k]}</b><span>{label}</span></button>'
         for k, label in (("surge", "突然爆火"), ("potential", "潜力产品"), ("hot", "持续热销"), ("fake", "异常信号"),
@@ -874,7 +880,8 @@ def render(ctx: dict) -> str:
     facts = [f"月度名单 {ctx['period_text']}", f"日数据截至 {ctx['as_of']}",
              f"追踪 {counts['total']} 个（本期刷新 {cov['refreshed']} 个）"]
     if cov.get("universe"):
-        facts.append(f"全市场名单：近 30 天量够的商品 {cov['universe']} 个（翻名单 {cov.get('universe_pages') or 0} 次调用），"
+        failed = f"；{cov['universe_failed']} 个子类目有页查询失败、没翻全" if cov.get("universe_failed") else ""
+        facts.append(f"全市场名单：近 30 天量够的商品 {cov['universe']} 个（翻名单 {cov.get('universe_pages') or 0} 次调用{failed}），"
                      f"初筛出 {cov.get('candidates') or 0} 个可能在增长，本期拉了日数据的 {cov.get('opportunity') or 0} 个")
     elif cov.get("candidates"):
         facts.append(f"机会候选 {cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个")
@@ -904,7 +911,8 @@ def render(ctx: dict) -> str:
               f"本期要点：{'AI 生成' if ctx['summary_source'] == 'llm' else '模板'}"]
     history = ""
     if ctx.get("history"):
-        history = " · 往期 " + " ".join(f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"])
+        history = (" · 往期 " + " ".join(f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"])
+                   + '<span class="sub">（往期报告请从钉钉里那一期的消息打开）</span>')
     pops = "".join([
         _section_pop("surge", "突然爆火", hints["surge"], sec["surge"], counts["surge"]),
         _section_pop("potential", "潜力产品", hints["potential"], sec["potential"], counts["potential"]),

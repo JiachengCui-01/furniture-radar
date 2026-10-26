@@ -264,3 +264,31 @@ def test_revisions_of_recent_daily_data_are_measured():
                        "C": {"revision": {"run": 4, "pairs": pairs}}}}
     out = tracking.summarize_revisions(state, 5)
     assert out["items"] == 2 and out["window"] == 9 and out["median"] == 0.85 and out["changed"] == 1.0
+
+
+def test_failed_queries_are_not_taken_as_empty_lists(cfg):
+    """查询失败（被拒 / 连不上）不等于“这个子类目没有商品”：发现时不记“已查”、名单不算完整，下期接着查；
+    全市场名单某一页失败时重试一次，还不行就记下这个子类目这期没翻全。"""
+    import json
+    from radar import universe
+
+    calls = {"n": 0}
+
+    def transport(tool, args):
+        calls["n"] += 1
+        if tool == "product_research" and calls["n"] == 2:
+            return json.dumps({"code": "ERROR", "message": "服务繁忙"})
+        return fixture_text(tool)
+
+    cfg["scope"]["roots"] = [{"path": "1055398:1063306", "label": "家具"}]
+    disc = discovery.discover(Vendor(transport, Budget(50), live=False), cfg, "202609")
+    assert disc["complete"] is False and disc["nodes"] and disc["done_top"] == []
+    again = discovery.discover(Vendor(lambda t, a: fixture_text(t), Budget(50), live=False), cfg, "202609", disc)
+    assert again["complete"] and "B0TEST0001" in again["products"]
+
+    def down(tool, args):
+        return json.dumps({"code": "ERROR", "message": "服务繁忙"})
+
+    failed = []
+    rows = universe.fetch(Vendor(down, Budget(50), live=False), cfg, again["nodes"], failed=failed)
+    assert rows == {} and failed == [again["nodes"][0]["path"]]
