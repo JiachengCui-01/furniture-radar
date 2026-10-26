@@ -10,7 +10,7 @@ import httpx
 
 from . import log, shipping
 from .analyze import display_name
-from .detect import directions, seasonality
+from .detect import directions
 
 SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
 请用简体中文写一份给选品/开发团队看的“本期要点”，严格遵守：
@@ -30,17 +30,17 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    只能选“可作参考”为 true 的商品（有异常信号的不能当参考）。
    它讲的是可以用到不同品类上的设计手法，不要把“开发方向”里某个品类的画像再写一遍。
 7. “开发方向”：按 JSON 的顺序（增量销售额从大到小），每条写成
-   “开发<品类>（月增量约 <增量>）：<主材质>，<比头部多的特征>，定价 <价格区间>；<季节提醒>”，
+   “开发<品类>（月增量约 <增量>）：<主材质>，<比头部多的特征>，定价 <价格区间>”，
    品类就是该方向的子类目（可以说得更口语，如“梳妆台”），增量照抄该方向“销售额”里的增量；
    特征只能用该方向“比头部多”里列出的，不得添加、替换或挪用别的方向的，也不要写“基本款”里的；
    “比头部多”为空时写“外观没有比同类头部更多的特征”；“主材质”是“未注明”“木质（未注明）”“其他”的不写；
-   季节提醒照抄该方向的“季节提醒”，它是空的就不写，不要写别的季节信息（例如“类目历史不够”“没有固定季节”都不写）；
+   不要写季节、淡旺季方面的内容（报告不做季节判断）；
    末尾可以加“参考 [<品牌 简称>](<ASIN>) 的<一个外观细节>”，外观细节只能取该方向参考商品的“外观要点”，
    并且不能和这条已经写出的颜色、主材质矛盾（矛盾就换一个细节或不写参考）。
 8. “风险提醒”只写两类，每条都要点名 JSON 里的一个具体商品（写法见第 10 条）：
    ① 带“异常信号”的商品（“异常信号”列表里的，或爆火 / 潜力商品自带的“异常信号”字段）：只能说“疑似、需人工核实”，不要断言刷单；
-   ② “标签”里有“季节性”“品类季节性（…）”或“降价驱动”的爆火 / 潜力商品：提醒不要当成长期需求，
-      品类季节性要说清是“所在品类按往年规律这段时间本来就会涨”，可以引用标签里扣除季节后的倍数。
+   ② “标签”里有“降价驱动”“变体变多”“名单和日数据对不上”“最近 28 天有 N 天没有日数据”的爆火 / 潜力商品：
+      降价驱动提醒上涨可能是降价带来的、不要当成长期需求；另外三种提醒“数据可能有问题，需人工核实”。
    不要根据功能卖点、外观、品类或价格自己推测风险；两类都没有就只写一条“本期没有需要特别提醒的风险”。
 9. 不要输出链接和长标题。“开发方向”每条不超过 100 字，其余每条不超过 60 字、一条只说一个特征或一个建议；
    总长度不超过 950 字，宁可少写几条趋势。
@@ -138,36 +138,22 @@ def direction_facts(tr: dict) -> list[dict]:
                 for f in d["features"][dim][tier]] for dim in directions.DIMENSIONS if d["features"][dim][tier]}
 
         sales = d.get("sales") or {}
-        season = d.get("season")
         row = {"子类目": d["node"],
                "依据": f"该子类目的增长商品 {n} 个、来自 {nb} 个品牌（突然爆火 {d['n_surge']} 个），"
                      f"特征按品牌计数（同一品牌的多个商品只算一次）；{basis}",
                "销售额": f"月销售额约 {directions.money_text(sales.get('monthly'))}，"
                       f"增量约 {directions.money_text(sales.get('increment'))}（比之前 28 天多的部分）",
                "增量": directions.money_text(sales.get("increment")),
-               "增量说明": "季节性品类已扣除按往年规律本来就会涨的部分",
                "画像": directions.headline(d),
                "主材质": [f"{m['label']} {m['count']}/{nb} 个品牌" for m in d["materials"]],
                "比头部多": feats("more"),
                "基本款": feats("base"),
                "价格区间": directions.price_text(d["price"]),
                "包装": shipping.summary_text(d.get("pkg")) or "没有数据",
-               # 只给要写进要点的那一条（规则见 season_note），完整的季节结论在报告的开发方向依据里
-               "季节提醒": season_note(seasonality.verdicts(season)),
                "参考商品": [{"品牌": r["brand"], "品名": r["name"][:60], "外观要点": r["look"], "ASIN": r["asin"]}
                         for r in d["refs"]]}
         out.append(row)
     return out
-
-
-def season_note(verdicts: list[str]) -> str:
-    """开发方向那一条末尾的季节提醒：优先“到货前会先冲高”，其次“本期增长有季节因素”，都没有就是空的
-    （“类目历史不够”“没有固定季节”这类不写进要点，实测大模型会照抄到每一条后面）。"""
-    for prefix in ("到货前品类会先冲高", "本期增长有季节因素"):
-        for line in verdicts or []:
-            if line.startswith(prefix):
-                return line
-    return ""
 
 
 def top_design_labels(tr: dict, k: int = 4) -> list[str]:
@@ -241,11 +227,10 @@ def template_summary(facts: dict) -> str:
     lines.append("### 开发方向")
     for d in facts["开发方向"]:
         ref = (d.get("参考商品") or [None])[0]
-        note = d.get("季节提醒") or ""
         head, node = d["画像"], d.get("子类目")
         if node and d.get("增量"):
             head = head.replace(f"{node}：", f"{node}（月增量约 {d['增量']}）：", 1)
-        lines.append(f"- 开发{head}" + (f"；{note}" if note else "") + (f"，参考 {_link(ref)}" if ref else ""))
+        lines.append(f"- 开发{head}" + (f"，参考 {_link(ref)}" if ref else ""))
     if not facts["开发方向"]:
         lines.append("- 本期没有增长商品数达到门槛的子类目，暂不给开发方向。")
     lines.append("### 风险提醒")
@@ -254,18 +239,18 @@ def template_summary(facts: dict) -> str:
         lines.append(f"- {_link(item)}：{signal}，疑似数据异常，需人工核实。")
     short = [_short(i["品名"]) for i in facts["突然爆火"] + facts["潜力"] if any(t.startswith(RISK_TAGS) for t in i["标签"])]
     if short:
-        lines.append(f"- {'、'.join(short[:2])} 的上涨带季节性 / 品类季节性 / 降价驱动标签，不要当成长期需求。")
+        lines.append(f"- {'、'.join(short[:2])} 的上涨带降价驱动或数据可能有误的标签，需人工核实，不要直接当成长期需求。")
     if len(lines) and lines[-1] == "### 风险提醒":
-        lines.append("- 本期没有异常信号，也没有季节性 / 降价驱动的爆火。")
+        lines.append("- 本期没有异常信号，也没有降价驱动或数据可能有误的爆火 / 潜力商品。")
     return "\n".join(lines)
 
 
-RISK_TAGS = ("季节性", "品类季节性", "降价驱动")  # 标签以这些开头的（品类季节性后面带括号说明）
+RISK_TAGS = ("降价驱动", "变体变多", "名单和日数据对不上", "最近 28 天有")  # 标签以这些开头的
 NO_RISK = "- 本期没有需要特别提醒的风险。"
 
 
 def risk_brands(facts: dict) -> set[str]:
-    """“风险提醒”可以点名的商品的品牌：带异常信号的，或标签有季节性 / 品类季节性 / 降价驱动的爆火、潜力商品。"""
+    """“风险提醒”可以点名的商品的品牌：带异常信号的，或标签有降价驱动 / 数据可能有误的爆火、潜力商品。"""
     out = {i["品牌"] for i in facts["异常信号"]}
     out |= {i["品牌"] for i in facts["突然爆火"] + facts["潜力"]
             if i.get("异常信号") or any(t.startswith(RISK_TAGS) for t in i["标签"])}

@@ -1,11 +1,11 @@
 """把每个追踪中的 ASIN 跑一遍全部判定，得到带标签的结果列表。纯计算，不调接口。"""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
-from . import category_history, clock, monthly_lists, universe
+from . import clock, monthly_lists, universe
 from .detect import events as events_mod
-from .detect import fakehot, seasonality, traits
+from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
 from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
@@ -127,13 +127,9 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
 
 
 def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
-             data_date: date | None = None, events=frozenset(), season: dict | None = None,
-             threshold_month: str | None = None, tide: float | None = None) -> dict:
+             data_date: date | None = None, events=frozenset(), tide: float | None = None) -> dict:
     """data_date：本期日数据的最新日期（所有追踪商品里最晚的一天），“数据陈旧”和它比；
-    events：大促日（detect/events.py），爆火 / 潜力 / 上升中 / 回落 / 季节性 / 持续热销都在去掉这些天的日数据上判断；
-    season：所在子类目最近几个月的季节指数（seasonality.hot_levels，不是季节性品类为 None）：
-            原始销量不达持续热销的，再按季节调整后判一次（调整只会多收、不会少收）；
-    threshold_month：子类目门槛线（第 N 名的月销量）取自哪个月（月度名单的月份）；
+    events：大促日（detect/events.py），爆火 / 潜力 / 上升中 / 回落 / 持续热销都在去掉这些天的日数据上判断；
     tide：所在子类目的大盘倍数（universe.node_tide），潜力、上升中要跑赢它（_judge_growth）。"""
     th = cfg["thresholds"]
     full = Daily.from_record(rec.get("series"))
@@ -157,8 +153,6 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     surge, restock, new_ramp, unshaped = g["surge"], g["restock"], g["new_ramp"], g["unshaped"]
     potential, rising, mom, faded = g["potential"], g["rising"], g["mom"], g["faded"]
     hot = evaluate_hot(rec.get("months") or [], d, as_of, st.get("threshold"), th["hot"])
-    if not hot and season:
-        hot = evaluate_hot(rec.get("months") or [], d, as_of, st.get("threshold"), th["hot"], season, threshold_month)
     fake = fakehot.score(rec, full, as_of, disc_row, st.get("median_rate"), th["fake"], events,
                          relisted=bool(relist))
 
@@ -311,36 +305,12 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     data_date = max((day for day in (d.as_of() for d in dailies) if day), default=None)
     ev = events_mod.detect(dailies, cfg["thresholds"]["events"], cfg.get("deal_windows") or [])
     th = cfg["thresholds"]
-    sc = th.get("seasonality")
-    # 品类季节（detect/seasonality.py）：每个子类目一份画像，数据是类目月度历史（category_history.py）
-    paths = {rec.get("node") for _, rec in recs} | {n["path"] for n in (disc or {}).get("nodes") or []}
-    histories = {path: category_history.series(state, path) for path in paths if path}
-    profiles = {path: seasonality.profile(units, sc) for path, units in histories.items()} if sc else {}
-    calibration = None
-    if sc and data_date:
-        # 28 天季节倍数的折扣 k：每期用本期的卖家精灵数据现算（类目历史 vs 追踪商品的日数据，去掉大促日）
-        node_dailies: dict[str, list[Daily]] = {}
-        for _, rec in recs:
-            d = Daily.from_record(rec["series"])
-            if d is not None and rec.get("node"):
-                node_dailies.setdefault(rec["node"], []).append(d.without(ev["days"]))
-        calibration = seasonality.calibrate(histories, node_dailies, data_date, sc)
-        for prof in profiles.values():
-            prof["shrink"] = calibration["k"]
-    period = str((disc or {}).get("period") or "")
-    threshold_month = f"{period[:4]}-{period[4:6]}" if len(period) == 6 else None
-
-    def hot_season(rec: dict) -> dict | None:
-        if not (th["hot"].get("deseasonalize") and data_date):
-            return None
-        return seasonality.hot_levels(profiles.get(rec.get("node")), data_date)
-
     rev = usable_revision(revision, th)
     deal = deal_factors(dailies_by_node(recs), ev["days"], data_date)
     tides = universe.node_tide(state, today, cfg, deal, rev)  # 品类大盘：潜力、上升中要跑赢它
 
     items = [evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"],
-                      season=hot_season(rec), threshold_month=threshold_month, tide=tides.get(rec.get("node")))
+                      tide=tides.get(rec.get("node")))
              for asin, rec in recs]
     if rev:  # 最近几天的数还会被改：按本期测到的幅度校正后重判一次，原来成立、校正后不成立的写明
         for item, (asin, rec) in zip(items, recs):
@@ -349,20 +319,45 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             item["revised_avg28"] = _avg(fixed, fixed.as_of_index(), 28)
             if revision_sensitive(item):
                 alt = evaluate(asin, revised_rec(rec, rev["window"], rev["median"]), products.get(asin), stats, cfg, today,
-                               data_date=data_date, events=ev["days"], season=hot_season(rec), threshold_month=threshold_month,
-                               tide=tides.get(rec.get("node")))
+                               data_date=data_date, events=ev["days"], tide=tides.get(rec.get("node")))
                 _revision_tag(item, lost_judgments(item, alt), rev)
-    for item, (_, rec) in zip(items, recs):
-        _season_tag(item, profiles.get(item.get("node")), sc)
-        _item_season(item, rec, profiles.get(item.get("node")), sc)
-    seasons = ({path: seasonality.outlook(prof, data_date, sc) for path, prof in profiles.items()}
-               if sc and data_date else {})
-    monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, profiles, threshold_month, deal,
-                                                rev)
+    month_rows = (disc or {}).get("products") or {}
+    for item, (asin, rec) in zip(items, recs):
+        data_tags(item, rec, (extra_rows or {}).get(asin), month_rows.get(asin), state, today, th.get("data_checks") or {})
+    monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, deal, rev)
     items += monthly
-    return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date, "seasons": seasons,
-            "profiles": profiles, "season_calibration": calibration, "monthly_judged": judged, "monthly_status": status,
-            "tides": tides}
+    return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date,
+            "monthly_judged": judged, "monthly_status": status, "tides": tides}
+
+
+def data_tags(item: dict, rec: dict, now_row: dict | None, month_row: dict | None, state: dict, today: date,
+              cfg: dict) -> None:
+    """数据本身可能有问题的，在卡片上写明（不影响上榜，人工看的时候心里有数）：
+    ① 变体变多：增长商品的变体数比约一个月前（自己存的全市场名单快照，没有时用上个月的月度名单）多了 ≥ var_jump 且 ≥ var_min 个——
+       增长里可能有新挂进来的变体的销量（10-23 全覆盖试跑：同一 ASIN 9 月名单和 10-23 名单比，537 个里 24 个变体多了三成以上）；
+    ② 名单和日数据对不上：本期名单的近 30 天销量和日数据最近 30 天合计差 ≥ mismatch 倍（两边都 ≥ mismatch_min 件），
+       日数据可能估错了（试跑：7,533 个商品中位数 0.99 倍，差 2 倍以上的 0.4%）；
+    ③ 日数据有缺：最近 28 天里 ≥ gap_days 天没有日数据（断货或数据缺失，判断不准）。"""
+    growth = item["label"] in ("surge", "potential") or bool(item.get("rising") and item["label"] in ("watch", "hot"))
+    now_vars = (now_row or {}).get("variations")
+    then = universe.variations_then(state, item["asin"], today)
+    old_vars, when = (then[1], f"{then[0]} 天前") if then else ((month_row or {}).get("variations"), "上个月的名单里")
+    if growth and now_vars and old_vars and now_vars >= old_vars * (1 + float(cfg.get("var_jump", 0.3))) - 1e-9 \
+            and now_vars - old_vars >= float(cfg.get("var_min", 2)):
+        item["tags"].append(f"变体变多（{when} {int(old_vars)} 个，现在 {int(now_vars)} 个）：增长里可能有新挂进来的变体的销量")
+    d = Daily.from_record(rec.get("series"))
+    i = d.as_of_index() if d else None
+    if i is None:
+        return
+    daily30 = sum(v for v in d.sales[max(0, i - 29): i + 1] if v)
+    listed = (now_row or {}).get("units") or 0
+    low = float(cfg.get("mismatch_min", 60))
+    if listed >= low and daily30 >= low and max(listed, daily30) >= float(cfg.get("mismatch", 2.0)) * min(listed, daily30):
+        item["tags"].append(f"名单和日数据对不上（名单近 30 天 {listed:,.0f} 件，日数据合计 {daily30:,.0f} 件）：数据可能有误")
+    first = next((k for k, v in enumerate(d.sales) if v is not None), i)  # 开卖以前的日子不算缺
+    gaps = sum(1 for v in d.sales[max(first, i - 27): i + 1] if v is None)
+    if gaps >= int(cfg.get("gap_days", 7)):
+        item["tags"].append(f"最近 28 天有 {gaps} 天没有日数据（断货或数据缺失，判断可能不准）")
 
 
 def truncated_rec(rec: dict, upto: date) -> dict | None:
@@ -384,25 +379,18 @@ def truncated_rec(rec: dict, upto: date) -> dict | None:
 
 
 def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, then: date, data_then: date,
-                 extra_rows: dict | None = None, events=frozenset(), profiles: dict | None = None) -> dict[str, str]:
+                 extra_rows: dict | None = None, events=frozenset()) -> dict[str, str]:
     """上期没追踪的商品，按本期拉到的日数据回看上期那天（then，日数据截至 data_then）会被判成什么。
     “与上期对比”用它：追踪范围扩大后，上期没追踪的商品一上榜就算“新进入”，其实可能上期就已经是了。
     判定规则、大促日、子类目门槛和本期一样，只是数据截到那天（那几天的日数据已经修订过，比上期当时拉到的更准）。"""
     stats = node_stats(disc, cfg)
     products = {**(extra_rows or {}), **((disc or {}).get("products") or {})}
-    th = cfg["thresholds"]
-    period = str((disc or {}).get("period") or "")
-    threshold_month = f"{period[:4]}-{period[4:6]}" if len(period) == 6 else None
     out = {}
     for asin in asins:
         cut = truncated_rec(state["asins"].get(asin) or {}, data_then)
         if cut is None:
             continue
-        season = None
-        if th["hot"].get("deseasonalize"):
-            season = seasonality.hot_levels((profiles or {}).get(cut.get("node")), data_then)
-        out[asin] = evaluate(asin, cut, products.get(asin), stats, cfg, then, data_date=data_then, events=events,
-                             season=season, threshold_month=threshold_month)["label"]
+        out[asin] = evaluate(asin, cut, products.get(asin), stats, cfg, then, data_date=data_then, events=events)["label"]
     return out
 
 
@@ -493,8 +481,8 @@ def deal_factors(by_node: dict[str, list[Daily]], events, data_date: date | None
 
 
 def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, data_date: date | None,
-                      tracked: list[dict], profiles: dict, threshold_month: str | None,
-                      deal: dict[str, float] | None = None, rev: dict | None = None) -> tuple[list[dict], list[str], dict]:
+                      tracked: list[dict], deal: dict[str, float] | None = None,
+                      rev: dict | None = None) -> tuple[list[dict], list[str], dict]:
     """持续热销的月度名单补判（monthly_lists.py）：本期月度名单里、不在追踪池（同一父体也不算）的商品，
     近 list_months 个月每个月都在子类目销售额前 50（往月名单）、近 30 天名单里也有它的，按同一套持续热销条件判，
     近 28 天日均用近 30 天名单的销量 ÷ 30 ÷ 大促系数（deal_factors：名单的销量含大促日，追踪商品比较时都去掉了大促日）。
@@ -539,12 +527,9 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             continue
         threshold = stats[p["node"]].get("threshold")
         recent = (r.get("units") or 0) / 30 / deal.get(p["node"], deal["*"])
-        season = seasonality.hot_levels(profiles.get(p["node"]), data_date) if th["hot"].get("deseasonalize") else None
 
         def judge(daily: float) -> dict | None:
-            return (evaluate_hot(months, None, data_date, threshold, th["hot"], recent_daily=daily)
-                    or (evaluate_hot(months, None, data_date, threshold, th["hot"], season, threshold_month,
-                                     recent_daily=daily) if season else None))
+            return evaluate_hot(months, None, data_date, threshold, th["hot"], recent_daily=daily)
 
         hot = judge(recent)
         if not hot:
@@ -568,55 +553,13 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             "potential": None, "fake": fake, "relist": None, "spark": [], "spark_start": None,
             "monthly": [[k, u] for k, u, *_ in months], "recent_avg7": None, "recent_avg28": round(recent, 2),
             "prev_avg28": None, "pkg": r.get("pkg") or p.get("pkg"), "fetched_run": None, "source": "monthly",
-            "daily": False, "season28": None, "item_season": None,
+            "daily": False,
         })
         if rev:  # 近 30 天名单里最后几天的数也还会被改：这几天按修订幅度校正后，近 30 天日均跟着变
             share = min(int(rev["window"]), 30) / 30
             _revision_tag(out[-1], [] if judge(recent * (1 - share * (1 - float(rev["median"])))) else ["持续热销"], rev)
     status.update(judged=len(judged), listed=len(out))
     return out, judged, status
-
-
-def _season_tag(item: dict, prof: dict | None, sc: dict | None) -> None:
-    """季节性品类里的商品：item["season28"] = 按往年规律近 28 天品类是之前 28 天的几倍（开发方向扣除季节用）；
-    增长商品的对比窗口里品类本来就会涨 ≥ tag_ratio 倍的，标“品类季节性”，写明扣除季节后的倍数。"""
-    item["season28"] = None
-    as_of = clock.parse_day(item.get("as_of"))
-    if not sc or not prof or not prof.get("seasonal") or as_of is None:
-        return
-
-    def windows(days: int) -> tuple[tuple[date, date], tuple[date, date]]:
-        lo = as_of - timedelta(days=days - 1)
-        return (lo, as_of), (lo - timedelta(days=28), lo - timedelta(days=1))
-
-    item["season28"] = seasonality.expected_ratio(prof, *windows(28))
-    if item["label"] == "surge" and item.get("surge"):
-        ratio, expect = item["surge"].get("sales_ratio"), seasonality.expected_ratio(prof, *windows(item["surge"]["window"]))
-    elif item["label"] == "potential" and item.get("potential"):
-        ratio, expect = item["potential"].get("recent_ratio"), item["season28"]
-    elif item.get("rising") and item["label"] in ("watch", "hot"):
-        ratio, expect = item["rising"].get("ratio"), item["season28"]
-    else:
-        return
-    if expect is not None and expect >= float(sc["tag_ratio"]) - 1e-9:
-        rest = f"，扣除后 ×{ratio / expect:.1f}" if ratio else ""
-        item["tags"].append(f"品类季节性（按往年规律，这段时间品类本来就是之前的 {expect:.1f} 倍{rest}）")
-
-
-def _item_season(item: dict, rec: dict, prof: dict | None, sc: dict | None) -> None:
-    """季节性商品（seasonality.item_season）：item["item_season"] = 判断结果（季节性品类里查过商品自己往年月销量的才有，
-    sales_trend.py），是的标“季节性（连续 N 年 X 月旺…）”。"""
-    s = seasonality.item_season(seasonality.trend_months(rec.get("sales_trend")), prof, sc) if sc else None
-    item["item_season"] = s
-    if s and s["seasonal"]:
-        item["tags"].append(f"季节性（连续 {s['cycles']} 年 {seasonality.months_text(s['peak_months'])}旺，"
-                            f"每年旺季日均都至少是前后淡季的 {s['ratio']:.1f} 倍）")
-
-
-def is_seasonal(item: dict) -> bool:
-    """季节性商品清单（不是板块：不论在哪个板块、还是只在观察，都再列一遍）：seasonality.item_season 的四条都满足的，
-    异常信号、评分偏低的不列（它们不进任何榜单）。"""
-    return item["label"] not in UNLISTED and bool((item.get("item_season") or {}).get("seasonal"))
 
 
 def _growth(item: dict) -> float:
@@ -627,8 +570,7 @@ def _growth(item: dict) -> float:
 
 
 def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
-    """每个板块按排序；top_n ≤ 0 时全部列出（报告小窗默认如此，免得顶部数字和小窗里的个数对不上）。
-    seasonal：季节性商品清单（is_seasonal），离旺季近的排前面（正在旺季的最前），同样近的按旺季日均从大到小。"""
+    """每个板块按排序；top_n ≤ 0 时全部列出（报告小窗默认如此，免得顶部数字和小窗里的个数对不上）。"""
     def cut(rows: list[dict]) -> list[dict]:
         return rows if top_n <= 0 else rows[:top_n]
 
@@ -637,19 +579,10 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
     potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: -_growth(i))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
-
-    def season_key(i: dict) -> tuple:
-        as_of = clock.parse_day(i.get("as_of"))
-        s = i["item_season"]
-        return (seasonality.months_to_peak(as_of, s["peak_months"]) if as_of else 12, -s["peak_avg"])
-
-    seasonal = sorted((i for i in items if is_seasonal(i)), key=season_key)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot),
-            "seasonal": cut(seasonal),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
                        # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
                        "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
-                       "seasonal": len(seasonal),
                        "low": sum(1 for i in items if i["label"] == "low"),
                        # 追踪的商品数（月度名单补判的持续热销没有日数据，不算追踪）
                        "total": sum(1 for i in items if i.get("daily", True)),

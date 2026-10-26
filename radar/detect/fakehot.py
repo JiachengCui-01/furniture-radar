@@ -5,7 +5,7 @@
 | 分 | 信号 | 首期可用 |
 | +2 | 留评率 ≥ max(子类目中位数×3, 6%) 且本月新增评论 ≥10（当月新增多于商品总评论的是父体数据，不计） | ✓ |
 | +2 | 新品（≤90 天）累计评论数 / 累计销量 ≥ 10%（和留评率同时成立时这一项只计 1 分：同一个证据） | ✓ |
-| —  | 评论核查过的：Vine 评论先扣掉；抽查到的近 60 天评论不到应有的一半 = 评论是继承来的，上面两项都不计 | 需核查 |
+| —  | Vine 评论先扣掉（抽查过的按抽到的比例；没抽查过的、上架 ≤90 天的新品，前 30 条当作可能是 Vine）；抽查到的近 60 天评论不到应有的一半 = 评论是继承来的，上面两项都不计 | ✓ |
 | +2 | 两期之间新增评论 / 新增销量 ≥ 15%（或几乎无销量却涨评论） | 第 2 期起 |
 | +1 | 45 天内评分上升 ≥0.2 且评论数 ≥50 | 第 2 期起 |
 | +1 | 1~3 天脉冲后迅速回落（不在大促日，见 events.py） | ✓ |
@@ -81,24 +81,42 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     total = ((rec.get("obs") or [{}])[-1]).get("ratings")
     if total is None:
         total = (disc_row or {}).get("ratings")
-    vine = vine_reviews(check)
+    # Vine：亚马逊给新品安排的测评（每个商品最多 vine_allowance 条，都在上架头几个月）。抽查过评论的按抽到的 Vine 比例算；
+    # 没抽查过的、上架不到 vine_days 天的新品，前 vine_allowance 条评论当作可能是 Vine，不算进评论/销量比。
+    # 实测 2026-10-23 全覆盖试跑：8 个异常商品全是新品“留评率 + 新品评论比”，其中 3 个只有 28~48 条评论（Vine 就有 30 条），
+    # 扣掉后都不到门槛；其余 5 个扣掉后仍是 7.5%~22%
+    vine, vine_text = vine_reviews(check), "条 Vine 评论"
+    age_now = clock.days_between(clock.parse_day(rec.get("available")), as_of) if as_of else None
+    assumed = False  # 按“可能是 Vine”扣过（没抽查过评论）：扣之前够得上评论信号的，要去抽查评论，用抽到的 Vine 比例代替猜的
+    if not (check and check.get("vine_share") is not None) and age_now is not None \
+            and 0 <= age_now <= int(cfg.get("vine_days", 90)):
+        vine, assumed = min(int(cfg.get("vine_allowance", 30)), int(total or 0)), True
+        vine_text = f"条可能的 Vine 评论（新品最多 {int(cfg.get('vine_allowance', 30))} 条，没抽查过评论）"
+    raw_flag = False  # 不扣 Vine 时评论信号是否成立
 
     # 1. 留评率（来自月度数据）：评论是父体共享的，变体多的不算
     if disc_row and disc_row.get("ratings_rate") is not None and var_ok is not False:
         rate = disc_row["ratings_rate"]
         new_reviews = disc_row.get("ratings_cv") or 0
-        if vine and new_reviews:  # 抽查到的 Vine 评论是亚马逊安排的测评，不算刷评
-            rate, new_reviews = rate * max(0, new_reviews - vine) / new_reviews, max(0, new_reviews - vine)
+        # 当月新增评论比这个商品一共的评论还多：名单行里的评论数是整个父体的，不是它的（实测 1 条评论的商品“当月新增 403 条”）
+        family = total is not None and new_reviews > total * 1.05 + 5
         bar = max(cfg["review_rate_floor"], cfg["review_rate_mult"] * (node_median_rate or 0))
+        raw_flag |= bool(not family and rate >= bar and new_reviews >= cfg["min_new_reviews"])
+        if vine and new_reviews and not family:  # Vine 评论是亚马逊安排的测评，不算刷评
+            # 没抽查过时只知道“总评论里最多 vine 条是 Vine”：当月新增里按同样的比例扣（全扣会把 171 条评论的商品也扣没）
+            if check and check.get("vine_share") is not None:
+                month_vine = min(new_reviews, vine)
+            else:
+                month_vine = new_reviews * min(1.0, vine / max(1, total or 0))
+            rate, new_reviews = rate * max(0, new_reviews - month_vine) / new_reviews, max(0, new_reviews - month_vine)
         if rate >= bar and new_reviews >= cfg["min_new_reviews"]:
-            if total is not None and new_reviews > total * 1.05 + 5:
-                # 当月新增评论比这个商品一共的评论还多：名单行里的评论数是整个父体的，不是它的（实测 1 条评论的商品“当月新增 403 条”）
+            if family:
                 tags.append("留评率数据是父体的，不计分")
             elif inherited(check, new_reviews):
                 tags.append(f"评论多是继承来的（抽查近 60 天只有 {_actual(check)} 条），留评率不计分")
             else:
                 add("review_rate", 2, f"留评率 {rate:.1f}%，远高于子类目中位数 {node_median_rate or 0:.1f}%"
-                                      f"（当月新增评论 {int(new_reviews)} 条{f'，已扣掉 {vine} 条 Vine 评论' if vine else ''}）")
+                                      f"（当月新增评论 {int(new_reviews)} 条{f'，已按 {vine} {vine_text}扣过' if vine else ''}）")
 
     if d is None or as_of is None:
         return _finish(signals, tags, cfg)
@@ -114,6 +132,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         launch = clock.month_key(available)
         units = sum((m[1] or 0) for m in rec.get("months") or [] if m[0] >= launch)
         own = max(0, ratings - vine)
+        raw_flag |= bool(units > 0 and ratings / units >= cfg["new_listing_review_ratio"])
         if units > 0 and own / units >= cfg["new_listing_review_ratio"]:
             ratio = own / units
             # 抽查评论能看到的近 60 天里，评论应该至少有（上架天数里平摊到 60 天的）一半；远少于这个数的，评论是继承来的
@@ -125,7 +144,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
                 once = any(sig["code"] == "review_rate" for sig in signals)
                 add("new_listing_reviews", 1 if once else 2,
                     f"上架仅 {age} 天，累计评论 {int(own)} 条 / 累计销量约 {int(units)} 件（{ratio:.0%}）"
-                    + (f"，已扣掉 {vine} 条 Vine 评论" if vine else "")
+                    + (f"，已扣掉 {vine} {vine_text}" if vine else "")
                     + ("；和留评率是同一个证据，这一项只计 1 分" if once else ""))
 
     # 3. 两期之间的评论增速
@@ -179,7 +198,9 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         if check.get("vine_share", 0) >= 0.3:
             tags.append("Vine 评论多")
 
-    return _finish(signals, tags, cfg)
+    out = _finish(signals, tags, cfg)
+    out["check_reviews"] = bool(assumed and raw_flag)
+    return out
 
 
 def _actual(check: dict | None) -> int:

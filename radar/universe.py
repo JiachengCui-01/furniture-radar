@@ -182,8 +182,20 @@ def record(state: dict, rows: dict[str, dict], today: date, pages: int, failed: 
     uni = _uni(state)
     snaps = [s for s in uni["snaps"] if s["date"] != today.isoformat()
              and (today - clock.parse_day(s["date"])).days <= SNAP_KEEP_DAYS]
-    snaps.append({"date": today.isoformat(), "units": {a: r.get("units") or 0 for a, r in rows.items()}})
+    snaps.append({"date": today.isoformat(), "units": {a: r.get("units") or 0 for a, r in rows.items()},
+                  "vars": {a: r["variations"] for a, r in rows.items() if r.get("variations")}})
     uni.update(date=today.isoformat(), pages=pages, rows=rows, snaps=snaps, failed=list(failed or []))
+
+
+def variations_then(state: dict, asin: str, today: date, lo: int = 21, hi: int = 60) -> tuple[int, float] | None:
+    """lo~hi 天前自己存的快照里这个商品的变体数：(几天前, 变体数)，取最早的一份（看一个月左右的变化）。"""
+    best = None
+    for s in _uni(state)["snaps"]:
+        day = clock.parse_day(s.get("date"))
+        v = (s.get("vars") or {}).get(asin)
+        if day and v and lo <= (today - day).days <= hi and (best is None or (today - day).days > best[0]):
+            best = ((today - day).days, float(v))
+    return best
 
 
 def _nearest(snaps: list[tuple[int, dict]], asin: str, lo: int, hi: int, target: int) -> tuple[int, float] | None:

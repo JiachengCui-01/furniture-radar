@@ -210,48 +210,30 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
 
 
 def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_threshold: float | None,
-                 cfg: dict, season: dict | None = None, threshold_month: str | None = None,
-                 recent_daily: float | None = None) -> dict | None:
+                 cfg: dict, recent_daily: float | None = None) -> dict | None:
     """months：[[YYYY-MM, 月销量, 月销售额, 价格]]。
-    season：所在子类目的季节指数 {"months": {"2026-04": 指数, …}, "recent": 近 28 天的指数, "n": 年数}
-    （detect/seasonality.py 的 hot_levels）。有、且 cfg["deseasonalize"] 时先按品类季节调整：
-    每个月的销量 × (这 6 个月指数的平均 ÷ 当月指数)，近 28 天同样调整；门槛线（threshold_month 那个月的子类目第 N 名）
-    也调到 6 个月平均水平。调整后再看下面几条。
     recent_daily：没有日数据（d 为空）时的近期日均（月度名单补判用近 30 天名单的销量 ÷ 30）。"""
     closed = closed_months(months, as_of)
     look = closed[-cfg["lookback_months"]:]
     if node_threshold is None or len(look) < cfg["months_required"]:
         return None
-    keys = [k for k, _ in closed[-6:]]
-    level = (season or {}).get("months") or {}
-    adjusted = bool(season and cfg.get("deseasonalize") and season.get("recent")
-                    and all(level.get(k) for k in keys))
-    avg_level = mean([level[k] for k in keys]) if adjusted else None
-
-    def adj(key: str, value: float) -> float:
-        return value * avg_level / level[key] if adjusted else value
-
     threshold = node_threshold
-    if adjusted and threshold_month and level.get(threshold_month):
-        threshold = node_threshold * avg_level / level[threshold_month]
     # 量够：小子类目的第 N 名可能一个月只卖几件（实测有门槛为 0 的），所以这个月还要 ≥ min_units 件或 ≥ min_revenue 美元
     revenue = {row[0]: row[2] for row in months or [] if len(row) > 2 and row[2] is not None}
 
     def enough(key: str, units: float) -> bool:
         money = revenue.get(key)
         return (units >= float(cfg.get("min_units", 0)) - 1e-9
-                or (money is not None and adj(key, float(money)) >= float(cfg.get("min_revenue") or math.inf) - 1e-9))
+                or (money is not None and float(money) >= float(cfg.get("min_revenue") or math.inf) - 1e-9))
 
-    hits = sum(1 for k, s in look if adj(k, s) >= threshold and enough(k, adj(k, s)))
-    six = [adj(k, s) for k, s in closed[-6:]]
+    hits = sum(1 for k, s in look if s >= threshold and enough(k, s))
+    six = [s for _, s in closed[-6:]]
     variation = cv(six)
-    trend = log_growth([adj(k, s) for k, s in closed[-3:]])
-    six_daily = mean([daily_avg_of_month(k, adj(k, s)) for k, s in closed[-6:]])
+    trend = log_growth([s for _, s in closed[-3:]])
+    six_daily = mean([daily_avg_of_month(k, s) for k, s in closed[-6:]])
     recent = recent_daily
     if d is not None and as_of is not None:
         recent = mean(d.window("sales", d.index_of(as_of), 28))
-    if recent is not None and adjusted:
-        recent = recent * avg_level / season["recent"]
     recent_ratio = (recent / six_daily) if recent is not None and six_daily else None
 
     ok = (
@@ -266,11 +248,9 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
         "months_hit": hits,
         "lookback": len(look),
         "threshold": round(threshold, 1),
-        "adjusted": adjusted,
-        "season_n": (season or {}).get("n") if adjusted else None,
         "cv": round(variation, 3),
         "trend": None if trend is None else round(trend, 3),
-        "avg_monthly": round(mean([s for _, s in closed[-6:]]) or 0, 1),  # 实际月销量（不调整），排序和展示用
+        "avg_monthly": round(mean(six) or 0, 1),  # 排序和展示用
         "recent_daily": None if recent is None else round(recent, 2),
         "recent_ratio": None if recent_ratio is None else round(recent_ratio, 2),
     }

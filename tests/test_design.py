@@ -1,6 +1,6 @@
 """外观与工艺：设计词库、主图识别、报告小窗、重新生成。"""
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -133,16 +133,11 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     _secrets, second = _two_runs(cfg, master_key, tmp_path)
     page = (tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
-    for kind in ("surge", "potential", "hot", "fake", "seasonal", "growth", "season", "all"):
+    for kind in ("surge", "potential", "hot", "fake", "growth", "all"):
         assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
-    assert plain.count('class="pop-src"') == 8 and 'id="pop"' in plain
-    # 季节性商品：演示数据里餐边柜有一个每年 11~12 月卖得特别好的商品，10 月是淡季，不在任何板块（卡片写“观察”）；
-    # 卡片上是它自己近 2 年每月日均的柱状图（旺季月深色，两年的旺季都在）
-    seasonal = plain.split('id="pop-seasonal"')[1].split('<div class="pop-src"')[0]
-    winter = next(p.asin for p in SyntheticWorld(date(2026, 10, 5)).products if p.kind == "seasonal")
-    assert winter in seasonal and '<span class="grp">观察</span>' in seasonal and seasonal.split(winter, 1)[1].split('</article>')[0].count('class="bar hi"') == 4
-    assert "连续 2 年 11~12 月旺，每年旺季日均都至少是前后淡季的" in seasonal and "离旺季还有 1 个月" in seasonal
-    assert "<em>品类</em>季节性品类：旺季 11~12 月" in seasonal and "季节性（连续 2 年 11~12 月旺" in seasonal
+    assert plain.count('class="pop-src"') == 6 and 'id="pop"' in plain
+    # 季节判断已经去掉：没有季节性商品、季节日历，也没有品类季节性标签
+    assert "季节" not in plain
     # 主体里不放商品卡片：所有卡片都在隐藏的小窗内容里
     body = plain.split('<div class="pop-src"')[0]
     assert '<article class="card"' not in body and '<article class="card"' in plain
@@ -232,7 +227,6 @@ def test_reference_group_excludes_growth_products(cfg):
     focus, reference = pipeline.analysis_groups(items, cfg)
     assert [i["asin"] for i in focus] == ["W1", "H2"]
     assert [i["asin"] for i in reference] == ["H1", "H3", "H4"]
-
 
 
 def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
@@ -377,144 +371,6 @@ def test_universal_feature_is_base_not_more(cfg):
     assert [f["label"] for f in d["features"]["功能卖点"]["base"]] == ["带储物/抽屉"]
 
 
-SEASON_CFG = {"history_months": 36, "max_pages": 4, "min_months": 24, "min_consistency": 0.5, "min_amplitude": 1.3,
-              "max_error": 0.25, "peak_month": 1.15, "low_month": 0.87, "tag_ratio": 1.15, "ratio_shrink": 0.6,
-              "calibrate_min_pairs": 30, "lead_days": 120, "launch_days": 90, "peak_ratio": 1.3, "busier": 1.2,
-              "quieter": 0.8}
-
-
-def _history(daily, months=36, end=(2026, 9)):
-    """{“YYYY-MM”: 月销量}，daily(年, 月, 第几个月) = 当月日均。"""
-    import calendar
-    out = {}
-    y, m = end
-    for k in range(months):
-        out[f"{y}-{m:02d}"] = daily(y, m, months - 1 - k) * calendar.monthrange(y, m)[1]
-        m -= 1
-        if m == 0:
-            y, m = y - 1, 12
-    return out
-
-
-def test_seasonal_category_from_three_years_of_category_sales():
-    """每年 11、12 月是平时的 2、3 倍：季节性品类，旺季 11~12 月；品类自己在涨（每月 +2%）也认得出；
-    按往年规律：近 28 天没什么季节变化，到货前 12 月是现在的 3 倍（赶不上），上架后和现在差不多。"""
-    from datetime import date
-    from radar.detect import seasonality as S
-
-    winter = lambda y, m, t: 100 * {11: 2.0, 12: 3.0}.get(m, 1.0) * 1.02 ** t
-    prof = S.profile(_history(winter), SEASON_CFG)
-    assert prof["seasonal"] and prof["consistency"] > 0.99 and prof["peak_months"] == [11, 12]
-    # 预测不带趋势项（实测加阻尼趋势也没更准），品类每月 +2% 时提前 1~6 个月的误差中位数约 9%
-    assert S.months_text(prof["low_months"]) == "1~10 月" and prof["error"] < 0.15
-    assert round(prof["index"][12] / prof["index"][6], 1) == 3.0  # 去掉了每月 2% 的增长
-    o = S.outlook(prof, date(2026, 10, 19), SEASON_CFG)
-    assert not o["growth_seasonal"] and o["peak_before"] and o["peak"]["month"] == "2026-12"
-    assert o["launch_state"] == "same" and [m for m, _ in o["curve"]][:3] == ["2026-11", "2026-12", "2027-01"]
-    v = S.verdicts(o)
-    assert v[0].startswith("季节性品类：旺季 11~12 月、淡季 1~10 月")
-    assert v[2].startswith("到货前品类会先冲高：按往年规律 12 月是现在的 3.0 倍，按开发周期 4 个月赶不上")
-    # 11 月中旬：近 28 天按往年规律本来就比之前 28 天高 → 本期增长有季节因素
-    o = S.outlook(prof, date(2026, 11, 20), SEASON_CFG)
-    assert o["growth_seasonal"] and S.verdicts(o)[1].startswith("本期增长有季节因素：按往年规律，近 28 天品类本来就是之前 28 天的")
-
-
-def test_not_every_category_is_seasonal():
-    """每年高峰在不同月份（形状不一致）、起伏不大、历史不够 2 年、预测不准：都不算季节性品类，不下季节结论。"""
-    from datetime import date
-    from radar.detect import seasonality as S
-
-    wandering = lambda y, m, t: 100 * (2.5 if m == 3 + (y % 3) * 4 else 1.0)
-    prof = S.profile(_history(wandering), SEASON_CFG)
-    assert not prof["seasonal"] and prof["consistency"] < 0.5
-    assert S.verdicts(S.outlook(prof, date(2026, 10, 19), SEASON_CFG))[0].startswith("没有固定的季节：每年的起伏不一致")
-    flat = S.profile(_history(lambda y, m, t: 100 * (1.1 if m == 12 else 1.0)), SEASON_CFG)
-    assert not flat["seasonal"] and "起伏不大" in S.outlook(flat, date(2026, 10, 19), SEASON_CFG)["why"]
-    short = S.profile(_history(lambda y, m, t: 100.0, months=20), SEASON_CFG)
-    assert not short["seasonal"] and S.verdicts(S.outlook(short, date(2026, 10, 19), SEASON_CFG)) == [
-        "类目历史只有 20 个月，还看不出季节"]
-    noisy = lambda y, m, t: 100 * {11: 2.0, 12: 3.0}.get(m, 1.0) * (1.3 if (t * 7) % 5 == 0 else 1.0)
-    strict = {**SEASON_CFG, "max_error": 0.0}
-    prof = S.profile(_history(noisy), strict)
-    assert prof["consistency"] > 0.5 and not prof["seasonal"]
-    assert "预测不准" in S.outlook(prof, date(2026, 10, 19), strict)["why"]
-
-
-def test_day_index_is_smooth_between_months():
-    from datetime import date
-    from radar.detect import seasonality as S
-
-    idx = {m: (2.0 if m == 12 else 1.0) for m in range(1, 13)}
-    assert abs(S.day_index(idx, date(2026, 12, 16)) - 2.0) < 0.05
-    assert 1.0 < S.day_index(idx, date(2026, 12, 3)) < S.day_index(idx, date(2026, 12, 10)) < 2.0
-    assert 1.0 < S.day_index(idx, date(2027, 1, 5)) < 2.0  # 跨年也连续
-    prof = {"seasonal": True, "index": idx}
-    r = S.expected_ratio(prof, (date(2026, 12, 3), date(2026, 12, 30)), (date(2026, 11, 5), date(2026, 12, 2)))
-    assert r > 1.3 and S.expected_ratio({"seasonal": False}, (date(2026, 12, 3), date(2026, 12, 30)),
-                                        (date(2026, 11, 5), date(2026, 12, 2))) is None
-
-
-def test_category_history_backfills_from_spare_budget(cfg):
-    """类目历史：近的月份先补，每期最多 limit 次；找齐子类目或翻完所有页就算补完；
-    月度发现查到的那个月直接记进来；太早的月份删掉。"""
-    from datetime import date
-    from radar import category_history as H
-    from radar.demo import NODES, SyntheticWorld
-    from radar.vendor import Budget, Vendor
-
-    world = SyntheticWorld(date(2026, 10, 5))
-    nodes = [{"path": path, "root": root, "name_cn": cn} for root, path, _label, cn, _n in NODES]
-    state = {}
-    disc = {"period": "202609", "nodes": [{**n, "units": 300.0} for n in nodes]}
-    H.record_discovery(state, disc)
-    assert H.series(state, nodes[0]["path"]) == {"2026-09": 300.0}
-    vendor = Vendor(world, Budget(100), live=False)
-    assert H.backfill(vendor, cfg, state, nodes, date(2026, 10, 5), limit=10) == 10
-    months = sorted(state[H.STATE_KEY]["months"])
-    assert months[-1] == "2026-09" and len(months) == 6  # 9 月已有；每月 2 个根类目各 1 次 → 又补了 5 个月
-    H.backfill(vendor, cfg, state, nodes, date(2026, 10, 5), limit=100)
-    assert len(state[H.STATE_KEY]["months"]) == 36 and vendor.billable_calls == 10 + 60
-    assert H.backfill(vendor, cfg, state, nodes, date(2026, 10, 5), limit=100) == 0  # 都齐了，不再调用
-    H.backfill(vendor, cfg, state, nodes, date(2026, 12, 5), limit=100)
-    assert "2023-10" not in state[H.STATE_KEY]["months"] and "2026-11" in state[H.STATE_KEY]["months"]
-
-
-def test_category_history_pages_deeper_for_missing_nodes_and_retries_failures(cfg):
-    """翻满 max_pages 页还缺要追踪的子类目：接着翻到 max_pages_missing 页（以前翻满就记成补完，那个子类目缺了这个月，
-    36 个月凑不齐，永远判不成季节性品类）；查询失败不算翻完，下期接着补；以前只记了 scanned 的也接着往后翻。"""
-    import json
-    from datetime import date
-    from radar import category_history as H
-    from radar.vendor import Budget, Vendor
-
-    def rows(page):
-        return [{"nodeIdPath": f"R:{page}:{i}", "totalUnits": 1} for i in range(50)]
-
-    def world(fail=()):
-        def transport(tool, args):
-            req = args.get("request", args)
-            if (req["month"], req["page"]) in fail:
-                return json.dumps({"code": "ERROR", "message": "服务繁忙"})
-            items = rows(req["page"]) + ([{"nodeIdPath": "R:deep", "totalUnits": 7}] if req["page"] == 6 else [])
-            return json.dumps({"code": "OK", "data": {"items": items[:50] if req["page"] != 6 else items}})
-        return transport
-
-    hcfg = cfg["thresholds"]["seasonality"]
-    hcfg.update(history_months=2, max_pages=4, max_pages_missing=8)
-    nodes = [{"path": "R:deep", "root": "R"}, {"path": "R:1:0", "root": "R"}]
-    state = {}
-    H.backfill(Vendor(world(fail={("202609", 3)}), Budget(100), live=False), cfg, state, nodes, date(2026, 10, 5), 100)
-    hist = state[H.STATE_KEY]
-    assert "2026-09" not in hist["scanned"] and hist["pages"]["2026-09|R"] == 2   # 第 3 页失败：停在第 2 页，不算补完
-    assert hist["months"]["2026-08"]["R:deep"] == 7 and not H.complete(state, "2026-09", "R", {"R:deep"}, hcfg)
-    H.backfill(Vendor(world(), Budget(100), live=False), cfg, state, nodes, date(2026, 10, 5), 100)
-    assert hist["months"]["2026-09"]["R:deep"] == 7 and H.complete(state, "2026-09", "R", {"R:deep", "R:1:0"}, hcfg)
-    legacy = {H.STATE_KEY: {"months": {"2026-09": {"R:1:0": 1}}, "scanned": {"2026-09": ["R"]}}}
-    vendor = Vendor(world(), Budget(100), live=False)
-    H.backfill(vendor, cfg, legacy, nodes, date(2026, 10, 5), 100)
-    assert legacy[H.STATE_KEY]["months"]["2026-09"]["R:deep"] == 7  # 以前翻满 4 页就记成补完的：从第 5 页接着翻
-
-
 def test_package_fields_are_parsed_from_product_rows():
     """卖家精灵的包装尺寸 / 包装重量 / FBA 配送费：解析成英寸、磅、美元，体积换算成立方英尺和立方米。"""
     from radar import discovery, shipping
@@ -596,20 +452,20 @@ def test_vision_retries_and_skips_a_bad_image(cfg, monkeypatch):
 
 
 def test_risk_bullets_must_name_a_flagged_product():
-    """风险提醒只能点名带异常信号、或标签有季节性 / 降价驱动的商品；模型自己推测的删掉，删完写“没有需要特别提醒的风险”。"""
+    """风险提醒只能点名带异常信号、或标签有降价驱动的商品；模型自己推测的删掉，删完写“没有需要特别提醒的风险”。"""
     from radar import narrative
 
     facts = {"异常信号": [{"品牌": "COMHOMA", "标签": []}],
              "突然爆火": [{"品牌": "TUTOTAK", "标签": [], "异常信号": ["评论集中"]}, {"品牌": "VASAGLE", "标签": ["稳在高位"]}],
-             "潜力": [{"品牌": "OOOK", "标签": ["季节性"]}]}
+             "潜力": [{"品牌": "OOOK", "标签": ["降价驱动"]}]}
     text = ("### 开发方向\n- 开发书架：现代\n### 风险提醒\n- TUTOTAK 书架评论集中，疑似异常，需人工核实。\n"
             "- COMHOMA 梳妆台留评率异常，需人工核实。\n- 部分增长商品带充电/插座，需留意是否为短期促销。\n"
-            "- VASAGLE 咖啡桌涨得太快。\n- OOOK 旋转书架有季节性，不要当成长期需求。")
+            "- VASAGLE 咖啡桌涨得太快。\n- OOOK 旋转书架靠降价拉动，不要当成长期需求。")
     out = narrative.guard_risks(text, facts)
     assert out.splitlines() == ["### 开发方向", "- 开发书架：现代", "### 风险提醒",
                                 "- TUTOTAK 书架评论集中，疑似异常，需人工核实。", "- COMHOMA 梳妆台留评率异常，需人工核实。",
-                                "- OOOK 旋转书架有季节性，不要当成长期需求。"]
-    only_guess = "### 风险提醒\n- 部分增长商品带 LED 灯，需留意季节性。"
+                                "- OOOK 旋转书架靠降价拉动，不要当成长期需求。"]
+    only_guess = "### 风险提醒\n- 部分增长商品带 LED 灯，需留意是否为短期促销。"
     assert narrative.guard_risks(only_guess, facts).splitlines() == ["### 风险提醒", narrative.NO_RISK]
 
 
@@ -630,44 +486,10 @@ def test_summary_product_mentions_become_amazon_links():
             "外观要点": "窄长条案", "标签": [], "可作参考": True, "异常信号": ["留评率高"]}
     facts = {"共性特点": {}, "突然爆火": [item], "潜力": [], "异常信号": [item],
              "开发方向": [{"画像": "玄关桌：窄小省空间", "参考商品": [{"品名": item["品名"], "ASIN": "B0H2XKVQ5L"}]},
-                      {"画像": "衣帽架：实木，$24–$120", "子类目": "衣帽架", "增量": "$26 万",
-                       "季节提醒": narrative.season_note([
-                           "近 28 天季节变化不大：按往年规律，品类是之前 28 天的 1.1 倍",
-                           "到货前品类会先冲高：按往年规律 12 月是现在的 2.5 倍，按开发周期 4 个月赶不上"]),
-                       "参考商品": []}]}
+                      {"画像": "衣帽架：实木，$24–$120", "子类目": "衣帽架", "增量": "$26 万", "参考商品": []}]}
     text = narrative.template_summary(facts)
     assert "[Huuger 63.4-78.3'' Extendable Behind…](B0H2XKVQ5L)" in text
     assert "- 开发玄关桌：窄小省空间，参考 [Huuger" in text
-    assert ("- 开发衣帽架（月增量约 $26 万）：实木，$24–$120；到货前品类会先冲高：按往年规律 12 月是现在的 2.5 倍，"
-            "按开发周期 4 个月赶不上\n") in text
-    # 类目历史不够、没有固定季节这类结论不写进要点（实测大模型会照抄到每一条后面）
-    assert narrative.season_note(["类目历史只有 0 个月，还看不出季节"]) == ""
+    assert "- 开发衣帽架（月增量约 $26 万）：实木，$24–$120\n" in text and "季节" not in text
 
 
-def test_short_window_shrink_is_fitted_from_data():
-    """28 天季节倍数的折扣 k 每期用数据现算：商品实际只跟到季节起伏的一半时（指数之比 e，商品变化 ≈ e^0.5），拟合出 k≈0.5；
-    样本不够时用 ratio_shrink。"""
-    import calendar
-    from datetime import date, timedelta
-    from radar.detect import seasonality as S
-    from radar.series import Daily
-
-    def history(y0=2023, m0=10, months=36):
-        out, y, m = {}, 2026, 9
-        for _ in range(months):
-            out[f"{y}-{m:02d}"] = 100 * {11: 2.0, 12: 3.0, 1: 1.6}.get(m, 1.0) * calendar.monthrange(y, m)[1]
-            m -= 1
-            if m == 0:
-                y, m = y - 1, 12
-        return out
-
-    hist = history()
-    prof = S.profile(hist, SEASON_CFG)
-    start = date(2025, 9, 1)
-    days = 415
-    level = [S.day_index(prof["index"], start + timedelta(days=k)) ** 0.5 * 20 for k in range(days)]
-    items = [Daily(start, [1000.0] * days, list(level), [100.0] * days) for _ in range(5)]
-    cal = S.calibrate({"N": hist}, {"N": items}, date(2026, 10, 19), {**SEASON_CFG, "calibrate_min_pairs": 10})
-    assert cal["fitted"] and abs(cal["k"] - 0.5) <= 0.1 and cal["n"] >= 10
-    few = S.calibrate({"N": hist}, {"N": items[:3]}, date(2026, 10, 19), {**SEASON_CFG, "ratio_shrink": 0.6})
-    assert few == {"k": 0.6, "n": 0, "fitted": False}

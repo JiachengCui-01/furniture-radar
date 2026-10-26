@@ -16,7 +16,7 @@ import httpx
 from .. import log
 from ..analyze import display_name
 from ..detect.directions import headline, money_text
-from ..report.render import growth_text, season_text
+from ..report.render import growth_text
 from ..narrative import top_design_labels
 
 
@@ -85,6 +85,9 @@ def _short(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+DATA_TAGS = ("变体变多", "名单和日数据对不上", "最近 28 天有")  # analyze.data_tags 打的“数据可能有问题”的标签
+
+
 def build_text(ctx: dict, max_items: int = 3) -> str:
     """ActionCard 正文（钉钉 markdown 子集）。"""
     sec = ctx["sections"]
@@ -101,6 +104,8 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         node = item.get("node_cn") or item.get("node_name") or ""
         # 按本期测到的修订幅度校正最近几天后不成立的判定：卡片上有完整说明，这里只提醒一句
         caveat = f"（最近几天的数待修订，校正后不算{'、'.join(item['revision_lost'])}）" if item.get("revision_lost") else ""
+        if any(t.startswith(DATA_TAGS) for t in item.get("tags") or []):  # 变体变多、名单和日数据对不上、日数据有缺
+            caveat += "（数据可能有问题，见报告卡片）"
         return f"- {_short(display_name(item['brand'], item['title']), 36)}（{node}）{extra}{caveat}"
 
     if sec["surge"]:
@@ -115,11 +120,6 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("**🌱 潜力产品**")
         for item in sec["potential"][:max_items]:
             lines.append(item_line(item, " " + growth_text(item)))
-        lines.append("")
-    if sec.get("seasonal"):  # 不是板块：每年固定一段时间卖得特别好的商品，离旺季近的在前
-        lines.append(f"**🍂 季节性商品 {c.get('seasonal', len(sec['seasonal']))} 个**（每年固定时间卖得特别好）")
-        for item in sec["seasonal"][:max_items]:
-            lines.append(item_line(item, f" {season_text(item)}"))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:

@@ -9,11 +9,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import (analyze, category_history, clock, crypto, discovery, log, materials, monthly_lists, narrative, sales_trend,
+from . import (analyze, clock, crypto, discovery, log, materials, monthly_lists, narrative,
                store, tracking, universe, verify, vision)
 from .config import Secrets, report_base_url
 from .detect import diff as diffing
-from .detect import directions, seasonality
+from .detect import directions
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -216,7 +216,6 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     try:
         # 1. 发现（月度基线）+ 全市场名单（每期翻一遍，机会候选从这里初筛）+ 近 30 天榜单 / 上期爆款的相似款（默认关闭：全市场名单已经包括）
         disc = ensure_discovery(vendor, cfg, state, today)
-        category_history.record_discovery(state, disc)  # 月度发现查的就是上个月的类目销量，顺手记进季节历史
         monthly_lists.record_discovery(state, disc)  # 月度发现的头部名单也是持续热销补判的当月名单
         if disc and disc.get("nodes"):
             try:
@@ -296,7 +295,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     # 两组交替排：名额不够时两组都有一部分查到亚马逊 Material，主材质对比的口径不会一边倒；
     # 名额还有剩，再查其余增长商品（开发方向的主材质用全部增长商品）和其余上榜商品（卡片上的主材质）
     both = [i for pair in itertools.zip_longest(focus, reference) for i in pair if i is not None]
-    listed = analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot") or analyze.is_seasonal(i)]
+    listed = analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot")]
     seen = {i["asin"] for i in both}
     for item in listed:
         if item["asin"] not in seen:
@@ -323,7 +322,6 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
-                       seasons=result.get("seasons"), calibration=result.get("season_calibration"),
                        monthly=result.get("monthly_status"), monthly_judged=result.get("monthly_judged"),
                        retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows))
     key_text = ctx["key_text"]
@@ -348,6 +346,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     state["run_seq"] = run_seq
     state["last_success"] = now_utc.isoformat(timespec="seconds")
     state.pop("blocked", None)
+    drop_seasonal(state)
     state["calls"][month] = used_this_month + vendor.billable_calls
     # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
     # 轮查靠它排先后。很久没进池的整条删除。
@@ -372,10 +371,17 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     return out
 
 
+def drop_seasonal(state: dict) -> None:
+    """季节判断已经去掉（2026-10-26）：以前存下的子类目 3 年月度历史、商品往年月销量不再用，丢掉免得数据越存越大。"""
+    state.pop("category_history", None)
+    for rec in (state.get("asins") or {}).values():
+        rec.pop("sales_trend", None)
+
+
 def backfill_extras(vendor: Vendor, cfg: dict, state: dict, disc: dict, pool: list[str], today, reserve: int) -> None:
     """核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
-    持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 类目月度历史（季节模型）→ 往月名单（一次性补）
-    → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判 → 季节性品类里商品自己往年的月销量。
+    持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 往月名单（一次性补）
+    → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判。
     账户额度用完（QuotaExhausted）由调用方接住：这些都是补充数据，跳过照常出报告。"""
     bcfg = cfg["budget"]
 
@@ -386,19 +392,10 @@ def backfill_extras(vendor: Vendor, cfg: dict, state: dict, disc: dict, pool: li
     lists_ready = monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months)
     if lists_ready and spare(len(disc["nodes"])):
         monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
-    if spare(int(bcfg.get("history_calls", 0))):
-        category_history.backfill(vendor, cfg, state, disc["nodes"], today, spare(int(bcfg.get("history_calls", 0))))
     if not lists_ready and spare(int(bcfg.get("monthly_list_calls", 0))):
         monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
         if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months) and spare(len(disc["nodes"])):
             monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
-    # 季节性商品要看商品自己往年的月销量（sales_trend.py）：季节性品类（类目历史够了才认得出）里上架满一年的追踪商品
-    sc = cfg["thresholds"].get("seasonality")
-    if sc and spare(int(bcfg.get("trend_calls", 0))):
-        profiles = {n["path"]: seasonality.profile(category_history.series(state, n["path"]), sc) for n in disc["nodes"]}
-        asins = sales_trend.candidates(state, pool, profiles, today, cfg)
-        if asins:
-            sales_trend.fetch(vendor, cfg, state, asins, today, spare(int(bcfg.get("trend_calls", 0))))
 
 
 def remember_monthly(state: dict, items: list[dict], disc: dict | None, run_seq: int) -> None:
@@ -451,10 +448,9 @@ def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
                  prev_run: dict | None, coverage: dict, today, events: dict | None = None,
-                 seasons: dict | None = None, calibration: dict | None = None, monthly: dict | None = None,
-                 monthly_judged: list[str] | None = None, retro: dict | None = None) -> dict:
+                 monthly: dict | None = None, monthly_judged: list[str] | None = None, retro: dict | None = None) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
-    events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；seasons：各子类目的品类季节（同上）；
+    events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；
     retro：上期没追踪的商品回看上期那天的判定（previous_view），“与上期对比”用。"""
     sec = analyze.sections(items, int(cfg["report"]["top_n"]))
     trait = analyze.compute_traits(items, disc, state, today, cfg)
@@ -479,7 +475,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = vision.of(state, item["asin"]).get("summary") or ""
-    trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc, seasons=seasons)
+    trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]
@@ -507,9 +503,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "cfg": cfg,
         "top_n": int(cfg["report"]["top_n"]),
         "events": events or {},
-        "seasons": seasons or {},
-        "season_calibration": calibration,
-        "season_nodes": (disc or {}).get("nodes") or [],
+        "nodes": (disc or {}).get("nodes") or [],
     }
     ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
     # 往期链接不带密钥：带的话一份报告里有前 6 期的密钥、一期期往回连，泄露一个钉钉链接就能打开全部往期。
@@ -536,7 +530,7 @@ def previous_view(state: dict, disc: dict | None, items: list[dict], prev_run: d
         return {}
     data_then = data_date - timedelta(days=(today - prev_day).days)
     return analyze.retro_labels(state, disc, asins, cfg, prev_day, data_then, extra_rows,
-                                (result.get("events") or {}).get("days") or frozenset(), result.get("profiles"))
+                                (result.get("events") or {}).get("days") or frozenset())
 
 
 def _write_shell(cfg: dict, site: Path, report_id: str, envelope: dict, latest_id: str) -> None:
@@ -646,14 +640,14 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),
                                                                             cfg["display_timezone"]).strftime("%Y-%m-%d %H:%M"),
                        prev_run=prev_run, coverage=coverage,
-                       today=today, events=result.get("events"), seasons=result.get("seasons"),
-                       calibration=result.get("season_calibration"), monthly=result.get("monthly_status"),
+                       today=today, events=result.get("events"), monthly=result.get("monthly_status"),
                        monthly_judged=result.get("monthly_judged"),
                        retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     scrub_history_keys(cfg, site, master, (state.get("reports") or [])[:-1])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
     state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)
+    drop_seasonal(state)
     store.save(site, master, state)
     sec = ctx["sections"]
     log.info(f"已重新生成第 {last['seq']} 期报告 {last['id']}（未调用卖家精灵）；爆火 {sec['counts']['surge']} / "

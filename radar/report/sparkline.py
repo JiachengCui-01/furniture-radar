@@ -105,7 +105,7 @@ def sparkline(values: list, *, start: str | None = None, highlight_last: int = 7
 
 
 def bars(values: list[tuple[str, float]], *, highlight=(), caption: str = "", unit: str = "件") -> str:
-    """月销量柱状图。values：[(YYYY-MM, 件数)]；highlight：用深色画的月份（季节性商品的旺季月）；
+    """月销量柱状图。values：[(YYYY-MM, 件数)]；highlight：用深色画的月份；
     caption / unit：图题和读数单位（默认按月销量）。"""
     if not values:
         return ""

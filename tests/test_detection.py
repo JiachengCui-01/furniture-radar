@@ -57,58 +57,6 @@ def _yearly(level, days=420):
     return [level(start + timedelta(days=k)) for k in range(days)]
 
 
-WINTER = {"seasonal": True, "peak_months": [11, 12]}  # 品类旺季 11~12 月
-
-
-def _trend(level, months=27, end=(2026, 10)):
-    """卖家精灵 asin_sales_trend 存下来的样子（sales_trend.py）：以 end（查的那个月，还没结束）为最后一个月，共 months 个月，
-    level(年, 月) = 当月日均。"""
-    import calendar
-    points = []
-    y, m = end
-    for _ in range(months):
-        points.append([f"{y}-{m:02d}", round(level(y, m) * calendar.monthrange(y, m)[1])])
-        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
-    return {"month": f"{end[0]}-{end[1]:02d}", "points": points[::-1]}
-
-
-def _season(level, cfg):
-    from radar.detect import seasonality
-
-    return seasonality.item_season(seasonality.trend_months(_trend(level)), WINTER, cfg["thresholds"]["seasonality"])
-
-
-def test_seasonal_product_sells_well_in_its_season_every_year(cfg):
-    """季节性商品：商品自己约 2 年的月销量里，每一年的旺季都 ≥ 前后淡季的 2 倍、淡季没有冲高过，至少看到 2 年的旺季。
-    只看得到一个旺季的（日数据只有约 400 天、或上架才一年多）分不清是每年都这样还是那一年碰巧卖得好，不算。"""
-    from radar.detect import seasonality
-
-    s = _season(lambda y, m: 30 if m in (11, 12) else 10, cfg)
-    assert s["seasonal"] and s["cycles"] == 2 and s["ratio"] == 3.0 and s["peak_avg"] == 30 and s["off_avg"] == 10
-    assert s["months"][0][0] == "2024-08" and s["months"][-1][0] == "2026-09"  # 10 月是查的那个月、还没结束，不算
-    # 只有一年冲高（2025 年 11~12 月），2024 年的旺季和淡季一样：可能只是那一年碰巧卖得好
-    once = _season(lambda y, m: 30 if (y, m) in ((2025, 11), (2025, 12)) else 10, cfg)
-    assert once["cycles"] == 2 and not once["seasonal"] and once["ratio"] == 1.0
-    # 2025 年 6 月才开始卖：只经历过一个旺季
-    young = _season(lambda y, m: 0 if (y, m) < (2025, 6) else 30 if m in (11, 12) else 10, cfg)
-    assert young["cycles"] == 1 and not young["seasonal"]
-    # 中间有一个月没卖（断货 / 下架）：只从它之后算，又只剩一个旺季
-    gap = _season(lambda y, m: 0 if (y, m) == (2025, 3) else 30 if m in (11, 12) else 10, cfg)
-    assert gap["months"][0][0] == "2025-04" and not gap["seasonal"]
-    # 一直在跌：2024 年 11~12 月和之前的 8~10 月一样高 → 那一年只有一边低，不算
-    assert not _season(lambda y, m: 30 if (y, m) <= (2024, 12) else 10, cfg)["seasonal"]
-    # 一直在涨：后一年的淡季比前一年旺季还高
-    assert not _season(lambda y, m: 5 + 2 * ((y - 2024) * 12 + m), cfg)["seasonal"]
-    # 淡季的 7 月（Prime Day）冲到和旺季一样高：“其他时间反而不行”不成立
-    assert not _season(lambda y, m: 30 if m in (11, 12) or (y, m) == (2025, 7) else 10, cfg)["seasonal"]
-    # 旺季只比淡季高 50%：不够“特别好”
-    assert not _season(lambda y, m: 15 if m in (11, 12) else 10, cfg)["seasonal"]
-    # 不是季节性品类、或没查到往年月销量：不判断
-    winter = seasonality.trend_months(_trend(lambda y, m: 30 if m in (11, 12) else 10))
-    assert seasonality.item_season(winter, {"seasonal": False}, cfg["thresholds"]["seasonality"]) is None
-    assert seasonality.item_season(seasonality.trend_months(None), WINTER, cfg["thresholds"]["seasonality"]) is None
-
-
 def test_event_days_are_detected_from_many_items_jumping_together(cfg):
     """大促日：同一天 ≥30% 的商品销量翻到自己前 14 天中位数的 1.8 倍；相连的、≥15% 的日子也算。"""
     from radar.detect import events
@@ -469,6 +417,61 @@ def test_rising_must_beat_the_node_tide(cfg):
     assert not item["rising"] and any(tag.startswith("随大盘（所在子类目整体 ×1.40") for tag in item["tags"])
 
 
+def test_new_listings_first_reviews_may_be_vine(cfg):
+    """Vine：没抽查过评论的、上架 ≤90 天的新品，前 30 条评论当作可能是 Vine，不算进新品评论/销量比和留评率
+    （10-23 试跑：8 个异常商品里 3 个只有 28~48 条评论）；留评率按“总评论里最多 30 条是 Vine”的比例扣，不全扣。"""
+    f = cfg["thresholds"]["fake"]
+    d = Daily.from_record({"start": "2026-08-01", "bsr": [5000] * 60, "sales": [5] * 60, "price": [50] * 60})
+    end = d.as_of()
+
+    def codes(ratings, units, cv, rate):
+        rec = {"available": "2026-08-01", "variations": 1, "months": [["2026-08", units / 2], ["2026-09", units / 2]],
+               "obs": [{"date": end.isoformat(), "ratings": ratings, "rating": 4.6}]}
+        out = fakehot.score(rec, d, end, {"ratings_rate": rate, "ratings_cv": cv}, 2.0, f)
+        return {s["code"]: s["text"] for s in out["signals"]}
+
+    assert codes(35, 290, 25, 13.2) == {}                      # 35 条里 30 条可能是 Vine：两项都不到门槛
+    got = codes(171, 633, 29, 12.0)
+    assert set(got) == {"review_rate", "new_listing_reviews"}  # 171 条评论：扣掉 30 条照样 22%
+    assert "已扣掉 30 条可能的 Vine 评论" in got["new_listing_reviews"]
+    assert "当月新增评论 23 条" in got["review_rate"]            # 29 × (1 − 30/171)，按比例扣、不是全扣
+
+
+def test_listed_surges_and_potentials_all_get_a_review_check(cfg):
+    """报告推荐的爆火、潜力商品都抽查一次评论（排在可疑商品之后；14 天内查过的不重查）。"""
+    from radar import verify
+
+    today = END
+    items = [{"asin": "SUS", "label": "watch", "fake": {"score": 2}, "as_of": None, "hot": {"x": 1}},
+             {"asin": "SURGE", "label": "surge", "fake": {"score": 0}, "as_of": None, "surge": {"strength": 5}},
+             {"asin": "POT", "label": "potential", "fake": {"score": 0}, "as_of": None},
+             {"asin": "DONE", "label": "surge", "fake": {"score": 0}, "as_of": None, "surge": {"strength": 9}},
+             {"asin": "W", "label": "watch", "fake": {"score": 0}, "as_of": None}]
+    state = {"asins": {"DONE": {"checks": {"review": {"checked": (today - timedelta(days=3)).isoformat()}}}}}
+    jobs = verify.select(items, state, cfg, today)
+    assert jobs == [("SUS", "review"), ("SURGE", "review"), ("POT", "review")]
+
+
+def test_data_problems_are_written_on_the_card(cfg):
+    """数据可能有问题的写在卡片上：变体变多、名单和日数据对不上、最近 28 天缺日数据（开卖以前的日子不算缺）。"""
+    sales = [10] * 72 + [20] * 28
+    rec = _rec(sales, 4.5)
+    item = {"asin": "A", "label": "surge", "tags": [], "rising": None}
+    analyze.data_tags(item, rec, {"units": 400, "variations": 4}, {"variations": 3}, {}, END, cfg["thresholds"]["data_checks"])
+    assert item["tags"] == []  # 3 → 4 个只多了 1 个；名单 400 件 vs 日数据 580 件差不到 2 倍
+    item = {"asin": "A", "label": "surge", "tags": [], "rising": None}
+    analyze.data_tags(item, rec, {"units": 200, "variations": 8}, {"variations": 3}, {}, END, cfg["thresholds"]["data_checks"])
+    assert any(t.startswith("变体变多（上个月的名单里 3 个，现在 8 个）") for t in item["tags"])
+    assert any(t.startswith("名单和日数据对不上（名单近 30 天 200 件，日数据合计 580 件）") for t in item["tags"])
+    values = [None] * 80 + [10] * 10 + [None] * 8 + [10] * 2  # 开卖前的 80 天不算，开卖后缺 8 天
+    start = END - timedelta(days=len(values) - 1)
+    gappy = {"series": {"start": start.isoformat(), "bsr": [None if v is None else 5000 for v in values], "sales": values,
+                        "price": [50] * len(values)}}
+    item = {"asin": "B", "label": "watch", "tags": [], "rising": None}
+    analyze.data_tags(item, gappy, None, None, {}, END, cfg["thresholds"]["data_checks"])
+    assert item["tags"] == ["最近 28 天有 8 天没有日数据（断货或数据缺失，判断可能不准）"]
+
+
 def test_restock_is_not_a_surge(cfg):
     """断货（日销 0、BSR 几百万）后恢复供货：看起来像暴涨，其实只是回到原来的水平。"""
     d = make([80] * 80 + [0] * 26 + [80] * 14)
@@ -591,100 +594,17 @@ def test_relisted_increment_is_zero_without_earlier_sales():
     assert directions.increment({**item, "prev_avg28": 40, "relist": {"share": 0.6}}) == 60 * 50 * 30
 
 
-def _category_history(level, months=36, end=(2026, 9)):
-    """state["category_history"] 里一个子类目的 36 个月销量，level(月份) = 当月日均。"""
-    import calendar
-    out = {}
-    y, m = end
-    for _ in range(months):
-        out[f"{y}-{m:02d}"] = level(m) * calendar.monthrange(y, m)[1]
-        m -= 1
-        if m == 0:
-            y, m = y - 1, 12
-    return out
-
-
-def _with_history(state, path, units):
-    hist = state.setdefault("category_history", {"months": {}, "scanned": {}})
-    for month, v in units.items():
-        hist["months"].setdefault(month, {})[path] = v
-    return state
-
-
-def test_growth_in_a_seasonal_category_is_tagged(cfg):
-    """季节性品类里，按往年规律近 28 天品类本来就是之前的 ≥1.15 倍：上升中标“品类季节性”，写明季节倍数和扣除后的倍数；
-    没有类目历史的子类目不标。"""
-    early_autumn = lambda m: 100 * {9: 1.6, 10: 2.2}.get(m, 1.0)
-    state = _with_history({"asins": {}}, "N1", _category_history(early_autumn))
-    rising = [10] * 92 + [20] * 28
-    for k in range(3):
-        state["asins"][f"S{k}"] = {**_rec(rising, 4.5), "node": "N1", "node_cn": "衣帽架"}
-        state["asins"][f"F{k}"] = {**_rec(rising, 4.5), "node": "N2", "node_cn": "书架"}
-    result = analyze.analyze(state, None, list(state["asins"]), cfg, END)
-    by = {i["asin"]: i for i in result["items"]}
-    assert result["seasons"]["N1"]["seasonal"] and not result["seasons"]["N2"]["ready"]
-    s = by["S0"]
-    assert s["rising"] and s["season28"] > 1.15
-    tag = next(t for t in s["tags"] if t.startswith("品类季节性"))
-    assert tag == (f"品类季节性（按往年规律，这段时间品类本来就是之前的 {s['season28']:.1f} 倍，"
-                   f"扣除后 ×{s['rising']['ratio'] / s['season28']:.1f}）")
-    assert by["F0"]["rising"] and by["F0"]["season28"] is None
-    assert not any(t.startswith("品类季节性") for t in by["F0"]["tags"])
-
-
-def test_hot_counts_raw_or_seasonally_adjusted_sales(cfg):
-    """持续热销：原始销量达标的照样算；季节性品类里原始销量因为旺季波动不达标的，按季节指数调整后达标也算（卡片注明）。"""
-    from radar.detect import seasonality
-
+def test_hot_needs_steady_months_without_any_seasonal_adjustment(cfg):
+    """持续热销只看近几个月自己的月销量（不做季节调整）：月销量起伏大的（波动系数 0.39 > 0.35）不算，稳定的算。"""
     th = cfg["thresholds"]
-    peak = lambda m: 100 * {7: 1.6, 8: 2.6, 9: 1.8}.get(m, 1.0)
-    prof = seasonality.profile(_category_history(peak), th["seasonality"])
-    assert prof["seasonal"]
-    season = seasonality.hot_levels(prof, END)
-    seasonal_months = _months([1000 * x for x in (1.0, 1.0, 1.0, 1.6, 2.6, 1.8)])
+    wavy_months = _months([1000 * x for x in (1.0, 1.0, 1.0, 1.6, 2.6, 1.8)])
     d = make([60] * 120)
-    assert evaluate_hot(seasonal_months, d, END, 900, th["hot"]) is None  # 直接算波动 0.39 > 0.35
-    hot = evaluate_hot(seasonal_months, d, END, 900, th["hot"], season, "2026-09")
-    assert hot and hot["adjusted"] and hot["cv"] < 0.05 and hot["season_n"] == 3
-    assert evaluate_hot(seasonal_months, d, END, 900, {**th["hot"], "deseasonalize": False}, season, "2026-09") is None
-
+    assert evaluate_hot(wavy_months, d, END, 900, th["hot"]) is None
     stats = {"N1": {"threshold": 900}}
     flat = {**_rec([40] * 120, 4.5), "node": "N1", "months": _months([1200] * 6)}
-    wavy = {**_rec([60] * 120, 4.5), "node": "N1", "months": seasonal_months}
-    a = analyze.evaluate("A", flat, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
-    b = analyze.evaluate("B", wavy, None, stats, cfg, END, data_date=END, season=season, threshold_month="2026-09")
-    assert a["label"] == "hot" and not a["hot"]["adjusted"]  # 原始销量就稳：不调整（调整反而会显得 8 月掉下去）
-    assert b["label"] == "hot" and b["hot"]["adjusted"]
-
-
-def test_seasonal_products_are_listed_whatever_their_section(cfg):
-    """季节性商品清单：所在季节性品类每年 11~12 月高、商品自己近 2 年每年也是 → 标“季节性（连续 2 年 11~12 月旺…）”并列出，
-    不论在哪个板块（淡季里多半只在观察）；离旺季近的排前面、同样近的按旺季日均；评分不达标的照样标、但不列；
-    没有类目历史的子类目里同样形状的商品不判断。"""
-    from radar.report import render
-
-    winter = lambda m: 100 * {11: 2.2, 12: 2.8}.get(m, 1.0)
-    state = _with_history({"asins": {}}, "N1", _category_history(winter))
-    shape = lambda base: _yearly(lambda d: 3 * base if d.month in (11, 12) else base)
-    trend = lambda base: _trend(lambda y, m: 3 * base if m in (11, 12) else base)  # 商品自己往年的月销量（sales_trend.py）
-    state["asins"] = {"SMALL": {**_rec(shape(10), 4.5), "node": "N1", "sales_trend": trend(10)},
-                      "BIG": {**_rec(shape(40), 4.5), "node": "N1", "sales_trend": trend(40)},
-                      "LOW": {**_rec(shape(20), 3.5), "node": "N1", "sales_trend": trend(20)},
-                      "NOHIST": {**_rec(shape(20), 4.5), "node": "N2", "sales_trend": trend(20)},
-                      "FLAT": {**_rec([20] * 420, 4.5), "node": "N1", "sales_trend": _trend(lambda y, m: 20)},
-                      "NOTREND": {**_rec(shape(20), 4.5), "node": "N1"}}
-    result = analyze.analyze(state, None, list(state["asins"]), cfg, END)
-    assert result["profiles"]["N1"]["seasonal"] and result["profiles"]["N1"]["peak_months"] == [11, 12]
-    by = {i["asin"]: i for i in result["items"]}
-    sec = analyze.sections(result["items"], 0)
-    assert [i["asin"] for i in sec["seasonal"]] == ["BIG", "SMALL"] and sec["counts"]["seasonal"] == 2
-    assert by["BIG"]["label"] == "watch" and by["LOW"]["label"] == "low"
-    ratio = by["SMALL"]["item_season"]["ratio"]
-    assert f"季节性（连续 2 年 11~12 月旺，每年旺季日均都至少是前后淡季的 {ratio:.1f} 倍）" in by["SMALL"]["tags"]
-    assert any(t.startswith("季节性（") for t in by["LOW"]["tags"])
-    assert by["NOHIST"]["item_season"] is None and not by["FLAT"]["item_season"]["seasonal"]
-    assert by["NOTREND"]["item_season"] is None  # 日数据里这一年也是旺季高，但没查到往年月销量：不判断
-    assert render.season_text(by["SMALL"]) == f"连续 2 年 11~12 月旺，每年旺季日均都至少是前后淡季的 {ratio:.1f} 倍，离旺季还有 1 个月"
+    wavy = {**_rec([60] * 120, 4.5), "node": "N1", "months": wavy_months}
+    assert analyze.evaluate("A", flat, None, stats, cfg, END, data_date=END)["label"] == "hot"
+    assert analyze.evaluate("B", wavy, None, stats, cfg, END, data_date=END)["label"] != "hot"
 
 
 def test_old_listing_starting_from_zero_is_not_called_new(cfg):
@@ -782,7 +702,7 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
                          for a in ("M1", "M2", "M3", "M4", "M5", "M6", "T1")}}
     disc["products"]["T1"]["parent"] = "P1"  # 追踪着的商品，和 M5 同一父体
     stats = {"N": {"threshold": 900, "median_rate": 1.0}}
-    items, judged, status = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09")
+    items, judged, status = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}])
     assert [i["asin"] for i in items] == ["M1"] and set(judged) == {"M1", "M4", "M6"}
     m1 = items[0]
     assert m1["label"] == "hot" and not m1["daily"] and m1["as_of"] is None and m1["spark"] == []
@@ -790,18 +710,18 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
     assert m1["recent_avg28"] == round(1210 / 30, 2) and m1["hot"]["months_hit"] == 4
     assert status == {"months": 6, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1, "deal": 1.0}
     # 近 30 天名单含大促日：按大促系数扣掉（追踪商品比较时都去掉了大促日）
-    deal_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09",
+    deal_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}],
                                            {"*": 1.05, "N": 1.10})[0]
     assert deal_items[0]["recent_avg28"] == round(1210 / 30 / 1.10, 2)
     # 近 30 天名单里最后几天的数也还会被改：校正后不达标的写明，不排除
-    rev_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09", None,
+    rev_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None,
                                           {"window": 30, "median": 0.5, "items": 100})[0]
     assert rev_items[0]["label"] == "hot" and rev_items[0]["revision_lost"] == ["持续热销"]
     sec = analyze.sections([{"label": "watch", "asin": "T1"}, *items], 0)
     assert sec["counts"]["total"] == 1 and sec["counts"]["hot"] == sec["counts"]["hot_monthly"] == 1
     # 往月名单还没补齐时不补判
     del state["monthly_lists"]["months"]["2026-04"]
-    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], {}, "2026-09")[0] == []
+    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}])[0] == []
 
 
 def test_monthly_heads_seen_for_the_first_time_are_not_new_entries():
@@ -838,7 +758,6 @@ def test_judgments_resting_on_recent_days_are_noted(cfg):
     for weak in ({**rev, "items": 10}, {**rev, "median": 0.99}, None):
         item = analyze.analyze(state, None, ["THIN"], cfg, END, revision=weak)["items"][0]
         assert not any(t.startswith("最近 9 天的数还会被改") for t in item["tags"])
-
 
 
 def test_falling_is_compared_by_the_rule_not_the_tag(cfg):

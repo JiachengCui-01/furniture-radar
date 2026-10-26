@@ -1,7 +1,5 @@
 """端到端：用模拟世界连续跑两期，检查报告、加密、对比、预算、日志脱敏和钉钉推送。"""
-import itertools
 import json
-import statistics
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -58,7 +56,6 @@ def test_two_runs_classify_each_archetype(world_run, master_key):
 def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
     """每个上榜商品都必须符合报告里写的定义，概念之间不能互相矛盾。"""
     from radar import analyze, clock, tracking
-    from radar.detect import seasonality
     from radar.detect.rules import low_rating, momentum
     from radar.series import Daily, closed_months
 
@@ -108,43 +105,17 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
             h = item["hot"]
             assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]
             months = state["asins"][item["asin"]].get("months") or []
-            if not h["adjusted"]:  # 达标的月份：≥ 子类目第 20 名，且量够（≥150 件或 ≥2 万美元）
-                look = closed_months(months, full.as_of())[-th["hot"]["lookback_months"]:]
-                money = {m[0]: m[2] for m in months}
-                hits = sum(1 for k, u in look if u >= h["threshold"] - 0.05
-                           and (u >= th["hot"]["min_units"] or (money.get(k) or 0) >= th["hot"]["min_revenue"]))
-                assert hits == h["months_hit"], item["asin"]
+            # 达标的月份：≥ 子类目第 20 名，且量够（≥150 件或 ≥2 万美元）
+            look = closed_months(months, full.as_of())[-th["hot"]["lookback_months"]:]
+            money = {m[0]: m[2] for m in months}
+            hits = sum(1 for k, u in look if u >= h["threshold"] - 0.05
+                       and (u >= th["hot"]["min_units"] or (money.get(k) or 0) >= th["hot"]["min_revenue"]))
+            assert hits == h["months_hit"], item["asin"]
             # 持续热销正在回落的标“最近回落”（不影响上榜）
             assert mom["fading"] == any(t.startswith("最近回落") for t in item["tags"]), item["asin"]
     assert checked == {"surge", "potential", "hot"}
-    # 季节性商品：小窗里写的四条，从每个商品的每月日均重新核对；符合的（异常信号、评分不达标除外）都列出来
-    sc = th["seasonality"]
-    listed = {i["asin"] for i in analyze.sections(items, 0)["seasonal"]}
-    for item in items:
-        s_ = item["item_season"]
-        tagged = any(t.startswith("季节性（") for t in item["tags"])
-        assert tagged == bool(s_ and s_["seasonal"])
-        assert (item["asin"] in listed) == (tagged and item["label"] not in ("fake", "low"))
-        if not tagged:
-            continue
-        prof = result["profiles"][item["node"]]
-        assert prof["seasonal"] and s_["peak_months"] == prof["peak_months"]  # ① 品类每年同样的月份高
-        keys = [k for k, _, _ in s_["months"]]
-        assert all(seasonality._add_months(a, 1) == b for a, b in zip(keys, keys[1:]))  # ② 连续每月都有销量
-        runs = [(peak, [v for _, v, _ in grp]) for peak, grp in itertools.groupby(s_["months"], key=lambda m: m[2])]
-        assert sum(1 for j, (peak, _) in enumerate(runs) if peak and len(runs) > 1) >= sc["item_min_cycles"]  # 至少 2 年的旺季
-        assert state["asins"][item["asin"]]["sales_trend"]["points"]  # 用的是商品自己往年的月销量
-        peak_levels = [statistics.mean(v) for peak, v in runs if peak]
-        sides = set()
-        for j, (peak, values) in enumerate(runs):  # ③ 每段旺季 ≥ 前后淡季的 2 倍，涨上去、掉下来都看得到
-            for nb in (j - 1, j + 1):
-                if peak and 0 <= nb < len(runs):
-                    assert statistics.mean(values) >= sc["item_ratio"] * statistics.mean(runs[nb][1]) - 1e-6
-                    sides.add(nb > j)
-        assert sides == {True, False}
-        assert all(v <= sc["item_off_max"] * min(peak_levels) + 1e-6 for _, v, peak in s_["months"] if not peak)  # ④
-    seasonal_demo = {p.asin for p in _world.products if p.kind == "seasonal"}
-    assert seasonal_demo and seasonal_demo <= listed  # 演示数据：餐边柜有一个每年 11~12 月卖得特别好的商品
+    # 季节判断已经去掉：任何商品都没有季节标签
+    assert not any(t.startswith(("季节性", "品类季节性")) for item in items for t in item["tags"])
     max_vars = th["fake"]["max_variations_for_ratio"]
     for item in items:  # 变体多的不算留评率；老品换链接不算新品评论/销量比
         codes = {sig["code"] for sig in item["fake"]["signals"]}
@@ -156,7 +127,7 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
 
 def test_directions_match_their_definition(world_run, master_key, cfg):
     """开发方向：按增量销售额排序；“比头部多”“基本款”都符合报告里写的门槛，头部占比可以从头部商品的标题重算；
-    包装是增长商品包装数据的中位数；季节判断来自老链接（模拟世界里餐边柜 12 月是旺季）。"""
+    包装是增长商品包装数据的中位数。"""
     import statistics
 
     from radar import analyze, clock, materials, shipping, tracking
@@ -171,7 +142,7 @@ def test_directions_match_their_definition(world_run, master_key, cfg):
     for item in items:
         item["material"], _ = materials.best(state["asins"].get(item["asin"]), item["title"])
     growth = analyze.focus_items(items)
-    out = directions.compute(growth, state, {}, cfg, disc=disc, seasons=result["seasons"])
+    out = directions.compute(growth, state, {}, cfg, disc=disc)
     c = cfg["thresholds"]["directions"]
     assert out and len(out) <= c["max"]
     incs = [d["sales"]["increment"] for d in out]
@@ -196,15 +167,10 @@ def test_directions_match_their_definition(world_run, master_key, cfg):
                 assert not more, (d["node"], f)
         volumes = [shipping.cubic_feet(i["pkg"]["dims"]) for i in rows if i.get("pkg")]
         assert d["pkg"]["n"] == len(rows) and d["pkg"]["ft3"] == round(statistics.median(volumes), 1)
-    sideboard = next(d for d in out if d["node"] == "餐边柜")
-    s = sideboard["season"]  # 演示数据：餐边柜的类目销量每年 11~12 月是旺季
-    assert s["seasonal"] and s["peak_before"] and s["peak"]["month"].endswith("-12") and s["peak_months"] == [11, 12]
-    shelf = result["seasons"][next(n["path"] for n in disc["nodes"] if n["name_cn"] == "书架")]
-    assert shelf["ready"] and not shelf["seasonal"]  # 书架的小高峰每年在不同月份：不算季节性品类
+    assert not any("season" in d for d in out)
     plain = _decrypt_page((site / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8"),
                           crypto.parse_master_key(master_key))
-    assert "比之前 28 天多约" in plain and "到货前品类会先冲高" in plain and "立方英尺" in plain
-    assert 'id="pop-season"' in plain and "季节性品类：旺季 11~12 月" in plain
+    assert "比之前 28 天多约" in plain and "立方英尺" in plain and "季节" not in plain
     assert "（月增量约 $" in plain  # 本期要点（模板）里的开发方向
 
 
@@ -584,7 +550,7 @@ def test_previous_run_is_replayed_for_items_not_tracked_last_time(world_run, mas
     result = analyze.analyze(state, state["discovery"], pool, cfg, today, tracking.fresh_rows(state))
     items = [i for i in result["items"] if i.get("daily", True)]
     same = analyze.retro_labels(state, state["discovery"], [i["asin"] for i in items], cfg, today, result["data_date"],
-                                tracking.fresh_rows(state), result["events"]["days"], result["profiles"])
+                                tracking.fresh_rows(state), result["events"]["days"])
     assert same == {i["asin"]: i["label"] for i in items}
     rec = state["asins"][items[0]["asin"]]
     day = result["data_date"] - timedelta(days=5)

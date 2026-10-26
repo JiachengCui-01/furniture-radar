@@ -72,12 +72,20 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
         as_of = clock.parse_day(item.get("as_of"))
         jump = ratings_jump(rec, as_of) if as_of else None
         if jump is not None and jump >= fcfg["merge_jump"] and not _fresh(checks.get("detail"), today):
-            jobs.append((100 + jump, item["asin"], "detail"))
+            jobs.append((1000 + jump, item["asin"], "detail"))
+        if _fresh(checks.get("review"), today):
+            continue
+        # 评论核查的先后（名额不够时先查前面的）：① 可疑的（异常分 ≥ 疑似线 − 1，且是爆火 / 潜力 / 异常 / 持续热销）；
+        # ② 报告推荐的爆火、潜力（以前只查异常分 ≥2 的，10-23 那期 31 个爆火 / 潜力一个都没查过评论）；
+        # ③ 按“可能是 Vine”扣过才不够评论信号的新品（fakehot 的 check_reviews：查了按抽到的 Vine 比例重算）
         interesting = item["label"] in ("surge", "potential", "fake") or item.get("hot")
-        if item["fake"]["score"] >= fcfg["suspect_score"] - 1 and interesting \
-                and not _fresh(checks.get("review"), today):
-            jobs.append((item["fake"]["score"] + (item.get("surge") or {}).get("strength", 0) / 100,
-                         item["asin"], "review"))
+        strength = (item.get("surge") or {}).get("strength", 0) / 100
+        if item["fake"]["score"] >= fcfg["suspect_score"] - 1 and interesting:
+            jobs.append((300 + item["fake"]["score"] + strength, item["asin"], "review"))
+        elif item["label"] in ("surge", "potential"):
+            jobs.append((200 + item["fake"]["score"] + strength, item["asin"], "review"))
+        elif item["fake"].get("check_reviews"):
+            jobs.append((100 + item["fake"]["score"], item["asin"], "review"))
     jobs.sort(key=lambda j: -j[0])
     return [(asin, kind) for _, asin, kind in jobs[:limit]]
 

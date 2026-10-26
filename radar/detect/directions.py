@@ -1,17 +1,15 @@
 """开发方向：增长商品带来的销售额增量最大的几个子类目，各写一个产品画像——做什么品类、
 哪些外观 / 功能是增长商品比同子类目头部商品多的、哪些是这个品类本来就都有的、卖什么价、
-包装多大、FBA 配送费多少、季节上赶不赶得上。每一项都只来自该子类目，可以逐个核对。
+包装多大、FBA 配送费多少。每一项都只来自该子类目，可以逐个核对。
 
   入选：增长商品 ≥ min_items 个、来自 ≥ min_brands 个品牌的子类目，按增量销售额从大到小
         （同额时看品牌数、增长商品个数、突然爆火个数、势头最强的那个排在多前）取前 max 个；
         没有任何特征也没有明确主材质（画不出画像）的跳过，由下一个补上；
   月销售额 = 该子类目每个增长商品的 近 28 天日均 × 当前售价 × 30，加起来；
-  增量销售额 = 每个增长商品的（近 28 天日均 − 之前 28 天在卖日子的日均 × 季节倍数）× 当前售价 × 30，加起来，
+  增量销售额 = 每个增长商品的（近 28 天日均 − 之前 28 天在卖日子的日均）× 当前售价 × 30，加起来，
         之前 28 天没在卖的按 0 算（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
         近 28 天日均：卖家精灵会回头改最近几天的日销量，本期测到了修订幅度时用最近几天按它校正后的（recent_daily；
         2026-10-20 的数据按 ×0.85 校正后，前 5 个方向顺序不变、每个方向的增量少 7~16%）；
-        季节倍数 = 季节性品类里按往年规律近 28 天品类本来就是之前 28 天的几倍（analyze 的 item["season28"]），
-        其余子类目为 1——旺季里整个品类一起涨的那部分不算增量（否则 11 月的梳妆台、衣帽架会因为季节排到最前）；
         老品换链接（rules.relisted）之前 28 天没在卖时增量按 0：它的销量是从老链接转过来的，不是新增的需求；
         老链接重新起量（上架超过 180 天、停了很久又开始卖）增量也按 0：多是断货很久后恢复、或销量从别的链接转过来，
         不是新增的需求（回放：有它的 7 个日期里 5 次改变了前 5 个方向，3 次靠它一个商品排到第一，占该子类目增量的 83~99%）；
@@ -28,7 +26,6 @@
   主材质：同“外观与工艺依据”的口径，每个商品一类，至少 feature_min_share（且 ≥2 个）品牌是这一类才列，不和头部比；
   价格：该子类目增长商品的最低价 ~ 最高价，3 个以上再给中位数；
   包装：该子类目增长商品的包装体积、包装重量、FBA 配送费的中位数（shipping.py，只算有数据的）；
-  季节：detect/seasonality.py；
   参考：该子类目势头最强、没有任何异常信号（异常分 0）的两个增长商品，两个不同品牌。
 特征同时在全部增长商品里“比对照组更多”的，标 trend（报告里显示 ↑）。
 """
@@ -65,8 +62,7 @@ def increment(item: dict) -> float:
         return 0.0  # 老品换链接：之前没在卖，现在的销量是从老链接转过来的
     if (item.get("surge") or {}).get("kind") == "老链接重新起量":
         return 0.0  # 停了很久又开始卖：不是新增的需求
-    season = item.get("season28") or 1.0
-    return (recent_daily(item) - (item.get("prev_avg28") or 0) * season) * (item.get("price") or 0) * MONTH_DAYS
+    return (recent_daily(item) - (item.get("prev_avg28") or 0)) * (item.get("price") or 0) * MONTH_DAYS
 
 
 def _features(item: dict, state: dict, use_vision: bool = True) -> dict[str, set[str]]:
@@ -125,11 +121,10 @@ def vision_targets(focus: list[dict], disc: dict | None, cfg: dict, spare: int =
     return out
 
 
-def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, *, disc: dict | None = None,
-            seasons: dict | None = None) -> list[dict]:
+def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, *,
+            disc: dict | None = None) -> list[dict]:
     """focus：增长商品（analyze.focus_items 的顺序 = 势头），每个商品要已带 item["material"]。
-    disc：月度名单（同子类目头部商品从这里取）；seasons：各子类目（按 nodeIdPath）的季节展望（analyze.analyze 的结果，
-    seasonality.outlook）。"""
+    disc：月度名单（同子类目头部商品从这里取）。"""
     c = cfg["thresholds"]["directions"]
     need_share, per_dim = float(c["feature_min_share"]), int(c["per_dim"])
     head_min, gap, lift = int(c.get("head_min", 10)), float(c.get("head_min_gap", 0.2)), float(c.get("head_min_lift", 1.5))
@@ -205,7 +200,6 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
             "price": {"min": min(prices), "max": max(prices),
                       "median": _median(prices) if len(prices) >= 3 else None} if prices else None,
             "pkg": shipping.summarize(rows),
-            "season": (seasons or {}).get(rows[0].get("node")),
             "refs": [{"asin": i["asin"], "brand": i.get("brand") or "", "name": display_name(i.get("brand"), i["title"]),
                       "price": i.get("price"), "look": i.get("look") or "", "pkg": i.get("pkg")} for i in refs],
         })
