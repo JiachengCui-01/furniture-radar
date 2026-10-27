@@ -52,6 +52,25 @@ def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     assert picked == {"C"}  # A 只 +10%（基准 31 天前要 15%）；B 跌了；C 近 7 天排名改善 25%
 
 
+def test_snapshots_match_by_parent_when_the_representative_child_changes(cfg):
+    """名单按父体一行，但代表子体常常换（实测相邻两个月 29%~39%）：快照和基准按父体记、按父体对，
+    换了代表子体的照样有基准，不会被当成“新进名单”抢先拉日数据；没有父体的单品按 ASIN 对。"""
+    state = {"universe": {"snaps": []}}
+    old = {"A1": {"parent": "P", "units": 1000, "variations": 4}, "S": {"units": 500}}
+    universe.record(state, old, TODAY - timedelta(days=28), pages=1)
+    assert state["universe"]["snaps"][0]["units"] == {"P": 1000, "S": 500}
+    rows = {"A2": {**_row(1050), "parent": "P", "variations": 6}, "S": _row(800)}
+    f = universe.features(state, "A2", rows["A2"], TODAY)
+    assert f["base"] == "own" and f["age"] == 28 and round(f["g"], 2) == 0.05
+    picked = {a: why for a, _s, why in universe.screen(state, rows, TODAY, cfg)}
+    assert set(picked) == {"S"} and not picked["S"].startswith("新进名单")  # A2 只 +5%，不拉
+    assert universe.variations_then(state, "A2", TODAY, row=rows["A2"]) == (28, 4.0)
+    base_state = {"universe": {"snaps": []}}
+    universe.record_baseline(base_state, "202610", {"A1": {"parent": "P", "units": 930}})
+    f = universe.features(base_state, "A2", rows["A2"], date(2026, 11, 30))
+    assert f["base"] == "month" and round(f["g"], 2) == round(1050 / (930 / 31 * 30) - 1, 2)
+
+
 def test_node_tide_is_the_median_change_of_the_node(cfg):
     """品类大盘：子类目里量够的商品近 30 天比约 30 天前的中位数；扣大促系数；基准是上个月的月度名单（已修订完）时，
     近 30 天里最后几天还会被下调，按修订幅度扣；商品太少的子类目不算；本期没翻名单时不算。"""

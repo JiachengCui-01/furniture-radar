@@ -4,6 +4,7 @@ from __future__ import annotations
 import itertools
 import os
 import re
+import traceback
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -29,8 +30,10 @@ REMIND_DAYS = 7  # 一直被同一个原因挡住时，隔这么多天再提醒�
 
 
 class RunAborted(RuntimeError):
-    """核心数据没拉完就中止（账户额度用完 / 卖家精灵一直连不上 / 拉到的日数据太少）：不出报告，但已拉到的数据和调用次数已经存进 site。
-    kind：quota / outage / thin；repeat：同一个原因上次已经提醒过、还不到 REMIND_DAYS 天（这次不必再发钉钉告警）。"""
+    """核心数据没拉完就中止（账户额度用完 / 卖家精灵一直连不上 / 拉到的日数据太少），或拉完以后程序出错：不出报告，
+    但已拉到的数据和调用次数已经存进 site。
+    kind：quota / outage / thin / crash；repeat：同一个原因上次已经提醒过、还不到 REMIND_DAYS 天（这次不必再发钉钉告警；
+    程序出错每次都提醒，每次重跑都要花调用）。"""
 
     def __init__(self, reason: str, calls: int, kind: str = "outage", repeat: bool = False):
         super().__init__(reason)
@@ -44,11 +47,31 @@ def _abort(site: Path, master: bytes, state: dict, month: str, calls_before: int
     state["calls"][month] = calls_before + calls
     prev = state.get("blocked") or {}
     last = clock.parse_day(prev.get("alerted_on"))
-    repeat = bool(prev.get("kind") == kind and last and (today - last).days < REMIND_DAYS)
+    repeat = bool(kind != "crash" and prev.get("kind") == kind and last and (today - last).days < REMIND_DAYS)
     state["blocked"] = {"kind": kind, "since": prev.get("since") if prev.get("kind") == kind else today.isoformat(),
                         "alerted_on": prev.get("alerted_on") if repeat else today.isoformat(), "reason": reason[:300]}
     store.save(site, master, state)
     return RunAborted(reason, calls, kind, repeat)
+
+
+def crash_reason(exc: BaseException) -> str:
+    """程序出错的原因：异常类型 + 出错的位置（最里面 3 层的 文件:行 函数）。不带异常信息：可能含 ASIN、标题，
+    公开仓库的 Actions 日志谁都能看（完整的报错只在本地打印）。"""
+    frames = traceback.extract_tb(exc.__traceback__)[-3:]
+    where = " ← ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames))
+    return f"程序出错 {type(exc).__name__}（{where}）"
+
+
+def _discard_unpublished(cfg: dict, site: Path, report_id: str | None, report_ids: list[str]) -> None:
+    """出错中止时：这期已经写出的报告删掉，往期报告的“回到最新报告”和目录页改回原来的最新一期。"""
+    if not report_id or report_id in report_ids:
+        return
+    path = site / "reports" / f"{report_id}.html"
+    if path.exists():
+        path.unlink()
+    if report_ids:
+        point_to_latest(cfg, site, report_ids)
+        (site / "index.html").write_text(shell.index_page(cfg["report"]["title"], report_ids), encoding="utf-8")
 
 
 @dataclass
@@ -76,6 +99,14 @@ def is_due(state: dict, cfg: dict, now_utc: datetime) -> tuple[bool, str]:
 def bcfg_tz(cfg: dict) -> str:
     """调用次数按哪个时区的月份记：budget.quota_timezone（卖家精灵套餐按自然月、北京时间），没配时用美国时间。"""
     return cfg["budget"].get("quota_timezone") or cfg["vendor_timezone"]
+
+
+def runs_left(now_utc: datetime, cfg: dict) -> int:
+    """本月（套餐的月份，见 bcfg_tz）还剩几期，含这一期：每 min_days_between_runs 天一期，今天之后还放得下几期。
+    例：每周一期，11-01 → 5 期（1、8、15、22、29 号），11-29 → 1 期。"""
+    day = clock.to_tz(now_utc, bcfg_tz(cfg)).date()
+    step = max(1, int(float(cfg["schedule"]["min_days_between_runs"])))
+    return 1 + (clock.days_in_month(clock.month_key(day)) - day.day) // step
 
 
 def needs_discovery(state: dict, cfg: dict, today) -> bool:
@@ -192,8 +223,14 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     month = clock.month_key(clock.to_tz(now_utc, bcfg_tz(cfg)).date())
     used_this_month = int(state["calls"].get(month, 0))
     bcfg = cfg["budget"]
+    runs = runs_left(now_utc, cfg)
     if budget is not None:
         limit = budget
+    elif bcfg.get("split") == "even":
+        # 本月剩下的额度按本月还剩几期（含这一期）平均分：以前每期固定 1,300 / 1,500，11 月头几期都花满，
+        # 最后一期（11-29，黑五那周）只剩约 1,200 次；12 月只有 4 期、又有 1,800 次用不上
+        left = max(0, int(bcfg["monthly_cap"]) - used_this_month)
+        limit = min(int(bcfg.get("max_per_run") or left), left // runs)
     else:
         # 要重新发现子类目、或者头一个月要拉上个月的全市场月度名单当基准的那一期，给多一点预算
         busy = needs_discovery(state, cfg, today) or universe.baseline_period(state, today) is not None
@@ -209,7 +246,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     vendor = Vendor(transport, Budget(limit), live=live, min_interval=float(bcfg["min_interval_seconds"]) if live else 0,
                     rate_limit_wait=float(bcfg.get("rate_limit_wait_seconds", 60)) if live else 0,
                     schema_loader=schema_loader)
-    log.info(f"本期调用预算 {limit} 次（本月已用 {used_this_month}/{bcfg['monthly_cap']}）")
+    log.info(f"本期调用预算 {limit} 次（本月已用 {used_this_month}/{bcfg['monthly_cap']}，本月还有 {runs} 期）")
 
     # 核心数据（名单、日数据）拉到一半，账户额度用完或卖家精灵一直连不上：不出这一期，但已经拉到的数据和花掉的调用次数照样存下来
     #（工作流照样保存到 site 分支），下次运行接着用，本月调用数也不会少记
@@ -228,6 +265,16 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
             except BudgetExhausted:
                 log.warn("近 30 天榜单：预算不足，跳过")
             refresh_similar(vendor, cfg, state, disc, run_seq)
+            # 持续热销补判要的当期近 30 天销量：全市场名单覆盖不到头部的子类目另查近 30 天名单（全市场名单没翻成时全部查）。
+            # 放在拉日数据之前：以前放在最后用剩下的预算，初筛把预算占满时整期不查，补判用的是好几天前的旧名单
+            months = int(cfg["thresholds"]["hot"].get("list_months", 6))
+            # 按件数的往月名单（便宜、走量的头部判持续热销用）：一次性补约 145 次。也放在拉日数据之前，否则初筛把预算占满时永远补不上
+            if not monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months, "units"):
+                monthly_lists.backfill(vendor, cfg, state, disc, int(bcfg.get("monthly_list_calls", 0)), "units")
+            if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months):
+                calls = monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, len(disc["nodes"]),
+                                                    rolling_nodes(state, disc, cfg, today))
+                log.info(f"持续热销补判：查了 {len(state['monthly_lists']['rolling']['nodes'])} 个子类目的近 30 天名单（{calls} 次调用）")
 
         # 2. 追踪池：大小不超过本期还能刷新的个数（给核查和材质查询留出预算）
         reserve = min(int(bcfg["review_checks"]) + int(bcfg.get("material_lookups", 0)), vendor.budget.remaining // 4)
@@ -245,12 +292,15 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
         # 3. 刷新日数据
         plan = tracking.plan_fetch(pool, state, run_seq, cfg, vendor.budget.remaining - reserve)
+        # 这一期上次中止前已经拉过的（中止后第二天接着跑）：不重拉，也算这一期刷新过的
+        planned = set(plan)
+        already = sum(1 for a in pool if a not in planned and (state["asins"].get(a) or {}).get("fetched_run") == run_seq)
         refreshed = 0
         try:
             refreshed = tracking.refresh(vendor, plan, state, disc, cfg, run_seq)
         except BudgetExhausted:
             log.warn("追踪阶段预算用完")
-        log.info(f"刷新日数据 {refreshed}/{len(plan)} 个")
+        log.info(f"刷新日数据 {refreshed}/{len(plan)} 个" + (f"（另有 {already} 个是这一期中止前已经拉过的）" if already else ""))
         revision = tracking.summarize_revisions(state, run_seq)
         if revision:  # 卖家精灵回头改了多少：每期记下来，看规律稳不稳定（判定还没用它）
             state["revisions"] = ((state.get("revisions") or []) + [{**revision, "date": today.isoformat()}])[-12:]
@@ -258,12 +308,47 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     except (QuotaExhausted, McpUnavailable) as exc:
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
                      f"{type(exc).__name__}: {exc}", "quota" if isinstance(exc, QuotaExhausted) else "outage") from exc
+    except Exception as exc:  # noqa: BLE001 — 程序出错：同样存下已拉到的数据和调用次数（见下面 _publish 那段）
+        log.detail(traceback.format_exc())
+        raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
+                     crash_reason(exc), "crash") from exc
     # 空报告保护：该拉的日数据只拉到很少（一个个都连不上、预算给得太少……）时不出这一期，免得发一份看起来正常、其实是旧数据的报告。
     # 回测：以往 8 期每期都刷新了计划里 ≥98% 的商品
+    # 按这一期一共拉到的算（中止后接着跑时，上次已经拉过的也算），否则接着跑的那次“没有要拉的”会被当成数据太少
     share = float(cfg["report"].get("min_refresh_share", 0.6))
-    if refreshed < max(1, share * len(plan)):
+    refreshed += already
+    if refreshed < max(1, share * (len(plan) + already)):
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
-                     f"日数据只刷新了 {refreshed}/{len(plan)} 个（要 ≥{share:.0%}），数据不够，不出这一期", "thin")
+                     f"日数据只刷新了 {refreshed}/{len(plan) + already} 个（要 ≥{share:.0%}），数据不够，不出这一期", "thin")
+
+    # 拉完数据以后（补充查询、判定、核查、报告、存状态）出错：已拉到的数据和花掉的调用次数照样存下来（工作流照样保存），
+    # 下次运行接着用、不重拉日数据，本月调用数也不少记。以前只有“中止”才保存，别的报错整期白跑：调用次数不记账，
+    # 第二天整期重来、每天重复，几天就能把当月额度烧光
+    keep = {"reports": list(state.get("reports") or []), "runs": list(state.get("runs") or []),
+            "run_seq": state.get("run_seq"), "last_success": state.get("last_success")}
+    progress: dict = {}
+    try:
+        out = _publish(cfg, secrets, site, master, state, vendor, progress, disc=disc, pool=pool, today=today,
+                       reserve=reserve, revision=revision, run_seq=run_seq, now_utc=now_utc, limit=limit,
+                       refreshed=refreshed, mix=mix, n_cands=n_cands, screened=screened, uni=uni, month=month,
+                       used_this_month=used_this_month)
+    except Exception as exc:  # noqa: BLE001
+        state.update(keep)
+        _discard_unpublished(cfg, site, progress.get("report_id"), keep["reports"])
+        log.detail(traceback.format_exc())
+        raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
+                     crash_reason(exc), "crash") from exc
+    if notify:
+        out.notified = send_last(cfg, secrets, site)
+    return out
+
+
+def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict, vendor: Vendor, progress: dict, *,
+             disc, pool, today, reserve, revision, run_seq, now_utc, limit, refreshed, mix, n_cands, screened, uni,
+             month, used_this_month) -> RunResult:
+    """核心数据拉完以后：补充查询 → 判定 → 核查 → 材质 → 报告 → 存状态。出错由 run 接住（存下数据和调用次数）。
+    progress["report_id"]：已经写出的这一期报告（出错时删掉）。"""
+    bcfg = cfg["budget"]
 
     # 核心刷新做完后剩下的预算：补充数据（backfill_extras）。账户额度用完时跳过，照常出报告
     if disc and disc.get("nodes"):
@@ -311,14 +396,14 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
     # 5. 报告
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
-    report_id = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
+    report_id = progress["report_id"] = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
     coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"] + mix["screen"], "revision": revision,
                 "young": [len(uni.get("young") or {}), mix["young"]] if screened is not None and uni.get("young") else None,
                 "universe": len(uni.get("rows") or {}) if screened is not None else None,
                 "universe_pages": uni.get("pages") if screened is not None else None,
                 "universe_failed": len(uni.get("failed") or []) if screened is not None else None,
-                "tides": result.get("tides") or {}}
+                "tides": result.get("tides") or {}, "revision_check": result.get("revision_check")}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
@@ -366,8 +451,6 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     log.detail(f"报告链接：{url}")
     out = RunResult(published=True, report_id=report_id, url=url, calls=vendor.billable_calls,
                     counts=sec["counts"])
-    if notify:
-        out.notified = send_last(cfg, secrets, site)
     return out
 
 
@@ -379,9 +462,8 @@ def drop_seasonal(state: dict) -> None:
 
 
 def backfill_extras(vendor: Vendor, cfg: dict, state: dict, disc: dict, pool: list[str], today, reserve: int) -> None:
-    """核心刷新做完后剩下的预算（给核查和材质查询留出 reserve），依次给：
-    持续热销补判的近 30 天名单（往月名单补齐后每期都查，每个子类目 1 次）→ 往月名单（一次性补）
-    → 往月名单在这一期刚补齐的，接着查近 30 天名单，这一期就能补判。
+    """核心刷新做完后剩下的预算（给核查和材质查询留出 reserve）：往月名单还没补齐时一次性补，
+    这一期刚补齐的，接着查近 30 天名单（rolling_nodes），这一期就能补判。往月名单已经齐了的，近 30 天名单在 run 的核心阶段查过。
     账户额度用完（QuotaExhausted）由调用方接住：这些都是补充数据，跳过照常出报告。"""
     bcfg = cfg["budget"]
 
@@ -389,13 +471,21 @@ def backfill_extras(vendor: Vendor, cfg: dict, state: dict, disc: dict, pool: li
         return min(cap, max(0, vendor.budget.remaining - reserve))
 
     months = int(cfg["thresholds"]["hot"].get("list_months", 6))
-    lists_ready = monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months)
-    if lists_ready and spare(len(disc["nodes"])):
-        monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
-    if not lists_ready and spare(int(bcfg.get("monthly_list_calls", 0))):
+    if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months):
+        return
+    if spare(int(bcfg.get("monthly_list_calls", 0))):
         monthly_lists.backfill(vendor, cfg, state, disc, spare(int(bcfg.get("monthly_list_calls", 0))))
         if monthly_lists.complete(state, disc["nodes"], str(disc["period"]), months) and spare(len(disc["nodes"])):
-            monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])))
+            monthly_lists.fetch_rolling(vendor, cfg, state, disc, today, spare(len(disc["nodes"])),
+                                        rolling_nodes(state, disc, cfg, today))
+
+
+def rolling_nodes(state: dict, disc: dict, cfg: dict, today) -> set[str] | None:
+    """要查近 30 天名单的子类目：这期翻了全市场名单的，只查它覆盖不到头部的（monthly_lists.thin_nodes）；没翻成的全部查（None）。"""
+    uni = state.get("universe") or {}
+    if uni.get("date") != today.isoformat() or not uni.get("rows"):
+        return None
+    return monthly_lists.thin_nodes(disc, cfg, uni.get("failed"))
 
 
 def remember_monthly(state: dict, items: list[dict], disc: dict | None, run_seq: int) -> None:
@@ -634,7 +724,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
         same_month = [r for r in state["runs"] if (r.get("date") or "")[:7] == month]
         coverage = {"refreshed": sum(1 for r in state["asins"].values() if r.get("fetched_run") == last["seq"]),
                     "calls": state["calls"].get(month) if len(same_month) == 1 else None, "budget": None}
-    coverage = {**coverage, "tides": result.get("tides") or {}}
+    coverage = {**coverage, "tides": result.get("tides") or {}, "revision_check": result.get("revision_check")}
     prev_run = state["runs"][-2] if len(state["runs"]) >= 2 else None
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=last["id"], run_seq=last["seq"],
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),

@@ -241,6 +241,8 @@ def plan_fetch(pool: list[str], state: dict, run_seq: int, cfg: dict, limit: int
     for asin in pool:
         rec = state["asins"].get(asin)
         label = (last_labels.get(asin) or [None])[0]
+        if rec and rec.get("series") and int(rec.get("fetched_run", -10_000)) == run_seq:
+            continue  # 这一期上次中止前已经拉过（中止后接着跑）：不重拉
         if rec and rec.get("series") and label in FLAG_LABELS:
             flagged.append(asin)
         elif not rec or not rec.get("series"):

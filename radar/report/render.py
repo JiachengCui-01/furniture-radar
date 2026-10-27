@@ -627,29 +627,49 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
              f"分数最高的 {pool.get('opportunity_every_run', 0)} 个每期都看、其余轮流查，不是全部量够的商品都看了。")
     windows = " 或 ".join(map(str, s["windows"]))
     tide = "（所在子类目整体在涨时，先除以品类大盘倍数，见“判定方法”）" if (th.get("tide") or {}).get("enabled", True) else ""
+    tide_surge = ("（所在子类目整体在涨时先除以品类大盘倍数，见“判定方法”；从零起量的没有倍数，不扣）"
+                  if (th.get("tide") or {}).get("enabled", True) else "")
+    corrected = ("最近几天的日销量按本期测到的修订幅度校正后再判（见“判定方法”）。"
+                 if str(th.get("revision_mode") or "correct") == "correct" else "")
     short = (f"对比期在卖不到 {th['short_base_days']} 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。"
              if th.get("short_base_days") else "")
     return {
         "surge": scope + f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
-                 f"日均销量 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
-                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}按爆发强度排序。",
+                 f"日均销量 ≥{s['sales_ratio']:g} 倍{tide_surge}且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
+                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}{corrected}按爆发强度排序。",
         "potential": scope + f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
                      f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
-                     f"没有回落；异常分 <{f['suspect_score']}。{short}按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
+                     f"没有回落；异常分 <{f['suspect_score']}。{short}{corrected}按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平（按月销量排名，同一父体只算一次）、"
                f"且这个月量够（≥{h.get('min_units', 0):g} 件或销售额 ≥${h.get('min_revenue') or 0:,.0f}）；"
                f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
                f"近 28 天日均 ≥ 近 6 个月日均的 {h['min_recent_ratio']:.0%}；异常分 <{f['suspect_score']}。"
-               f"不在追踪池里的头部商品也判（月度名单补判）：近 {h.get('list_months', 6)} 个月每个月都在子类目销售额前 50、"
-               f"近 30 天名单里也有它的，按同样的条件判，近 28 天日均用近 30 天的销量 ÷ 30（名单的销量含大促日，按本期追踪商品算的大促系数扣掉）；"
+               f"不在追踪池里的头部商品也判（月度名单补判）：近 {h.get('list_months', 6)} 个月每个月都在子类目销售额前 50 或月销量前 50"
+               f"（便宜、走量的头部进不了销售额前 50）、"
+               f"本期有它近 30 天销量的（全市场名单；小子类目的头部量不够全市场门槛，另查它的近 30 天名单），按同样的条件判，"
+               f"近 28 天日均用近 30 天的销量 ÷ 30（名单的销量含大促日，按本期追踪商品算的大促系数扣掉；最近几天的数按修订幅度校正）；"
                f"没有日数据，卡片上标“只有月度数据”：没有走势图、不判回落，异常信号只看留评率一项（追踪商品还看评论增速、评分跳升、短时脉冲等）。正在回落的（规则见“判定方法”）标“最近回落”，不影响上榜。按近 6 个月月均销量排序。",
         "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
                 f"仅为数据异常提示，需人工核实。按异常分排序。",
         "growth": scope + f"增长商品 = 突然爆火 + 潜力 + 上升中。上升中 = 不在前两个板块、近 28 天日均 ≥ 之前 28 天的 {r['min_ratio']} 倍{tide}"
-                  f"且 ≥{r['min_daily_sales']} 件、没有回落。{short}“外观与工艺依据”就是从这些商品统计的。按势头排序。",
+                  f"且 ≥{r['min_daily_sales']} 件、没有回落。{short}{corrected}“外观与工艺依据”就是从这些商品统计的。按势头排序。",
         "all": "本期追踪（拉了日数据）的全部商品。“板块”是本期归入的板块（观察 = 不属于任何板块），“来源”是它被选进追踪的原因。"
                "月度名单补判出的持续热销不在这里（只在持续热销小窗里）。",
     }
+
+
+def _revision_method(th: dict) -> str:
+    """“判定方法”里修订怎么用（thresholds.revision_mode）。"""
+    if str(th.get("revision_mode") or "correct") == "correct":
+        return ("测到了修订、而且这期拉到的数最近这几天也确实偏高（全部追踪商品“最近几天 ÷ 之前 18 天”的中位数，比两周前那个截面高出测到幅度的一半以上；"
+                "实测修订前那次 ×1.17、修订后那次 ×0.93）时，"
+                "判定前把最近这几天按测到的幅度校正（卡片上的数、走势图、开发方向的增量和月销售额都是校正后的；持续热销补判的近 30 天销量也一样），"
+                "按当期拉到的数才成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销不上榜，卡片上写明“按当期拉到的数算 X，…校正后不算”。"
+                "回测（2025-11~2026-09 每两周回放，按实测的每个商品的修订幅度还原当期看到的数，和修订完的数比）：准确率 突然爆火 70%→86%、"
+                "潜力 69%→85%、上升中 57%→82%，召回少 7~11 个百分点。")
+    return ("判定用当期拉到的数，再把最近这几天按测到的幅度校正后重判一次，原来成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销 / "
+            "最近回落（比回落规则本身），卡片上标“最近 N 天的数还会被改：…校正后不算 X”，钉钉消息里那一行也提醒，不排除。"
+            "开发方向的增量和月销售额用校正后的近 28 天日均。")
 
 
 def _method(cfg: dict) -> str:
@@ -659,7 +679,7 @@ def _method(cfg: dict) -> str:
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
 <li><b>数据</b>：卖家精灵的月度头部名单（product_research，已结束月份；月份结束后不到 {cfg['discovery'].get('settle_days', 20)} 天拉的过了这么多天重拉一次，
 卖家精灵月初还没更新完；持续热销补判还用近 {th['hot'].get('list_months', 6)} 个月每个月的名单）、
-近 30 天榜单（不传月份，截至当天；持续热销补判还查每个子类目的近 30 天名单）、
+近 30 天名单（不传月份，截至当天：全市场名单；持续热销补判还查全市场名单覆盖不到头部的小子类目的近 30 天名单）、
 每个追踪商品约 400 天的日销量 / BSR / 价格（asin_prediction）。日销量是卖家精灵按 BSR 估算的，所以以 BSR 中位数为主信号。
 所有判定都基于每个商品截至最近一天的日数据；比本期最新的一天晚 {th['stale_days']} 天以上的标“数据陈旧”，不做爆火 / 潜力 / 上升中判断。</li>
 <li><b>大促日</b>：这几天全类目一起冲高（历史上大促当天约六七成商品销量翻倍，第二天就回到原样），
@@ -668,14 +688,14 @@ def _method(cfg: dict) -> str:
 {th['events']['base_days']} 天中位数的 {th['events']['jump']:g} 倍，与它相连、比例 ≥{th['events']['edge_share']:.0%} 的日子也算）
 + config.yaml 登记的大促里、数据也印证（当天 ≥{th['events']['edge_share']:.0%} 的商品冲高）的日子。
 自己在大促日冲高过、算上大促日能达到爆火 / 潜力 / 上升中而去掉后达不到的，标“大促拉动”，不进这几个板块。</li>
-<li><b>最近几天的数还会被改</b>：卖家精灵会回头改最近几天的日销量（实测隔 2 天重拉，最近 9 天里 75% 的商品被改、中位数是原来的 85%）。
-每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）；判定用当期拉到的数，再把最近这几天按测到的幅度校正后重判一次，
-原来成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销 / 最近回落（比回落规则本身），卡片上标“最近 N 天的数还会被改：…校正后不算 X”，
-钉钉消息里那一行也提醒，不排除（验证：标了的 4 个里 3 个修订后真的不成立，没标的 16 个里 2 个变了）。开发方向的增量和月销售额也用校正后的近 28 天日均。测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正、不标。</li>
+<li><b>最近几天的数还会被改</b>：卖家精灵会回头下调最近几天的日销量（2026-10-23 那期测了 386 个商品：最近 9 天 96% 被改、中位数是原来的 82%，更早的不变）。
+每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）。{_revision_method(th)}
+测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正。</li>
 <li><b>品类大盘</b>：每个子类目里量够的商品（全市场名单）近 30 天销量是约 30 天前的几倍，取中位数（扣掉大促日；
-商品不到 {(th.get('tide') or {}).get('min_items', 10)} 个的子类目不算）。潜力、上升中的增长倍数先除以它（大于 1 时）再比门槛——
-整个子类目一起涨时随大流的商品不算，卡片上标“随大盘”。突然爆火不用：它要求 BSR 排名提升一倍，排名本来就是和整个市场比的。
-回测（2025-11~2026-09 每周回放）：去掉的潜力之后 28 天 74% 保持住（其余 86%），上升中 79%（其余 81%）——主要是定义上的要求，不是预测更准。</li>
+商品不到 {(th.get('tide') or {}).get('min_items', 10)} 个的子类目不算）。突然爆火、潜力、上升中的增长倍数先除以它（大于 1 时）再比门槛——
+整个子类目一起涨时随大流的商品不算，卡片上标“随大盘”；从零起量的爆火（新品爆发 / 老链接重新起量）没有倍数，不扣。
+回测（2025-11~2026-09 每周回放）：突然爆火去掉 14%，去掉的之后 28 天 78% 保持住、留下的 88%（12 月 60% / 77%）；
+潜力去掉的 74%（其余 86%），上升中 79%（其余 81%）——潜力、上升中主要是定义上的要求，不是预测更准。</li>
 <li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
 爆火、潜力、上升中都只和真正在卖的日子比{f"；潜力、上升中（和开发方向的增量）的对比期里，连着 ≥{th['out_of_stock_zero_run']} 天销量 0 的日子也算断货（断货头几天 BSR 还没涨上去）" if th.get('out_of_stock_zero_run') else ""}。</li>
 <li><b>追踪名额</b>：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
@@ -770,20 +790,40 @@ def render(ctx: dict) -> str:
         names = {n["path"]: n.get("name_cn") or n.get("name") or n["path"] for n in ctx.get("nodes") or []}
         up = sorted(((t, p) for p, t in tides.items() if t > 1.0), reverse=True)
         facts.append(f"品类大盘（{len(tides)} 个子类目算得出）：" + ("、".join(f"{names.get(p, p)} ×{t:.2f}" for t, p in up[:6])
-                     + ("…" if len(up) > 6 else "") + " 整体在涨，潜力 / 上升中要跑赢它" if up else "没有子类目整体在涨"))
+                     + ("…" if len(up) > 6 else "") + " 整体在涨，突然爆火 / 潜力 / 上升中要跑赢它" if up else "没有子类目整体在涨"))
     rev = cov.get("revision")
     if rev and rev.get("window"):
+        th = ctx["cfg"]["thresholds"]
+        usable = (rev.get("items") or 0) >= int(th.get("revision_min_items", 30))             and abs(float(rev.get("median") or 1) - 1) >= float(th.get("revision_min_change", 0.02))
+        check = cov.get("revision_check") or {}
+        if not usable:
+            how = "测到的商品太少或幅度太小，本期不校正"
+        elif str(th.get("revision_mode") or "correct") == "correct" and not check.get("applied"):
+            seen = f"（×{check['inflation']:.2f}，要 ≥×{check['need']:.2f} 才校正）" if check.get("inflation") else ""
+            how = (f"但这期拉到的数最近 {rev['window']} 天并不比之前偏高{seen}，上期那次下调可能是卖家精灵一次性的重新估算，"
+                   f"本期按拉到的数判、不校正")
+        elif str(th.get("revision_mode") or "correct") == "correct":
+            seen = f"（比之前高 ×{check['inflation']:.2f}，和测到的修订对得上）" if check.get("inflation") else ""
+            how = (f"这期拉到的数最近 {rev['window']} 天也偏高{seen}，本期的判定把这几天按这个幅度校正后再判（卡片上的数和走势图也是校正后的）；"
+                   f"按当期拉到的数才成立的不上榜，卡片上写明“按当期拉到的数算 X”")
+        else:
+            how = (f"本期的判定用的是这期拉到的数；把最近 {rev['window']} 天按这个幅度校正后不成立的判定，"
+                   f"卡片上写明“最近 N 天的数还会被改”")
         facts.append(f"卖家精灵会回头改最近几天的日数据：上期拉到的数据，这期再拉时 {rev['changed']:.0%} 的商品被改过，"
-                     f"上期最后 {rev['window']} 天平均是原来的 {rev['median']:.0%}（{rev['items']} 个商品的中位数）；"
-                     f"本期的判定用的是这期拉到的数；把最近 {rev['window']} 天按这个幅度校正后不成立的判定，卡片上写明“最近 N 天的数还会被改”")
+                     f"上期最后 {rev['window']} 天平均是原来的 {rev['median']:.0%}（{rev['items']} 个商品的中位数）；{how}")
     mon = ctx.get("monthly") or {}
     if mon.get("need"):
         if mon["months"] < mon["need"]:
             facts.append(f"持续热销的月度名单补判：往月名单已齐 {mon['months']}/{mon['need']} 个月，补齐后开始（这期只判追踪的商品）")
+        elif not mon["rolling"]:
+            facts.append("持续热销的月度名单补判：这期没有当期的近 30 天销量（全市场名单没翻成，近 30 天名单也没查成），"
+                         "不拿旧名单判，这期只判追踪的商品")
         else:
-            part = f"（近 30 天名单只查了 {mon['rolling']}/{mon['nodes']} 个子类目）" if mon["rolling"] < mon["nodes"] else ""
+            part = f"（只有 {mon['rolling']}/{mon['nodes']} 个子类目有当期的近 30 天销量）" if mon["rolling"] < mon["nodes"] else ""
             deal = f"，近 30 天名单含大促日，按 ×{mon['deal']:.2f} 扣掉" if (mon.get("deal") or 1) > 1.001 else ""
-            facts.append(f"持续热销里 {counts.get('hot_monthly', 0)} 个来自月度名单补判（不在追踪池的头部商品判了 {mon['judged']} 个{deal}）{part}")
+            units = (f"；按件数的往月名单已齐 {mon['units_months']}/{mon['need']} 个月，齐了以后便宜、走量的头部也补判"
+                     if mon.get("units_months") is not None and mon["units_months"] < mon["need"] else "")
+            facts.append(f"持续热销里 {counts.get('hot_monthly', 0)} 个来自月度名单补判（不在追踪池的头部商品判了 {mon['judged']} 个{deal}）{part}{units}")
     spans = (ctx.get("events") or {}).get("spans") or []
     if spans:
         facts.append("大促日（不参与比较）：" + "、".join(events.span_text(sp) for sp in spans))

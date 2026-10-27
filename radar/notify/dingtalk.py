@@ -170,6 +170,9 @@ def failure_text(title: str, stage: str, run_url: str = "", *, published: bool =
                 "请在卖家精灵后台确认套餐的调用额度和重置时间（和 AI工作台 共用一个 key）")
     elif saved and reason == "outage":
         what = "卖家精灵一直连不上，本期中途中止，没有生成报告；已拉到的数据和调用次数已保存，下一次定时检查会接着运行"
+    elif saved and reason == "crash":
+        what = ("这期拉完数据以后程序出错，没有生成报告；已拉到的数据和调用次数已保存，下一次定时检查接着用已拉到的日数据，"
+                "但同样的错误会每天重复、每次都要花一些调用（重翻全市场名单），请尽快看运行日志里的出错位置")
     elif saved and reason == "thin":
         what = "这期拉到的日数据太少（不到计划的六成），没有生成报告，免得发一份旧数据的报告；已拉到的数据已保存，下一次定时检查会重新运行"
     elif saved:

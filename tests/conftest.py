@@ -34,6 +34,8 @@ def cfg():
     out["deal_windows"] = []
     # 合成世界（radar/demo.py）每期推进 3 天：测试里按每 3 天一期跑（线上是每周一期，见 test_weekly_schedule_counts_calls_in_the_quota_month）
     out["schedule"]["min_days_between_runs"] = 3
+    # 测试里每期的预算按 per_run / bootstrap_run 定（线上按本月剩下几期平均分，见 test_budget_is_split_evenly_over_the_runs_left）
+    out["budget"]["split"] = "fixed"
     return out
 
 

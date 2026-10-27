@@ -417,6 +417,27 @@ def test_rising_must_beat_the_node_tide(cfg):
     assert not item["rising"] and any(tag.startswith("随大盘（所在子类目整体 ×1.40") for tag in item["tags"])
 
 
+def test_surge_must_beat_the_node_tide_but_new_launches_do_not(cfg):
+    """突然爆火也要跑赢大盘：销量 ×2.5、子类目整体 ×1.5 时扣除后 ×1.67，不到 2 倍，不算爆火（够上升中的照样算上升中），
+    标“随大盘”；整体 ×1.2 时扣除后 ×2.08 照常算。从零起量的（之前 28 天几乎没卖）没有倍数，不扣。"""
+    from radar.analyze import _judge_growth
+
+    th = cfg["thresholds"]
+    sales = [10] * 80 + [25] * 14
+    bsr = [20000] * 80 + [8000] * 14
+    d = Daily.from_record({"start": "2026-06-01", "bsr": bsr, "sales": sales, "price": [50] * len(sales)})
+    idx = len(sales) - 1
+    assert _judge_growth(d, idx, d.as_of(), {}, {}, th, False)["surge"]["sales_ratio"] == 2.5
+    assert _judge_growth(d, idx, d.as_of(), {}, {}, th, False, tide=1.2)["surge"]
+    g = _judge_growth(d, idx, d.as_of(), {}, {}, th, False, tide=1.5)
+    assert g["surge"] is None and g["tided"]["lost"][0][0] == "突然爆火"
+    fresh = [0] * 80 + [40] * 14
+    d0 = Daily.from_record({"start": "2026-06-01", "bsr": [None] * 80 + [3000] * 14, "sales": fresh,
+                            "price": [50] * len(fresh)})
+    g0 = _judge_growth(d0, idx, d0.as_of(), {}, {"threshold": 900}, th, False, age=20, tide=2.0)
+    assert g0["surge"] and g0["surge"]["kind"] == "新品爆发"
+
+
 def test_new_listings_first_reviews_may_be_vine(cfg):
     """Vine：没抽查过评论的、上架 ≤90 天的新品，前 30 条评论当作可能是 Vine，不算进新品评论/销量比和留评率
     （10-23 试跑：8 个异常商品里 3 个只有 28~48 条评论）；留评率按“总评论里最多 30 条是 Vine”的比例扣，不全扣。"""
@@ -708,14 +729,36 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
     assert m1["label"] == "hot" and not m1["daily"] and m1["as_of"] is None and m1["spark"] == []
     assert m1["tags"][0] == "只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率）"
     assert m1["recent_avg28"] == round(1210 / 30, 2) and m1["hot"]["months_hit"] == 4
-    assert status == {"months": 6, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1, "deal": 1.0}
+    assert status == {"months": 6, "units_months": 0, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1,
+                      "deal": 1.0, "rolling_date": END.isoformat()}
+    # 便宜、走量的头部：不在销售额前 50、在月销量前 50（来源 "units"），按件数的往月名单 6 个月都在 → 同样判
+    cheap = {"asin": "U1", "node": "N", "sources": ["units"], "units": 1300, "parent": None, "title": "U1 Nightstand",
+             "variations": 1}
+    state_u = {**state, "monthly_lists": {**state["monthly_lists"],
+                                          "units_months": {k: {"N": {"U1": [1300, 39000, 30, None]}}
+                                                           for k in state["monthly_lists"]["months"]},
+                                          "rolling": {**state["monthly_lists"]["rolling"],
+                                                      "rows": {**state["monthly_lists"]["rolling"]["rows"], "U1": row("U1", 1290)}}}}
+    disc_u = {**disc, "products": {**disc["products"], "U1": cheap}}
+    got, judged_u, status_u = analyze.monthly_hot_items(state_u, disc_u, stats, cfg, END, [{"asin": "T1"}])
+    assert [i["asin"] for i in got] == ["M1", "U1"] and "U1" in judged_u and status_u["units_months"] == 6
+    del state_u["monthly_lists"]["units_months"]["2026-06"]  # 有一个月两份名单里都没有：看不到销量，不判
+    assert [i["asin"] for i in analyze.monthly_hot_items(state_u, disc_u, stats, cfg, END, [{"asin": "T1"}])[0]] == ["M1"]
+    # 不是当期的近 30 天名单不用（以前名单被初筛挤掉没查时，用的是好几天前的旧名单）
+    later = END + timedelta(days=9)
+    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], today=later)[0] == []
+    assert [i["asin"] for i in analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], today=END)[0]] == ["M1"]
     # 近 30 天名单含大促日：按大促系数扣掉（追踪商品比较时都去掉了大促日）
     deal_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}],
                                            {"*": 1.05, "N": 1.10})[0]
     assert deal_items[0]["recent_avg28"] == round(1210 / 30 / 1.10, 2)
-    # 近 30 天名单里最后几天的数也还会被改：校正后不达标的写明，不排除
-    rev_items = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None,
-                                          {"window": 30, "median": 0.5, "items": 100})[0]
+    # 近 30 天名单里最后几天的数也还会被下调：默认按校正后的数判（不达标的不列）；tag 模式照样列、写明
+    strong = {"window": 30, "median": 0.5, "items": 100}
+    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, strong)[0] == []
+    light = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, {**strong, "median": 0.9})[0]
+    assert light[0]["recent_avg28"] == round(1210 / 30 * 0.9, 2)
+    tag_cfg = {**cfg, "thresholds": {**cfg["thresholds"], "revision_mode": "tag"}}
+    rev_items = analyze.monthly_hot_items(state, disc, stats, tag_cfg, END, [{"asin": "T1"}], None, strong)[0]
     assert rev_items[0]["label"] == "hot" and rev_items[0]["revision_lost"] == ["持续热销"]
     sec = analyze.sections([{"label": "watch", "asin": "T1"}, *items], 0)
     assert sec["counts"]["total"] == 1 and sec["counts"]["hot"] == sec["counts"]["hot_monthly"] == 1
@@ -746,23 +789,54 @@ def test_revived_old_listing_adds_no_direction_increment():
     assert directions.increment(new) == 500 * 200 * 30
 
 
-def test_judgments_resting_on_recent_days_are_noted(cfg):
-    """卖家精灵会回头改最近几天的日销量：按本期测到的幅度校正最近几天后重判，原来成立、校正后不成立的写明，不排除。"""
+def test_judgments_are_made_on_revision_corrected_data(cfg):
+    """卖家精灵会回头下调最近几天的日销量：默认按本期测到的幅度校正最近几天后再判（回测：准确率 突然爆火 70%→86%、
+    潜力 69%→85%、上升中 57%→82%），按当期拉到的数才成立的不上榜、卡片上写明。走势图和卡片上的数也是校正后的。"""
+    rev = {"window": 9, "median": 0.8, "items": 100}
+    state = {"asins": {"THIN": _rec([5] * 110 + [12] * 10, 4.5), "SOLID": _rec([5] * 110 + [18] * 10, 4.5)}}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, ["THIN", "SOLID"], cfg, END, revision=rev)["items"]}
+    assert by["SOLID"]["label"] == "surge" and not by["SOLID"]["revision_raw_only"]
+    assert by["THIN"]["label"] != "surge" and by["THIN"]["revision_raw_only"] == ["突然爆火"]
+    assert "按当期拉到的数算突然爆火，但最近 9 天的数还会被下调（本期测到改成原来的 80%），校正后不算" in by["THIN"]["tags"]
+    assert by["SOLID"]["spark"][-1] == round(18 * 0.8, 2) and by["SOLID"]["revised_avg28"] == by["SOLID"]["recent_avg28"]
+    assert state["asins"]["SOLID"]["series"]["sales"][-1] == 18  # 存下的日数据不改（下期还要拿它测修订）
+    # 测到的商品太少、或幅度太小：不校正、不标
+    for weak in ({**rev, "items": 10}, {**rev, "median": 0.99}, None):
+        item = analyze.analyze(state, None, ["THIN"], cfg, END, revision=weak)["items"][0]
+        assert item["label"] == "surge" and not any("还会被" in t for t in item["tags"])
+
+
+def test_correction_only_when_this_runs_data_is_inflated_too(cfg):
+    """测到了上期的数被下调，但这期拉到的数最近几天并不偏高（修订是一次性的重新估算）：不校正、也不标“还会被改”；
+    这期的数最近 9 天也偏高（和测到的修订对得上）才按校正后的数判。实测：修订前那次 ×1.17，修订后那次 ×0.93。"""
+    rev = {"window": 9, "median": 0.8, "items": 100}
+    flat = [5] * 110 + [10] * 10                     # 之前 5 件、最近 10 天 10 件：这一个本身在涨
+    others = {f"F{k}": _rec([20] * 120, 4.5) for k in range(40)}
+    plain = analyze.analyze({"asins": {"THIN": _rec([5] * 110 + [12] * 10, 4.5), **others}}, None,
+                            ["THIN", *others], cfg, END, revision=rev)
+    thin = next(i for i in plain["items"] if i["asin"] == "THIN")
+    assert plain["revision_check"]["applied"] is False and plain["revision_check"]["inflation"] == 1.0
+    assert thin["label"] == "surge" and not any("还会被" in t or "按当期拉到的数" in t for t in thin["tags"])
+    hot = {f"F{k}": _rec([20] * 111 + [25] * 9, 4.5) for k in range(40)}  # 最近 9 天整体偏高 ×1.25
+    inflated = analyze.analyze({"asins": {"THIN": _rec(flat, 4.5), **hot}}, None, ["THIN", *hot], cfg, END, revision=rev)
+    assert inflated["revision_check"]["applied"] is True and inflated["revision_check"]["need"] == 1.125
+
+
+def test_tag_mode_lists_on_fetched_data_and_notes_the_correction(cfg):
+    """thresholds.revision_mode = tag：按当期拉到的数判，原来成立、校正后不成立的写明，不排除（2026-10-22 ~ 10-27 的做法）。"""
+    cfg["thresholds"]["revision_mode"] = "tag"
     rev = {"window": 9, "median": 0.8, "items": 100}
     state = {"asins": {"THIN": _rec([5] * 110 + [12] * 10, 4.5), "SOLID": _rec([5] * 110 + [18] * 10, 4.5)}}
     by = {i["asin"]: i for i in analyze.analyze(state, None, ["THIN", "SOLID"], cfg, END, revision=rev)["items"]}
     assert by["THIN"]["label"] == by["SOLID"]["label"] == "surge"  # 不排除
     assert "最近 9 天的数还会被改：按本期测到的幅度（改成原来的 80%）校正后不算突然爆火" in by["THIN"]["tags"]
     assert by["THIN"]["revision_lost"] == ["突然爆火"] and not by["SOLID"]["revision_lost"]
-    # 测到的商品太少、或幅度太小：不校正、不标
-    for weak in ({**rev, "items": 10}, {**rev, "median": 0.99}, None):
-        item = analyze.analyze(state, None, ["THIN"], cfg, END, revision=weak)["items"][0]
-        assert not any(t.startswith("最近 9 天的数还会被改") for t in item["tags"])
 
 
 def test_falling_is_compared_by_the_rule_not_the_tag(cfg):
-    """“最近回落”比回落规则本身：观察板块的这个标签只在有增长时才打，校正后不再算增长时标签会消失，但它仍在往下走，
+    """“最近回落”比回落规则本身（tag 模式）：观察板块的这个标签只在有增长时才打，校正后不再算增长时标签会消失，但它仍在往下走，
     不能写成“校正后不算最近回落”（10-20 期数据里原来有 4 个这样写错的）。"""
+    cfg["thresholds"]["revision_mode"] = "tag"
     sales = [10] * 92 + [16] * 19 + [15, 14, 13, 12, 11, 10, 9, 8, 7]
     state = {"asins": {"F": _rec(sales, 4.5)}}
     item = analyze.analyze(state, None, ["F"], cfg, END, revision={"window": 9, "median": 0.5, "items": 100})["items"][0]

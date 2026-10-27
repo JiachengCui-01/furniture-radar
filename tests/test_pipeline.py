@@ -246,6 +246,8 @@ def test_failure_alert_says_whether_the_report_was_updated():
     assert "没有生成报告" in dingtalk.failure_text("雷达", "数据采集/分析")
     quota = dingtalk.failure_text("雷达", "数据采集/分析", saved=True, reason="quota")
     assert "接口调用次数用完了" in quota and "不是程序出错" in quota
+    crash = dingtalk.failure_text("雷达", "数据采集/分析", saved=True, reason="crash")
+    assert "程序出错" in crash and "已拉到的数据和调用次数已保存" in crash
 
 
 def test_ci_logs_never_contain_product_data(cfg, master_key, tmp_path, capsys, monkeypatch):
@@ -392,7 +394,8 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg, master_key, tmp_path
                    and (u >= th["min_units"] or rev >= th["min_revenue"]))
         assert hits >= th["months_required"] and cv([u for _, u in closed]) <= th["max_cv"]
         assert (log_growth([u for _, u in closed[-3:]]) or 0) >= th["min_trend"]
-        row = state["monthly_lists"]["rolling"]["rows"][item["asin"]]
+        recent, _covered = monthly_lists.recent_rows(state, disc["nodes"], clock.parse_day(last["date"]))
+        row = recent[item["asin"]]
         six_daily = sum(u / clock.days_in_month(k) for k, u in closed) / len(closed)
         assert row["units"] / 30 >= th["min_recent_ratio"] * six_daily - 1e-6
     sec = analyze.sections(result["items"], 0)
@@ -400,6 +403,35 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg, master_key, tmp_path
     page = _decrypt_page((site / "reports" / f"{last['id']}.html").read_text(encoding="utf-8"),
                          crypto.parse_master_key(master_key))
     assert f"持续热销里 {len(monthly)} 个来自月度名单补判" in page and "只有月度数据" in page
+    # 不是当期的近 30 天销量不用：换一天（全市场名单、近 30 天名单都不是那天的）就不补判，数据说明写明
+    later = clock.parse_day(last["date"]) + timedelta(days=5)
+    stale = analyze.analyze(state, disc, list(last["labels"]), cfg, later, tracking.fresh_rows(state))
+    assert not [i for i in stale["items"] if not i.get("daily", True)] and stale["monthly_status"]["rolling"] == 0
+
+
+def test_recent_sales_for_monthly_hot_come_from_the_same_run_even_when_the_pool_fills_the_budget(cfg, master_key, tmp_path):
+    """持续热销补判的近 30 天销量：当期全市场名单 + 只给全市场名单覆盖不到头部的小子类目查近 30 天名单，在拉日数据之前查。
+    以前近 30 天名单放在最后用剩下的预算查，初筛把预算占满时整期不查、补判用旧名单。"""
+    from radar import monthly_lists
+
+    cfg["budget"].update(per_run=400, bootstrap_run=400, monthly_list_calls=200)
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    site = tmp_path / "site"
+    pipeline.run(cfg, secrets, site, transport=world, now=START)  # 第一期补齐往月名单
+    world.advance(7)
+    state = store.load(site, crypto.parse_master_key(master_key))
+    thin = monthly_lists.thin_nodes(state["discovery"], cfg)
+    cfg["budget"].update(per_run=200, bootstrap_run=200)  # 预算紧：池子会占满预算
+    out = pipeline.run(cfg, secrets, site, transport=world, now=START + timedelta(days=7))
+    state = store.load(site, crypto.parse_master_key(master_key))
+    rolling = state["monthly_lists"]["rolling"]
+    assert out.published and rolling["date"] == state["runs"][-1]["date"]
+    assert set(rolling["nodes"]) == thin  # 翻了全市场名单的期，只查覆盖不到头部的小子类目
+    assert state["universe"]["date"] == state["runs"][-1]["date"]
+    # 按件数的往月名单（便宜、走量的头部判持续热销用）也在拉日数据之前补齐，预算紧也补得上
+    disc = state["discovery"]
+    assert monthly_lists.complete(state, disc["nodes"], disc["period"], 6, "units")
 
 
 def test_early_monthly_list_is_fetched_again_once_settled(cfg, master_key, tmp_path):
@@ -559,6 +591,43 @@ def test_previous_run_is_replayed_for_items_not_tracked_last_time(world_run, mas
     assert all(m[0] <= day.isoformat()[:7] for m in cut["months"])
 
 
+def test_a_crash_after_fetching_saves_the_data_and_the_next_run_reuses_it(cfg, master_key, tmp_path, monkeypatch, capsys):
+    """拉完数据以后程序出错（判定、写报告……）：不出报告，但已拉到的日数据和花掉的调用次数照样存下来；
+    这期写了一半的报告删掉、往期的期数和报告列表不变；告警每次都发（不按 7 天去重）；
+    日志里只有出错的类型和位置，没有异常信息（可能含 ASIN）。第二天接着用已拉到的日数据，不整期重拉。"""
+    from radar import analyze
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    world = SyntheticWorld(START.date())
+    real = analyze.sections
+
+    def boom(*a, **k):
+        raise KeyError("B0DEMO0001")
+
+    monkeypatch.setattr(analyze, "sections", boom)
+    for days in (0, 1):
+        with pytest.raises(pipeline.RunAborted) as crashed:
+            pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=days))
+        assert crashed.value.kind == "crash" and not crashed.value.repeat
+    assert "B0DEMO" not in capsys.readouterr().err and "KeyError" in str(crashed.value)
+    saved = store.load(tmp_path, crypto.parse_master_key(master_key))
+    assert saved["calls"]["2026-10"] > 0 and saved["blocked"]["kind"] == "crash"
+    assert not saved.get("runs") and not saved.get("reports") and not saved.get("last_success")
+    assert not list((tmp_path / "reports").glob("*.html"))
+    fetched = sum(1 for r in saved["asins"].values() if r.get("series"))
+    assert fetched > 50
+    monkeypatch.setattr(analyze, "sections", real)
+    before = sum(1 for c in world.calls if c == "asin_prediction")
+    out = pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=2))
+    assert out.published
+    again = sum(1 for c in world.calls if c == "asin_prediction") - before
+    assert again < fetched / 2  # 只补拉上次没拉到的（和往期上榜的），不是整期重拉
+    state = store.load(tmp_path, crypto.parse_master_key(master_key))
+    assert state["run_seq"] == 1 and "blocked" not in state and state["calls"]["2026-10"] == saved["calls"]["2026-10"] + out.calls
+
+
 def test_cli_stays_quiet_when_the_same_block_was_already_reported(monkeypatch, tmp_path):
     """同一个原因 7 天内已经提醒过：命令行返回 0（工作流不失败、不再发钉钉告警），但照样写出 saved=true 让工作流保存数据。"""
     from radar import cli
@@ -572,6 +641,33 @@ def test_cli_stays_quiet_when_the_same_block_was_already_reported(monkeypatch, t
         monkeypatch.setattr(pipeline, "run", boom)
         assert cli.main(["run", "--site-dir", str(tmp_path / "site"), "--github-output"]) == code
     assert out.read_text(encoding="utf-8").count("saved=true\nreason=quota") == 2
+
+
+def test_budget_is_split_evenly_over_the_runs_left(cfg, master_key, tmp_path):
+    """每期预算 = 本月剩下的额度 ÷ 本月还剩几期（含这一期，按北京时间的月份、每 7 天一期）：11 月 5 期，最后一期不会被挤；
+    12 月 4 期，每期多分一些（以前固定 1,300 / 1,500，12 月有 1,800 次用不上）。"""
+    from datetime import datetime, timezone
+
+    from radar.config import load_config
+
+    live = load_config()
+    assert live["budget"]["split"] == "even"
+    utc = lambda m, d: datetime(2026, m, d, 4, 40, tzinfo=timezone.utc)  # noqa: E731
+    assert [pipeline.runs_left(utc(11, d), live) for d in (1, 8, 15, 22, 29, 30)] == [5, 4, 3, 2, 1, 1]
+    assert pipeline.runs_left(utc(12, 6), live) == 4 and pipeline.runs_left(datetime(2026, 10, 31, 17, 0, tzinfo=timezone.utc), live) == 5
+    cfg["budget"].update(split="even", monthly_cap=2000, max_per_run=450)
+    cfg["schedule"]["min_days_between_runs"] = 7
+    world = SyntheticWorld(utc(11, 1).date())
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=utc(11, 1))
+    state = store.load(tmp_path, crypto.parse_master_key(master_key))
+    assert state["runs"][-1]["coverage"]["budget"] == 400  # 2,000 ÷ 5 期
+    state["calls"]["2026-11"] = 1700  # 假设前面几期（和 AI工作台 以外的手动运行）已经花了 1,700
+    store.save(tmp_path, crypto.parse_master_key(master_key), state)
+    world.advance(28)
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=utc(11, 29), force=True)
+    state = store.load(tmp_path, crypto.parse_master_key(master_key))
+    assert state["runs"][-1]["coverage"]["budget"] == 300  # 最后一期：剩下的全给它（不超过 max_per_run）
 
 
 def test_weekly_schedule_counts_calls_in_the_quota_month(cfg, master_key, tmp_path):

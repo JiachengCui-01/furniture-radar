@@ -17,11 +17,15 @@
 9 月名单 32 / 39 / 46 天前 + 门槛 15% / 10% / 10% + 排名改善，不漏、拉 52% / 57% / 59%，预算只够拉 900 个时按优先级拉，召回 98~99.5%；
 自己 21 天前的快照 + 门槛 10%，不漏、拉 45%。
 
+快照和基准按父体记（没有父体的按 ASIN，family_key）：名单按父体一行，但每次给出来的“代表子体”常常不一样——
+实测相邻两个月的头部名单里同一父体换了代表子体的有 29%~39%，9 月名单和同一天的近 30 天名单之间 37%；名单的销量是整个父体的，
+按父体对得上。以前按 ASIN 对，换了代表子体的都成了“新进名单”排在最前面先拉，模拟预算只够拉三成时召回从 97% 掉到 46%。
+
 state["universe"] = {
     "date": 本期日期, "pages": 本期翻了几页,
     "rows": {asin: 本期名单的一行（discovery.normalize_product）},
-    "snaps": [{"date": "2026-10-26", "units": {asin: 近 30 天销量}}],   最近 snap_keep_days 天
-    "baseline": {"period": "202609", "end": "2026-09-30", "units": {asin: 月销量}},   头一个月的替代基准
+    "snaps": [{"date": "2026-10-26", "units": {父体: 近 30 天销量}, "vars": {父体: 变体数}}],   最近 snap_keep_days 天
+    "baseline": {"period": "202609", "end": "2026-09-30", "units": {父体: 月销量}},   头一个月的替代基准
 }
 """
 from __future__ import annotations
@@ -45,6 +49,24 @@ def _uni(state: dict) -> dict:
     uni = state.setdefault(STATE_KEY, {})
     uni.setdefault("snaps", [])
     return uni
+
+
+def family_key(row: dict | None, asin: str) -> str:
+    """快照和基准里一个商品的键：父体（名单按父体一行，销量也是整个父体的），没有父体的用 ASIN。"""
+    return (row or {}).get("parent") or asin
+
+
+def _lookup(table: dict, keys: tuple[str, ...]):
+    """先按父体找，找不到再按 ASIN（以前没有父体、后来挂进父体的单品）。"""
+    for key in keys:
+        if table.get(key):
+            return table[key]
+    return None
+
+
+def _keys(row: dict | None, asin: str) -> tuple[str, ...]:
+    family = family_key(row, asin)
+    return (family,) if family == asin else (family, asin)
 
 
 def _page_all(vendor: Vendor, cfg: dict, node: dict, order: str, limits: dict, period: str | None,
@@ -174,7 +196,7 @@ def record_baseline(state: dict, period: str, rows: dict[str, dict]) -> None:
     y, m = int(period[:4]), int(period[4:])
     end = date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
     _uni(state)["baseline"] = {"period": period, "end": end.isoformat(), "days": end.day,
-                               "units": {a: r.get("units") or 0 for a, r in rows.items()}}
+                               "units": {family_key(r, a): r.get("units") or 0 for a, r in rows.items()}}
 
 
 def record(state: dict, rows: dict[str, dict], today: date, pages: int, failed: list[str] | None = None) -> None:
@@ -182,28 +204,29 @@ def record(state: dict, rows: dict[str, dict], today: date, pages: int, failed: 
     uni = _uni(state)
     snaps = [s for s in uni["snaps"] if s["date"] != today.isoformat()
              and (today - clock.parse_day(s["date"])).days <= SNAP_KEEP_DAYS]
-    snaps.append({"date": today.isoformat(), "units": {a: r.get("units") or 0 for a, r in rows.items()},
-                  "vars": {a: r["variations"] for a, r in rows.items() if r.get("variations")}})
+    snaps.append({"date": today.isoformat(), "units": {family_key(r, a): r.get("units") or 0 for a, r in rows.items()},
+                  "vars": {family_key(r, a): r["variations"] for a, r in rows.items() if r.get("variations")}})
     uni.update(date=today.isoformat(), pages=pages, rows=rows, snaps=snaps, failed=list(failed or []))
 
 
-def variations_then(state: dict, asin: str, today: date, lo: int = 21, hi: int = 60) -> tuple[int, float] | None:
-    """lo~hi 天前自己存的快照里这个商品的变体数：(几天前, 变体数)，取最早的一份（看一个月左右的变化）。"""
-    best = None
+def variations_then(state: dict, asin: str, today: date, lo: int = 21, hi: int = 60,
+                    row: dict | None = None) -> tuple[int, float] | None:
+    """lo~hi 天前自己存的快照里这个商品（按父体对，row 是带父体的那一行）的变体数：(几天前, 变体数)，取最早的一份（看一个月左右的变化）。"""
+    best, keys = None, _keys(row, asin)
     for s in _uni(state)["snaps"]:
         day = clock.parse_day(s.get("date"))
-        v = (s.get("vars") or {}).get(asin)
+        v = _lookup(s.get("vars") or {}, keys)
         if day and v and lo <= (today - day).days <= hi and (best is None or (today - day).days > best[0]):
             best = ((today - day).days, float(v))
     return best
 
 
-def _nearest(snaps: list[tuple[int, dict]], asin: str, lo: int, hi: int, target: int) -> tuple[int, float] | None:
+def _nearest(snaps: list[tuple[int, dict]], keys: tuple[str, ...], lo: int, hi: int, target: int) -> tuple[int, float] | None:
     best = None
     for age, units in snaps:
-        if lo <= age <= hi and units.get(asin):
-            if best is None or abs(age - target) < abs(best[0] - target):
-                best = (age, float(units[asin]))
+        found = _lookup(units, keys) if lo <= age <= hi else None
+        if found and (best is None or abs(age - target) < abs(best[0] - target)):
+            best = (age, float(found))
     return best
 
 
@@ -223,21 +246,22 @@ def features(state: dict, asin: str, row: dict, today: date, base_days: int = 28
              if s["date"] != today.isoformat() and clock.parse_day(s["date"])]
     u = float(row.get("units") or 0)
     out = {"u": u, "g": None, "base": None, "age": None, "short": {}}
+    keys = _keys(row, asin)  # 按父体对（换了代表子体也对得上），见模块说明
     # 基准的先后：约 base_days 天前自己存的 → 24~47 天前自己存的 → 上个月的月度名单（21~47 天前结束）→ 21~23 天前自己存的
     kind = "own"
-    pick = _nearest(snaps, asin, *STEADY, base_days) or _nearest(snaps, asin, 24, FALLBACK[1], base_days)
+    pick = _nearest(snaps, keys, *STEADY, base_days) or _nearest(snaps, keys, 24, FALLBACK[1], base_days)
     if pick is None:
         base = uni.get("baseline") or {}
         end = clock.parse_day(base.get("end"))
-        units = (base.get("units") or {}).get(asin)
+        units = _lookup(base.get("units") or {}, keys)
         if end and units and FALLBACK[0] <= (today - end).days <= FALLBACK[1]:
             pick, kind = ((today - end).days, float(units) / int(base.get("days") or 30) * 30), "month"
         else:
-            pick = _nearest(snaps, asin, FALLBACK[0], 23, 30)
+            pick = _nearest(snaps, keys, FALLBACK[0], 23, 30)
     if pick:
         out.update(g=u / pick[1] - 1, base=kind, age=pick[0])
     for w in short_days:
-        s = _nearest(snaps, asin, w - 2, w + 2, w)
+        s = _nearest(snaps, keys, w - 2, w + 2, w)
         if s:
             a, base = s  # 按那份快照实际隔的天数算（每 3 天一期和每周一期都对）
             out["short"][w] = ((u - base + base / 30 * a) / a) / (base / 30)

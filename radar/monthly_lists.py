@@ -7,12 +7,18 @@
            保留最近 months 个月（持续热销看近 6 个月）。实测 2026-04 的床头柜名单里，同一 ASIN 的月销量和日数据接口的
            4 月销量一致（9399 / 9270、2106 / 2107、5742 / 5724）。月度发现查到的当月名单直接记进来，不另花调用；
            往月的一次性补，每期最多 budget.monthly_list_calls 次（只用核心刷新做完后剩下的预算）。
-  近 30 天名单：product_research 不传月份（截至当天的近 30 天），每个子类目按销售额取前 50 个。往月名单补齐后每期都查
-           （每个子类目 1 次）：持续热销的“近 28 天不低于半年平均”用它的近 30 天销量 ÷ 30 判断。
+  近 30 天销量：持续热销的“近 28 天不低于半年平均”用当期的近 30 天销量 ÷ 30 判断（recent_rows）。来源是当期的全市场名单
+           （universe.py，近 30 天量够的都在，不另花调用；同一父体两边的销量 99% 差在 ±10% 内）；它覆盖不到头部的子类目
+           （小子类目的头部量不够全市场门槛、或这期没翻全，thin_nodes，约 12 个）另查近 30 天名单（product_research 不传月份，
+           按销售额取前 50 个，每个子类目 1 次）。全市场名单没翻成时全部子类目都查。在拉日数据之前查，不会被初筛挤掉。
+
+  按件数的往月名单：每个子类目按月销量取前 50（便宜、走量的头部进不了销售额前 50）。当月的由月度发现带上（discovery.fill_units），
+           往月的一次性补（约 145 次，在拉日数据之前，每期最多 budget.monthly_list_calls 次）。
 
 state["monthly_lists"] = {
     "months":  {"2026-09": {子类目 nodeIdPath: {asin: [月销量, 月销售额, 价格, 父体]}}},
-    "rolling": {"date": "2026-10-20", "rows": {asin: 近 30 天名单的一行（discovery.normalize_product）}},
+    "units_months": {同上，按月销量取前 50},
+    "rolling": {"date": "2026-10-20", "rows": {asin: 近 30 天名单的一行（discovery.normalize_product）}, "nodes": [查了的子类目]},
 }
 判定（哪些商品、按什么条件）在 analyze.monthly_hot_items。
 """
@@ -50,72 +56,123 @@ def _compact(row: dict) -> list:
     return [row.get("units") or 0, row.get("revenue") or 0, row.get("price"), row.get("parent")]
 
 
+# 两种往月名单：销售额前 50（"top"，存在 months）和月销量前 50（"units"，存在 units_months）。
+# 按件数的那份是给便宜、走量的头部的：持续热销的门槛按件数排第 20 名，但以前只有销售额前 50 的往月名单，
+# 件数够第 20 名、进不了销售额前 50 的头部（价格中位数 $56，销售额前 50 里的 $95）判不了持续热销。
+# 回测（2026-09，试跑数据，大子类目只覆盖三到五成，是下限）：这样的头部 ≥94 个、25 个达标；6 月判出的之后两个月保持住 83%（销售额前 50 里的 89%）
+KINDS = {"top": ("months", "往月名单"), "units": ("units_months", "按件数的往月名单")}
+
+
+def _store(state: dict, kind: str) -> dict:
+    return _lists(state).setdefault(KINDS[kind][0], {})
+
+
 def record_discovery(state: dict, disc: dict | None) -> None:
-    """月度发现的头部名单就是那个月的名单，直接记进来（月度发现重新拉过的，整个子类目换成新的）。"""
+    """月度发现的头部名单就是那个月的名单，直接记进来（月度发现重新拉过的，整个子类目换成新的）：
+    销售额前 50（来源 "top"）和月销量前 50（来源 "units"，discovery.fill_units 查过的子类目）。"""
     period = str((disc or {}).get("period") or "")
     if len(period) != 6 or not (disc or {}).get("products"):
         return
-    fresh: dict[str, dict] = {}
-    for p in disc["products"].values():
-        if "top" in p["sources"]:
-            fresh.setdefault(p["node"], {})[p["asin"]] = _compact(p)
-    store = _lists(state)["months"].setdefault(f"{period[:4]}-{period[4:]}", {})
-    for node in disc.get("nodes") or []:
-        if node["path"] in disc.get("done_top", [node["path"]]):
-            store[node["path"]] = fresh.get(node["path"], {})
+    key = f"{period[:4]}-{period[4:]}"
+    for kind, done in (("top", disc.get("done_top", [n["path"] for n in disc.get("nodes") or []])),
+                       ("units", disc.get("done_units") or [])):
+        fresh: dict[str, dict] = {}
+        for p in disc["products"].values():
+            if kind in p["sources"]:
+                fresh.setdefault(p["node"], {})[p["asin"]] = _compact(p)
+        store = _store(state, kind).setdefault(key, {})
+        for node in disc.get("nodes") or []:
+            if node["path"] in done:
+                store[node["path"]] = fresh.get(node["path"], {})
 
 
-def complete(state: dict, nodes: list[dict], period: str, n: int) -> bool:
+def complete(state: dict, nodes: list[dict], period: str, n: int, kind: str = "top") -> bool:
     """最近 n 个月每个子类目的名单都齐了。"""
-    months = _lists(state)["months"]
+    months = _store(state, kind)
     return all(node["path"] in (months.get(key) or {}) for key in month_keys(period, n) for node in nodes)
 
 
-def backfill(vendor: Vendor, cfg: dict, state: dict, disc: dict, limit: int) -> int:
-    """补还缺的往月名单（近的先补），最多 limit 次调用。太早的月份不再保留。返回调用次数。"""
+def backfill(vendor: Vendor, cfg: dict, state: dict, disc: dict, limit: int, kind: str = "top") -> int:
+    """补还缺的往月名单（近的先补），最多 limit 次调用。太早的月份不再保留。返回调用次数。
+    kind：top = 按销售额取前 50（和月度发现同一口径）；units = 按月销量取前 50。"""
     n = int(cfg["thresholds"]["hot"].get("list_months", 6))
     keys = month_keys(str(disc["period"]), n)
-    lists = _lists(state)
-    for old in [k for k in lists["months"] if k not in keys]:
-        lists["months"].pop(old, None)
+    months, purpose = _store(state, kind), KINDS[kind][1]
+    order = cfg["discovery"]["order_field"] if kind == "top" else "total_units"
+    for old in [k for k in months if k not in keys]:
+        months.pop(old, None)
     start = vendor.billable_calls
     try:
         for key in keys:
             for node in disc["nodes"]:
-                if node["path"] in (lists["months"].get(key) or {}):
+                if node["path"] in (months.get(key) or {}):
                     continue
                 if vendor.billable_calls - start >= limit:
-                    raise BudgetExhausted("往月名单：本期名额用完")
+                    raise BudgetExhausted(f"{purpose}：本期名额用完")
                 reply = vendor.call("product_research", request(
                     marketplace=cfg["marketplace"], nodeIdPath=node["path"], nodeIdPathEqual="false",
                     month=key.replace("-", ""), size=PAGE_SIZE, page=1,
                     variation="Y" if cfg["discovery"].get("merge_variations", True) else None,
-                    order={"field": cfg["discovery"]["order_field"], "desc": True}), purpose="往月名单")
+                    order={"field": order, "desc": True}), purpose=purpose)
                 if not reply.ok and reply.status != "empty":
-                    log.warn(f"往月名单 {key} {node.get('name') or node['path']}：{reply.status} {reply.detail}，下期再补")
+                    log.warn(f"{purpose} {key} {node.get('name') or node['path']}：{reply.status} {reply.detail}，下期再补")
                     continue  # 没拿到就不记，免得被当成“这个月名单是空的”
                 rows = {}
                 for rank, row in enumerate(reply.rows, start=1):
-                    item = normalize_product(row, node, "top", rank)
+                    item = normalize_product(row, node, kind, rank)
                     if keep_product(item, cfg):
                         rows[item["asin"]] = _compact(item)
-                lists["months"].setdefault(key, {})[node["path"]] = rows
+                months.setdefault(key, {})[node["path"]] = rows
     except BudgetExhausted:
         pass
     calls = vendor.billable_calls - start
     if calls:
-        have = sum(1 for k in keys if all(nd["path"] in (lists["months"].get(k) or {}) for nd in disc["nodes"]))
-        log.info(f"往月名单：补了 {calls} 次调用，{have}/{len(keys)} 个月已齐")
+        have = sum(1 for k in keys if all(nd["path"] in (months.get(k) or {}) for nd in disc["nodes"]))
+        log.info(f"{purpose}：补了 {calls} 次调用，{have}/{len(keys)} 个月已齐")
     return calls
 
 
-def fetch_rolling(vendor: Vendor, cfg: dict, state: dict, disc: dict, today: date, limit: int) -> int:
-    """每个子类目的近 30 天名单（截至当天），按销售额取前 50 个。返回调用次数；没查完的子类目这期不补判。"""
+def thin_nodes(disc: dict, cfg: dict, failed=()) -> set[str]:
+    """全市场名单覆盖不到头部的子类目（nodeIdPath）：月度名单里有头部商品的量不够全市场门槛（≥opportunity_min_units 件
+    或 ≥opportunity_min_revenue 美元）的小子类目，以及这期全市场名单没翻全的（failed）。2026-10-22 的近 30 天名单：
+    28 个子类目里 12 个有这样的头部，10-23 那期补判上榜的 113 个里 4 个在全市场名单里看不到。"""
+    pcfg = cfg["pool"]
+    floor_units, floor_revenue = float(pcfg["opportunity_min_units"]), float(pcfg.get("opportunity_min_revenue") or float("inf"))
+    out = set(failed or [])
+    for p in ((disc or {}).get("products") or {}).values():
+        if "top" in p["sources"] and (p.get("units") or 0) < floor_units and (p.get("revenue") or 0) < floor_revenue:
+            out.add(p["node"])
+    return out
+
+
+def recent_rows(state: dict, nodes: list[dict], today: date | None) -> tuple[dict[str, dict], set[str]]:
+    """持续热销补判用的近 30 天销量：当期的全市场名单（每个子类目里近 30 天量够的都在，不另花调用）+ 当期查的近 30 天名单
+    （全市场名单覆盖不到头部的子类目，见 thin_nodes）。返回 (行 {asin: 行}, 有当期近 30 天销量的子类目)。
+    不是当期的不用（以前近 30 天名单放在最后用剩下的预算查，初筛把预算占满时整期不查，补判用的是好几天前的旧名单）。
+    today 为空时（旧的调用方式）不看日期。"""
+    day = today.isoformat() if today else None
+    uni = state.get("universe") or {}
+    rolling = _lists(state).get("rolling") or {}
+    rows: dict[str, dict] = {}
+    covered: set[str] = set()
+    if day and uni.get("date") == day and uni.get("rows"):
+        rows.update(uni["rows"])
+        covered |= {n["path"] for n in nodes} - set(uni.get("failed") or [])
+    if rolling.get("rows") is not None and (day is None or rolling.get("date") == day):
+        rows.update(rolling.get("rows") or {})
+        covered |= set(rolling.get("nodes") or [])
+    return rows, covered
+
+
+def fetch_rolling(vendor: Vendor, cfg: dict, state: dict, disc: dict, today: date, limit: int,
+                  only: set[str] | None = None) -> int:
+    """子类目的近 30 天名单（截至当天），按销售额取前 50 个。only：只查这些子类目（全市场名单覆盖不到头部的，thin_nodes），
+    空 = 全部。返回调用次数；没查完的子类目这期不补判。"""
     rows: dict[str, dict] = {}
     done: list[str] = []
     start = vendor.billable_calls
     try:
-        for node in disc["nodes"]:
+        for node in [n for n in disc["nodes"] if only is None or n["path"] in only]:
             if vendor.billable_calls - start >= limit:
                 raise BudgetExhausted("近 30 天名单：本期名额用完")
             reply = vendor.call("product_research", request(
@@ -171,15 +228,18 @@ def _days(key: str) -> int:
 
 
 def months_of(state: dict, node: str, asin: str, parent: str | None, keys: list[str]) -> list[list] | None:
-    """这个商品在 keys 这几个月的 [月份, 月销量, 月销售额, 价格]（按时间升序）。有一个月不在名单里就返回 None：
-    跌出子类目销售额前 50 的月份看不到销量。同一父体换了代表的子体时按父体对上。"""
-    months = _lists(state)["months"]
+    """这个商品在 keys 这几个月的 [月份, 月销量, 月销售额, 价格]（按时间升序）：每个月在销售额前 50 或月销量前 50 的名单里找。
+    有一个月两份名单里都没有就返回 None：跌出了头部的月份看不到销量。同一父体换了代表的子体时按父体对上。"""
     out = []
     for key in sorted(keys):
-        rows = (months.get(key) or {}).get(node) or {}
-        row = rows.get(asin)
-        if row is None and parent:
-            row = next((r for r in rows.values() if r[3] == parent), None)
+        row = None
+        for kind in KINDS:
+            rows = (_store(state, kind).get(key) or {}).get(node) or {}
+            row = rows.get(asin)
+            if row is None and parent:
+                row = next((r for r in rows.values() if r[3] == parent), None)
+            if row is not None:
+                break
         if row is None:
             return None
         out.append([key, row[0], row[1], row[2]])

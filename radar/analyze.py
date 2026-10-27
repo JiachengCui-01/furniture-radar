@@ -65,8 +65,10 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     relist：老品换链接（rules.relisted）——上架天数不代表商品是新的，不算潜力、新品爆发、新品起量。
     age：上架天数。“从零起量”的只有上架 ≤ new_listing_max_age_days 天的叫新品爆发 / 新品起量，
          更老的叫老链接重新起量（停了很久又开始卖，不是新品；回测：之后照样在涨，所以照常算爆火，只是名字不同）。
-    tide：所在子类目的大盘倍数（universe.node_tide）。大于 1 时潜力、上升中的增长倍数先除以它再比门槛（跑赢大盘）；
-          突然爆火不用：它要求 BSR 排名提升一倍，排名本来就是和整个市场比的。"""
+    tide：所在子类目的大盘倍数（universe.node_tide）。大于 1 时突然爆火、潜力、上升中的增长倍数先除以它再比门槛（跑赢大盘）。
+          突然爆火原来不用（以为 BSR 排名提升一倍本来就是和市场比的），但 12 月整个子类目的排名会一起往上走：
+          回测（2025-11~2026-09 每周回放，1,778 次突然爆火）去掉 14%，去掉的之后 28 天 78% 保持住、留下的 88%，12 月 60% / 77%。
+          从零起量的（新品爆发 / 老链接重新起量）没有对比期的倍数，不扣。"""
     oos = th.get("out_of_stock_bsr")
     surge = evaluate_surge(d, idx, th["surge"], oos) if idx is not None else None
     restock = None
@@ -88,7 +90,14 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     unshaped = None
     if surge and not surge["kind"]:  # 不符合任何一种爆火形态
         unshaped, surge = surge, None
-    potential = (evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
+    # 跑赢大盘（突然爆火）：先判，扣掉以后不算爆火的，接着看够不够上升中
+    tide_lost = []
+    need_surge = th["surge"]["sales_ratio"]
+    if surge and tide and tide > 1 and not surge.get("from_zero") and surge.get("sales_ratio") is not None \
+            and surge["sales_ratio"] / tide < need_surge - 1e-9:
+        tide_lost.append(("突然爆火", surge["sales_ratio"], need_surge))
+        surge = None
+    potential =(evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
                  if idx is not None and not relist else None)
     if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断
         surge = potential = None
@@ -105,7 +114,7 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     # 跑赢大盘：所在子类目整体在涨时，增长倍数先除以大盘倍数（只是随大流的不算潜力 / 上升中）
     tided = None
     if tide and tide > 1:
-        lost = []
+        lost = list(tide_lost)
         if potential and potential.get("recent_ratio") is not None \
                 and potential["recent_ratio"] / tide < th["potential"]["min_recent_ratio"] - 1e-9:
             lost.append(("潜力", potential["recent_ratio"], th["potential"]["min_recent_ratio"]))
@@ -296,7 +305,9 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             extra_rows: dict | None = None, revision: dict | None = None) -> dict:
     """extra_rows：发现基线以外的月度行（例如 BSR 上升榜），用于留评率等信号。
     大促日从本期追踪商品的日数据里识别（加上 config.yaml 登记的），见 detect/events.py。
-    revision：本期测到的日数据修订（tracking.summarize_revisions）：靠最近几天才成立的判定，按它校正后不成立的写明（不排除）。"""
+    revision：本期测到的日数据修订（tracking.summarize_revisions）。thresholds.revision_mode：
+      correct（默认）= 最近几天按测到的幅度校正后再判，按没修订的数才成立的在卡片上写明（不上榜）；
+      tag = 按当期拉到的数判，校正后不成立的写明（不排除）。"""
     stats = node_stats(disc, cfg)
     products = {**(extra_rows or {}), **((disc or {}).get("products") or {})}
     recs = [(asin, state["asins"][asin]) for asin in pool
@@ -306,13 +317,25 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     ev = events_mod.detect(dailies, cfg["thresholds"]["events"], cfg.get("deal_windows") or [])
     th = cfg["thresholds"]
     rev = usable_revision(revision, th)
+    inflation = recent_inflation(dailies, ev["days"], int(rev["window"])) if rev else None
+    correct = corrects(rev, th, inflation)
+    if rev and str(th.get("revision_mode") or "correct") == "correct" and not correct:
+        rev = None  # 当期拉到的数并不偏高：按拉到的数判，也不标“还会被改”
     deal = deal_factors(dailies_by_node(recs), ev["days"], data_date)
-    tides = universe.node_tide(state, today, cfg, deal, rev)  # 品类大盘：潜力、上升中要跑赢它
+    tides = universe.node_tide(state, today, cfg, deal, rev)  # 品类大盘：突然爆火、潜力、上升中要跑赢它
 
-    items = [evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"],
-                      tide=tides.get(rec.get("node")))
-             for asin, rec in recs]
-    if rev:  # 最近几天的数还会被改：按本期测到的幅度校正后重判一次，原来成立、校正后不成立的写明
+    def judge(asin: str, rec: dict) -> dict:
+        return evaluate(asin, rec, products.get(asin), stats, cfg, today, data_date=data_date, events=ev["days"],
+                        tide=tides.get(rec.get("node")))
+
+    # 最近几天的数还会被卖家精灵下调：默认按本期测到的幅度校正后再判（回测：准确率 突然爆火 70%→86%、潜力 69%→85%、上升中 57%→82%，
+    # 召回少 7~11 个百分点），按当期拉到的数才成立的写明
+    items = [judge(asin, revised_rec(rec, rev["window"], rev["median"]) if correct else rec) for asin, rec in recs]
+    if correct:
+        for item, (asin, rec) in zip(items, recs):
+            item["revised_avg28"] = item["recent_avg28"]  # 已经是校正后的（开发方向的增量和月销售额用它）
+            _raw_only_tag(item, lost_judgments(judge(asin, rec), item, with_fading=False), rev)
+    elif rev:  # tag：按当期拉到的数判，校正后重判一次，原来成立、校正后不成立的写明
         for item, (asin, rec) in zip(items, recs):
             # 开发方向的增量和月销售额用校正后的近 28 天日均（去掉大促日，和 recent_avg28 同一口径）
             fixed = Daily.from_record(revised_rec(rec, rev["window"], rev["median"])["series"]).without(ev["days"])
@@ -322,12 +345,19 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
                                data_date=data_date, events=ev["days"], tide=tides.get(rec.get("node")))
                 _revision_tag(item, lost_judgments(item, alt), rev)
     month_rows = (disc or {}).get("products") or {}
+    month_by_family = {universe.family_key(p, a): p for a, p in month_rows.items()}  # 换了代表子体也对得上
     for item, (asin, rec) in zip(items, recs):
-        data_tags(item, rec, (extra_rows or {}).get(asin), month_rows.get(asin), state, today, th.get("data_checks") or {})
-    monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, deal, rev)
+        now_row = (extra_rows or {}).get(asin)
+        month_row = month_rows.get(asin) or month_by_family.get(universe.family_key(now_row or rec, asin))
+        data_tags(item, rec, now_row, month_row, state, today, th.get("data_checks") or {})
+    monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, deal, rev, today)
     items += monthly
+    check = None
+    if usable_revision(revision, th):  # 数据说明里写：当期拉到的数偏不偏高、校正了没有
+        need = 1 + (1 / float(revision["median"]) - 1) * float(th.get("revision_inflation_share", 0.5))
+        check = {"inflation": inflation, "need": round(need, 3), "applied": correct}
     return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date,
-            "monthly_judged": judged, "monthly_status": status, "tides": tides}
+            "monthly_judged": judged, "monthly_status": status, "tides": tides, "revision_check": check}
 
 
 def data_tags(item: dict, rec: dict, now_row: dict | None, month_row: dict | None, state: dict, today: date,
@@ -340,7 +370,7 @@ def data_tags(item: dict, rec: dict, now_row: dict | None, month_row: dict | Non
     ③ 日数据有缺：最近 28 天里 ≥ gap_days 天没有日数据（断货或数据缺失，判断不准）。"""
     growth = item["label"] in ("surge", "potential") or bool(item.get("rising") and item["label"] in ("watch", "hot"))
     now_vars = (now_row or {}).get("variations")
-    then = universe.variations_then(state, item["asin"], today)
+    then = universe.variations_then(state, item["asin"], today, row=now_row or rec)
     old_vars, when = (then[1], f"{then[0]} 天前") if then else ((month_row or {}).get("variations"), "上个月的名单里")
     if growth and now_vars and old_vars and now_vars >= old_vars * (1 + float(cfg.get("var_jump", 0.3))) - 1e-9 \
             and now_vars - old_vars >= float(cfg.get("var_min", 2)):
@@ -394,6 +424,38 @@ def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, th
     return out
 
 
+def corrects(rev: dict | None, th: dict, inflation: float | None = None) -> bool:
+    """本期按校正后的数判：有可用的修订测量、thresholds.revision_mode 是 correct，而且当期拉到的数最近几天确实偏高
+    （recent_inflation ≥ 1 + 测到的修订幅度对应的偏高 × revision_inflation_share；inflation 为空时不看这一条）。
+    为什么要看当期偏不偏高：测到的修订说的是上期拉到的数被下调了，不一定说明这期的也会被下调。实测 10-20 拉的数（修订前，倒推）
+    最近 9 天比之前高 ×1.17，被下调到 0.82；修订后 10-22 拉的数 ×0.93，并不偏高——那次很可能是卖家精灵一次性的重新估算，
+    再拿 0.82 去校正 10-22 拉的数，会凭空造出“下台阶”（10-23 那期 9 个潜力 / 上升中因此被判成最近回落）。"""
+    if not rev or str(th.get("revision_mode") or "correct") != "correct":
+        return False
+    if inflation is None:
+        return True
+    need = 1 + (1 / float(rev["median"]) - 1) * float(th.get("revision_inflation_share", 0.5))
+    return inflation >= need - 1e-9
+
+
+def recent_inflation(dailies: list[Daily], events, window: int, back: int = 14) -> float | None:
+    """当期拉到的数最近 window 天偏高多少：每个商品“最近 window 天日均 ÷ 再之前 18 天日均”（去掉大促日）取中位数，
+    除以同一批商品 back 天前那个截面的同样比值（那时的最近几天现在都已修订完；两个截面相除，去掉了大盘本身的走势）。
+    实测：修订前（10-20，倒推）×1.17，修订后（10-22）×0.93。商品不到 30 个时返回 None。"""
+    def ratio(d: Daily, i: int) -> float | None:
+        a, b = d.window("sales", i, window), d.window("sales", i - window, 18)
+        if len(a) < max(3, window // 2) or len(b) < 9 or sum(b) / len(b) < 3:
+            return None
+        return (sum(a) / len(a)) / (sum(b) / len(b))
+
+    masked = [d.without(events) for d in dailies]
+    now = [r for d in masked if (i := d.as_of_index()) is not None and (r := ratio(d, i)) is not None]
+    then = [r for d in masked if (i := d.as_of_index()) is not None and (r := ratio(d, i - back)) is not None]
+    if len(now) < 30 or len(then) < 30:
+        return None
+    return round(median(now) / median(then), 3)
+
+
 def usable_revision(revision: dict | None, th: dict) -> dict | None:
     """本期测到的修订够不够用：测到的商品 ≥ revision_min_items 个、最近有被改的天数、幅度 ≥ revision_min_change。"""
     if not revision or not revision.get("window") or (revision.get("items") or 0) < int(th.get("revision_min_items", 30)):
@@ -425,8 +487,9 @@ def revision_sensitive(item: dict) -> bool:
             or _has_tag(item, "最近回落"))
 
 
-def lost_judgments(item: dict, alt: dict) -> list[str]:
-    """原来成立、按修订幅度校正后不成立的判定。"""
+def lost_judgments(item: dict, alt: dict, with_fading: bool = True) -> list[str]:
+    """item 里成立、alt 里不成立的判定（tag 模式：item = 当期拉到的数，alt = 校正后的；correct 模式反过来，
+    且不比“最近回落”——判定按校正后的数，按没修订的数在回落不影响什么）。"""
     lost = []
     if item["label"] == "surge" and alt["label"] != "surge":
         lost.append("突然爆火")
@@ -436,9 +499,17 @@ def lost_judgments(item: dict, alt: dict) -> list[str]:
         lost.append("上升中")
     if item["label"] == "hot" and not alt.get("hot"):
         lost.append("持续热销")
-    if _has_tag(item, "最近回落") and not alt.get("fading"):
+    if with_fading and _has_tag(item, "最近回落") and not alt.get("fading"):
         lost.append("最近回落")  # 比回落规则本身：校正后不再算增长的，“最近回落”标签也会消失，但它仍在往下走
     return lost
+
+
+def _raw_only_tag(item: dict, raw_only: list[str], rev: dict) -> None:
+    """correct 模式：按当期拉到的数（没修订）才成立、按校正后的数不成立的判定，卡片上写明（不上榜）。"""
+    item["revision_raw_only"] = raw_only
+    if raw_only:
+        item["tags"].append(f"按当期拉到的数算{'、'.join(raw_only)}，但最近 {rev['window']} 天的数还会被下调"
+                            f"（本期测到改成原来的 {rev['median']:.0%}），校正后不算")
 
 
 def _revision_tag(item: dict, lost: list[str], rev: dict) -> None:
@@ -482,16 +553,22 @@ def deal_factors(by_node: dict[str, list[Daily]], events, data_date: date | None
 
 def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, data_date: date | None,
                       tracked: list[dict], deal: dict[str, float] | None = None,
-                      rev: dict | None = None) -> tuple[list[dict], list[str], dict]:
+                      rev: dict | None = None, today: date | None = None) -> tuple[list[dict], list[str], dict]:
     """持续热销的月度名单补判（monthly_lists.py）：本期月度名单里、不在追踪池（同一父体也不算）的商品，
-    近 list_months 个月每个月都在子类目销售额前 50（往月名单）、近 30 天名单里也有它的，按同一套持续热销条件判，
-    近 28 天日均用近 30 天名单的销量 ÷ 30 ÷ 大促系数（deal_factors：名单的销量含大促日，追踪商品比较时都去掉了大促日）。
+    近 list_months 个月每个月都在子类目销售额前 50 或月销量前 50（往月名单，两份都看：便宜、走量的头部进不了销售额前 50）、
+    当期有它的近 30 天销量的（monthly_lists.recent_rows：
+    全市场名单 + 小子类目的近 30 天名单，都是当期的），按同一套持续热销条件判，
+    近 28 天日均用近 30 天销量 ÷ 30 ÷ 大促系数（deal_factors：名单的销量含大促日，追踪商品比较时都去掉了大促日）。
     评分不达标的不列。
-    返回 (达标的商品, 判过的 ASIN, 状态 {"months": 已齐的月数, "need": 要几个月, "rolling": 近 30 天名单查了几个子类目, "judged", "listed"})。
-    没有日数据：没有走势图，不判回落，异常分只有留评率一项。"""
+    返回 (达标的商品, 判过的 ASIN, 状态 {"months": 已齐的月数, "units_months": 按件数的往月名单已齐的月数, "need": 要几个月,
+    "rolling": 几个子类目有当期的近 30 天销量,
+    "rolling_date": 近 30 天名单是哪天查的, "judged", "listed"})。没有日数据：没有走势图，不判回落，异常分只有留评率一项。"""
     th = cfg["thresholds"]
     n = int(th["hot"].get("list_months", 6))
     deal = deal or {"*": 1.0}
+    correct = corrects(rev, th)
+    # 近 30 天里最后 window 天按修订幅度校正后，近 30 天日均变成原来的几成
+    shrink = 1 - min(int(rev["window"]), 30) / 30 * (1 - float(rev["median"])) if rev else 1.0
     status = {"months": 0, "need": n, "rolling": 0, "nodes": len((disc or {}).get("nodes") or []), "judged": 0, "listed": 0,
               "deal": deal["*"]}
     if not disc or not disc.get("nodes") or not data_date or len(str(disc.get("period") or "")) != 6:
@@ -500,9 +577,12 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
     keys = monthly_lists.month_keys(period, n)
     have = (state.get("monthly_lists") or {}).get("months") or {}
     status["months"] = sum(1 for k in keys if all(nd["path"] in (have.get(k) or {}) for nd in disc["nodes"]))
-    rolling = (state.get("monthly_lists") or {}).get("rolling") or {}
-    status["rolling"] = len(rolling.get("nodes") or [])
-    if status["months"] < n or not rolling.get("rows"):
+    units_have = (state.get("monthly_lists") or {}).get("units_months") or {}
+    status["units_months"] = sum(1 for k in keys if all(nd["path"] in (units_have.get(k) or {}) for nd in disc["nodes"]))
+    recent_rows, covered = monthly_lists.recent_rows(state, disc["nodes"], today)
+    status["rolling"] = len(covered & {nd["path"] for nd in disc["nodes"]})
+    status["rolling_date"] = ((state.get("monthly_lists") or {}).get("rolling") or {}).get("date")
+    if status["months"] < n or not recent_rows:
         return [], [], status
     products = disc.get("products") or {}
 
@@ -510,23 +590,26 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
         return (products.get(asin) or {}).get("parent") or (state["asins"].get(asin) or {}).get("parent") or asin
 
     taken = {i["asin"] for i in tracked} | {parent_of(i["asin"]) for i in tracked}
-    by_parent = {r.get("parent") or r["asin"]: r for r in rolling["rows"].values()}
+    by_parent = {r.get("parent") or r["asin"]: r for r in recent_rows.values()}
     out, judged = [], []
-    for p in sorted(products.values(), key=lambda r: -(r.get("units") or 0)):
+    # 销售额前 50 里的先判：同一父体两份名单里的代表子体不一样时，用销售额名单里那个 ASIN（和以前一样，“与上期对比”不会当成一出一进）
+    for p in sorted(products.values(), key=lambda r: ("top" not in r["sources"], -(r.get("units") or 0))):
         key = p.get("parent") or p["asin"]
-        if "top" not in p["sources"] or p["asin"] in taken or key in taken or p["node"] not in stats:
+        if not ({"top", "units"} & set(p["sources"])) or p["asin"] in taken or key in taken or p["node"] not in stats:
             continue
         taken.add(key)
-        r = rolling["rows"].get(p["asin"]) or by_parent.get(key)
+        r = recent_rows.get(p["asin"]) or by_parent.get(key)
         months = monthly_lists.months_of(state, p["node"], p["asin"], p.get("parent"), keys)
         if r is None or months is None:
-            continue  # 近 30 天或某个月跌出了子类目销售额前 50：看不到销量，不判
+            continue  # 近 30 天或某个月跌出了子类目的头部（销售额前 50 和月销量前 50 都不在）：看不到销量，不判
         judged.append(p["asin"])
         rating, n_ratings = r.get("rating") or p.get("rating"), r.get("ratings") or p.get("ratings")
         if low_rating(rating, n_ratings, th):
             continue
         threshold = stats[p["node"]].get("threshold")
         recent = (r.get("units") or 0) / 30 / deal.get(p["node"], deal["*"])
+        if correct:  # 近 30 天里最后几天的数也还会被下调：按本期测到的修订幅度校正后再判（和追踪商品一样）
+            recent *= shrink
 
         def judge(daily: float) -> dict | None:
             return evaluate_hot(months, None, data_date, threshold, th["hot"], recent_daily=daily)
@@ -555,9 +638,8 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             "prev_avg28": None, "pkg": r.get("pkg") or p.get("pkg"), "fetched_run": None, "source": "monthly",
             "daily": False,
         })
-        if rev:  # 近 30 天名单里最后几天的数也还会被改：这几天按修订幅度校正后，近 30 天日均跟着变
-            share = min(int(rev["window"]), 30) / 30
-            _revision_tag(out[-1], [] if judge(recent * (1 - share * (1 - float(rev["median"])))) else ["持续热销"], rev)
+        if rev and not correct:  # tag 模式：近 30 天名单里最后几天的数也还会被改，校正后不达标的写明
+            _revision_tag(out[-1], [] if judge(recent * shrink) else ["持续热销"], rev)
     status.update(judged=len(judged), listed=len(out))
     return out, judged, status
 
