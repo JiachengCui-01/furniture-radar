@@ -41,7 +41,7 @@ def node_stats(disc: dict | None, cfg: dict) -> dict[str, dict]:
                 per_parent[key] = max(per_parent.get(key, 0), p["units"] or 0)
         units = sorted(per_parent.values(), reverse=True)
         threshold = (units[rank - 1] if len(units) >= rank else units[-1]) if units else None
-        # 留评率的中位数只算变体不多的商品：和打分时同一批（变体多的评论是父体共享的，不算留评率）
+        # 留评率的中位数只算变体不多的商品（变体多的评论是父体共享的，打分时比值先除以变体数，再和这个中位数比）
         max_vars = cfg["thresholds"]["fake"]["max_variations_for_ratio"]
         stats[node] = {
             "median_rate": median([p.get("ratings_rate") for p in items
@@ -619,7 +619,7 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             continue
         rec = dict(state["asins"].get(p["asin"]) or {})
         if rec.get("variations") is None:
-            rec["variations"] = p.get("variations")  # 变体多的评论是父体共享的，不算留评率
+            rec["variations"] = p.get("variations")  # 变体多的评论是父体共享的，留评率先除以变体数
         fake = fakehot.score(rec, None, None, p, stats[p["node"]].get("median_rate"), th["fake"])
         if fake["level"]:
             continue

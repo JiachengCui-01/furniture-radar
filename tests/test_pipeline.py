@@ -117,10 +117,14 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
     # 季节判断已经去掉：任何商品都没有季节标签
     assert not any(t.startswith(("季节性", "品类季节性")) for item in items for t in item["tags"])
     max_vars = th["fake"]["max_variations_for_ratio"]
-    for item in items:  # 变体多的不算留评率；老品换链接不算新品评论/销量比
+    for item in items:  # 变体多的评论/销量比先除以变体数（写在依据里）；老品换链接不算新品评论/销量比
         codes = {sig["code"] for sig in item["fake"]["signals"]}
-        if (item.get("variations") or 0) > max_vars:
-            assert "review_rate" not in codes, item["asin"]
+        n = int(item.get("variations") or 0)
+        for sig in item["fake"]["signals"]:
+            if sig["code"] in ("review_rate", "new_listing_reviews", "review_velocity"):
+                assert (f"{n} 个变体共用评论，已 ÷{n}" in sig["text"]) == (n > max_vars), item["asin"]
+        if n > max_vars:
+            assert "reviews_without_sales" not in codes, item["asin"]
         if item["relist"]:
             assert "new_listing_reviews" not in codes and not any(t.startswith("新品起量") for t in item["tags"])
 

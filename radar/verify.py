@@ -1,4 +1,4 @@
-"""对可疑商品做额外核查（每期最多 review_checks 个，每个 1 次调用）：
+"""对可疑商品和报告推荐的爆火、潜力做额外核查（每期最多 review_checks 个，每个 1 次调用）：
 
 * 评论核查（review）：近 60 天评论是否集中在少数几天、非验证购买占比、Vine 占比。
 * 详情核查（asin_detail）：评论数暴增时看父体/变体是否变化，区分“变体合并”和“刷评”。
@@ -77,13 +77,17 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
             continue
         # 评论核查的先后（名额不够时先查前面的）：① 可疑的（异常分 ≥ 疑似线 − 1，且是爆火 / 潜力 / 异常 / 持续热销）；
         # ② 报告推荐的爆火、潜力（以前只查异常分 ≥2 的，10-23 那期 31 个爆火 / 潜力一个都没查过评论）；
-        # ③ 按“可能是 Vine”扣过才不够评论信号的新品（fakehot 的 check_reviews：查了按抽到的 Vine 比例重算）
+        # ③ 不在榜单上、异常分 ≥ 疑似线 − 1 的（以前不查，只有一条信号的永远到不了疑似线：10-23 那期 7 个 2 分的）；
+        # ④ 按“可能是 Vine”扣过才不够评论信号的新品（fakehot 的 check_reviews：查了按抽到的 Vine 比例重算）
         interesting = item["label"] in ("surge", "potential", "fake") or item.get("hot")
         strength = (item.get("surge") or {}).get("strength", 0) / 100
-        if item["fake"]["score"] >= fcfg["suspect_score"] - 1 and interesting:
+        suspect = item["fake"]["score"] >= fcfg["suspect_score"] - 1
+        if suspect and interesting:
             jobs.append((300 + item["fake"]["score"] + strength, item["asin"], "review"))
         elif item["label"] in ("surge", "potential"):
             jobs.append((200 + item["fake"]["score"] + strength, item["asin"], "review"))
+        elif suspect:
+            jobs.append((150 + item["fake"]["score"], item["asin"], "review"))
         elif item["fake"].get("check_reviews"):
             jobs.append((100 + item["fake"]["score"], item["asin"], "review"))
     jobs.sort(key=lambda j: -j[0])

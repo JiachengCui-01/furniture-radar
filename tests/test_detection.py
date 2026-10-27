@@ -317,13 +317,27 @@ def test_variation_merge_is_tagged_not_scored(cfg):
     assert "变体合并" in result["tags"] and result["score"] == 0
 
 
-def test_many_variations_skip_review_ratio(cfg):
+def test_many_variations_divide_review_velocity(cfg):
+    """两期之间评论 +60、销量约 30 件（200%）：30 个变体 ÷30 只有 7%，不计；4 个变体 ÷4 还有 50%，计分。"""
     f = cfg["thresholds"]["fake"]
     d = make([10] * 120)
     rec = {"variations": 30, "available": "2024-01-01",
            "obs": [{"date": (END - timedelta(days=3)).isoformat(), "ratings": 500, "rating": 4.4},
                    {"date": END.isoformat(), "ratings": 560, "rating": 4.4}]}
     assert fakehot.score(rec, d, END, None, 2.0, f, [])["score"] == 0
+    got = {s["code"]: s["text"] for s in fakehot.score({**rec, "variations": 4}, d, END, None, 2.0, f, [])["signals"]}
+    assert "4 个变体共用评论，已 ÷4" in got["review_velocity"]
+
+
+def test_many_variations_skip_reviews_without_sales(cfg):
+    """这个子体几乎没卖、评论却涨了：变体多的评论可能是别的变体带来的，不计。"""
+    f = cfg["thresholds"]["fake"]
+    d = make([10] * 110 + [0] * 10)
+    rec = {"variations": 2, "available": "2024-01-01",
+           "obs": [{"date": (END - timedelta(days=3)).isoformat(), "ratings": 500, "rating": 4.4},
+                   {"date": END.isoformat(), "ratings": 560, "rating": 4.4}]}
+    assert "reviews_without_sales" in {s["code"] for s in fakehot.score(rec, d, END, None, 2.0, f, [])["signals"]}
+    assert fakehot.score({**rec, "variations": 4}, d, END, None, 2.0, f, [])["score"] == 0
 
 
 def test_review_burst_summary():
@@ -473,6 +487,23 @@ def test_listed_surges_and_potentials_all_get_a_review_check(cfg):
     assert jobs == [("SUS", "review"), ("SURGE", "review"), ("POT", "review")]
 
 
+def test_unlisted_suspects_get_a_review_check_after_listed_ones(cfg):
+    """不在榜单上、异常分 ≥2 的也抽查评论（只有一条信号的，查了才可能有第二条），排在爆火、潜力之后、
+    按“可能是 Vine”扣过才不够的新品之前；名额不够时先查前面的。"""
+    from radar import verify
+
+    items = [{"asin": "VINE", "label": "watch", "fake": {"score": 0, "check_reviews": True}, "as_of": None},
+             {"asin": "W2", "label": "watch", "fake": {"score": 2}, "as_of": None},
+             {"asin": "W1", "label": "watch", "fake": {"score": 1}, "as_of": None},
+             {"asin": "POT", "label": "potential", "fake": {"score": 0}, "as_of": None},
+             {"asin": "HOT2", "label": "hot", "fake": {"score": 2}, "as_of": None, "hot": {"x": 1}},
+             {"asin": "LOW", "label": "low", "fake": {"score": 2}, "as_of": None}]
+    jobs = verify.select(items, {"asins": {}}, cfg, END)
+    assert [a for a, _ in jobs] == ["HOT2", "POT", "W2", "VINE"]
+    small = {**cfg, "budget": {**cfg["budget"], "review_checks": 3}}
+    assert [a for a, _ in verify.select(items, {"asins": {}}, small, END)] == ["HOT2", "POT", "W2"]
+
+
 def test_data_problems_are_written_on_the_card(cfg):
     """数据可能有问题的写在卡片上：变体变多、名单和日数据对不上、最近 28 天缺日数据（开卖以前的日子不算缺）。"""
     sales = [10] * 72 + [20] * 28
@@ -500,8 +531,9 @@ def test_restock_is_not_a_surge(cfg):
     assert s and s["restock"] and s["kind"] == "断货恢复"
 
 
-def test_many_variations_skip_new_listing_ratio(cfg):
-    """24 个变体共享父体评论：新品评论/销量比没有意义，不应计分。"""
+def test_many_variations_divide_new_listing_ratio(cfg):
+    """变体共享父体评论：新品评论/销量比先除以变体数。1,363 条（扣掉 30 条可能的 Vine）/ 2,834 件 = 48%：
+    24 个变体 ÷24 只有 2%，不计；4 个变体 ÷4 还有 12%，计分。"""
     f = cfg["thresholds"]["fake"]
     d = make([0] * 50 + [80] * 70)
     rec = {"variations": 24, "available": (END - timedelta(days=60)).isoformat(),
@@ -509,6 +541,8 @@ def test_many_variations_skip_new_listing_ratio(cfg):
            "months": _months([2482, 352])}
     result = fakehot.score(rec, d, END, None, 2.0, f, [])
     assert "new_listing_reviews" not in {s["code"] for s in result["signals"]}
+    got = {s["code"]: s["text"] for s in fakehot.score({**rec, "variations": 4}, d, END, None, 2.0, f, [])["signals"]}
+    assert "（12%，4 个变体共用评论，已 ÷4）" in got["new_listing_reviews"]
 
 
 def test_period_diff_lists_each_product_once():
@@ -592,12 +626,15 @@ def test_relisted_listing_skips_new_listing_review_ratio(cfg):
     assert fakehot.score(rec, d, END, None, 2.0, f, [], relisted=True)["score"] == 0
 
 
-def test_review_rate_skips_many_variations(cfg):
-    """留评率用的评论数是父体共享的：变体多的商品不算（和两种评论/销量比一致）。"""
+def test_review_rate_divides_by_many_variations(cfg):
+    """留评率用的评论数是父体共享的：变体多的先除以变体数（和两种评论/销量比一致）。门槛 6%：
+    14% 的 15 个变体 ÷15 不到 1%，不计；40% 的 4 个变体 ÷4 还有 10%，计分。"""
     f = cfg["thresholds"]["fake"]
     row = {"ratings_rate": 14.0, "ratings_cv": 30}
     assert fakehot.score({"obs": [], "variations": 2}, None, None, row, 1.8, f, [])["score"] == 2
     assert fakehot.score({"obs": [], "variations": 15}, None, None, row, 1.8, f, [])["score"] == 0
+    got = fakehot.score({"obs": [], "variations": 4}, None, None, {**row, "ratings_rate": 40.0}, 1.8, f, [])["signals"]
+    assert [s["text"].split("，远高于")[0] for s in got] == ["留评率 10.0%（名单留评率 40.0%，4 个变体共用评论，已 ÷4）"]
 
 
 def test_node_median_review_rate_ignores_many_variations(cfg):
