@@ -509,10 +509,51 @@ def _direction_box(d: dict, cfg: dict) -> str:
             f'<dl class="spec">{spec}</dl><div class="grp-h">参考商品</div>{refs}</div>')
 
 
+def _direction_overview(rows: list[dict], cfg: dict) -> str:
+    """全部子类目一览（directions.overview）：每个子类目的追踪商品、增长商品、增量、品类大盘，有没有画像、没有的原因。"""
+    if not rows:
+        return ""
+    c = cfg["thresholds"]["directions"]
+    has_tide = any(r["tide"] is not None for r in rows)
+    reasons: dict[str, int] = {}
+    for r in rows:
+        if not r["shown"]:
+            reasons[r["status"]] = reasons.get(r["status"], 0) + 1
+
+    def money(r: dict, key: str) -> str:
+        return esc(directions.money_text(r[key])) if r["n"] else "—"
+
+    body = []
+    for r in rows:
+        growth = (f'{r["n"]} 个 · {r["n_brands"]} 个品牌' + (f' · 突然爆火 {r["n_surge"]}' if r["n_surge"] else "")
+                  if r["n"] else "—")
+        tide_text = "—" if r["tide"] is None else f"×{r['tide']:.2f}"
+        tide = f"<td class=n>{tide_text}</td>" if has_tide else ""
+        status = "有（见下方）" if r["shown"] else f'<span class="none">{esc(r["status"])}</span>'
+        body.append(f'<tr><td>{esc(r["node"])}</td><td class=n>{r["n_tracked"]}</td><td>{growth}</td>'
+                    f'<td class=n>{money(r, "monthly")}</td><td class=n>{money(r, "increment")}</td>{tide}<td>{status}</td></tr>')
+    head = ("<tr><th>子类目</th><th class=n>追踪商品</th><th>增长商品</th><th class=n>月销售额</th><th class=n>比之前 28 天多</th>"
+            + ("<th class=n>品类大盘</th>" if has_tide else "") + "<th>画像</th></tr>")
+    shown = sum(1 for r in rows if r["shown"])
+    summary = (f"全部 {len(rows)} 个子类目一览：{shown} 个有画像（见下方）"
+               + "".join(f"，{k} 个{reason}" for reason, k in sorted(reasons.items(), key=lambda x: -x[1])))
+    hint = ("子类目 = 监控范围内的子类目，加上追踪商品自己所在的其他子类目，按“比之前 28 天多”从大到小；"
+            "追踪商品 = 本期拉了日数据的商品数；增长商品 = 突然爆火 + 潜力 + 上升中（不含异常信号、评分偏低的），"
+            "月销售额和“比之前 28 天多”只算增长商品，口径同下方画像；"
+            + ("品类大盘 = 子类目里量够的商品近 30 天销量是约 30 天前的几倍（中位数，扣大促日，见“判定方法”）；" if has_tide else "")
+            + f"画像：增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目"
+            + (f"按增量取前 {c['max']} 个" if int(c.get("max") or 0) else "都有")
+            + "（没有任何共同主材质或特征的除外），没有的写了原因。")
+    return (f'<details class="rules"><summary>{esc(summary)}</summary><p class="hint">{esc(hint)}</p>'
+            f'<div class=tbl><table><thead>{head}</thead><tbody>{"".join(body)}</tbody></table></div></details>')
+
+
 def _directions(tr: dict, cfg: dict) -> str:
     c = cfg["thresholds"]["directions"]
+    take = f"取前 {c['max']} 个" if int(c.get("max") or 0) else "全部列出"
     rule = (f"增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目，按增量销售额从大到小"
-            f"（同额时看品牌数、增长商品个数、突然爆火个数、势头）取前 {c['max']} 个，没有任何主材质或特征的跳过。"
+            f"（同额时看品牌数、增长商品个数、突然爆火个数、势头）{take}，没有任何主材质或特征的跳过；"
+            f"本期要点和钉钉消息只写前 {c.get('summary_max', 5)} 个。"
             "月销售额 = 每个增长商品的近 28 天日均 × 当前售价 × 30 的合计；增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）"
             "× 售价 × 30 的合计，之前没在卖的按 0、老品换链接之前没在卖的增量按 0、老链接重新起量的增量按 0（销量是卖家精灵按 BSR 估算的，大促日不算；"
             "本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的）。"
@@ -529,7 +570,8 @@ def _directions(tr: dict, cfg: dict) -> str:
             "参考商品 = 该子类目势头最强、没有任何异常信号的两个，来自不同品牌。")
     boxes = "".join(_direction_box(d, cfg) for d in tr.get("directions") or [])
     body = f'<div class="dgrid dirs">{boxes}</div>' if boxes else '<p class="empty">本期没有增长商品数达到门槛的子类目。</p>'
-    return f'<h3>开发方向依据</h3><p class="hint">{esc(rule)}</p>{body}'
+    return (f'<h3>开发方向依据</h3><p class="hint">{esc(rule)}</p>'
+            f'{_direction_overview(tr.get("direction_overview") or [], cfg)}{body}')
 
 
 def _traits(tr: dict, counts: dict, cfg: dict) -> str:
@@ -741,12 +783,12 @@ def _method(cfg: dict) -> str:
 标题里写明的材质、AI 主图识别，都没有的按标题记为“木质（未注明）”或“未注明”。风格、造型、工艺、颜色、功能卖点有两种依据（功能只认图里看得见的，颜色以主图为准）——
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组，
 对照组不含增长商品），同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的哪一档都不列；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
-<li><b>开发方向</b>：增长商品带来的增量销售额最大的几个子类目（增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30 的合计；
+<li><b>开发方向</b>：增长商品 ≥{th['directions']['min_items']} 个、来自 ≥{th['directions'].get('min_brands', 1)} 个品牌的子类目{f"按增量销售额取前 {th['directions']['max']} 个" if int(th['directions'].get('max') or 0) else "都列，按增量销售额从大到小"}（增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30 的合计；
 老链接重新起量的增量按 0；
 本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的），
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）。
-每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
+本期要点和钉钉只写前 {th['directions'].get('summary_max', 5)} 个；全部子类目有没有画像、没有的写了原因，在“开发方向依据”的一览表里。每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
 <li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
 累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。变体超过 {f['max_variations_for_ratio']} 个的商品评论为父体共享，

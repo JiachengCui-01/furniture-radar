@@ -3,8 +3,9 @@
 包装多大、FBA 配送费多少。每一项都只来自该子类目，可以逐个核对。
 
   入选：增长商品 ≥ min_items 个、来自 ≥ min_brands 个品牌的子类目，按增量销售额从大到小
-        （同额时看品牌数、增长商品个数、突然爆火个数、势头最强的那个排在多前）取前 max 个；
-        没有任何特征也没有明确主材质（画不出画像）的跳过，由下一个补上；
+        （同额时看品牌数、增长商品个数、突然爆火个数、势头最强的那个排在多前）全部列出（max > 0 时取前 max 个）；
+        没有任何特征也没有明确主材质（画不出画像）的跳过；本期要点和钉钉只写前 summary_max 个
+        （实测：10-23 够格的 12 个、前 5 个只占增量的 70%；11-01 彩排 24 个、前 5 个只占 53%）；
   月销售额 = 该子类目每个增长商品的 近 28 天日均 × 当前售价 × 30，加起来；
   增量销售额 = 每个增长商品的（近 28 天日均 − 之前 28 天在卖日子的日均）× 当前售价 × 30，加起来，
         之前 28 天没在卖的按 0 算（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
@@ -114,9 +115,11 @@ def heads(node: str, disc: dict | None, focus: list[dict], cfg: dict) -> list[di
 
 
 def vision_targets(focus: list[dict], disc: dict | None, cfg: dict, spare: int = 2) -> list[dict]:
-    """主图识别要看的：排在前面的几个子类目（max + spare 个，有的会因为画不出画像被跳过）的增长商品和头部商品。"""
+    """主图识别要看的：够格的子类目（max > 0 时只看前 max + spare 个，有的会因为画不出画像被跳过）的增长商品和头部商品。"""
+    limit = int(cfg["thresholds"]["directions"].get("max") or 0)
+    nodes = ranked(focus, cfg)
     out: list[dict] = []
-    for node, rows in ranked(focus, cfg)[: int(cfg["thresholds"]["directions"]["max"]) + spare]:
+    for node, rows in (nodes[: limit + spare] if limit else nodes):
         out += rows + heads(node, disc, focus, cfg)
     return out
 
@@ -126,13 +129,14 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
     """focus：增长商品（analyze.focus_items 的顺序 = 势头），每个商品要已带 item["material"]。
     disc：月度名单（同子类目头部商品从这里取）。"""
     c = cfg["thresholds"]["directions"]
+    limit = int(c.get("max") or 0)  # 0 = 够格的全部列出
     need_share, per_dim = float(c["feature_min_share"]), int(c["per_dim"])
     head_min, gap, lift = int(c.get("head_min", 10)), float(c.get("head_min_gap", 0.2)), float(c.get("head_min_lift", 1.5))
     trend = {dim: {f["label"] for f in rows.get("more") or []} for dim, rows in (appearance or {}).items()}
 
     out = []
     for node, rows in ranked(focus, cfg):
-        if len(out) >= int(c["max"]):
+        if limit and len(out) >= limit:
             break
         n, nb = len(rows), _n_brands(rows)
         need = max(2, math.ceil(need_share * nb - 1e-9))
@@ -204,6 +208,52 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
                       "price": i.get("price"), "look": i.get("look") or "", "pkg": i.get("pkg")} for i in refs],
         })
     return out
+
+
+def overview(items: list[dict], focus: list[dict], shown: list[dict], disc: dict | None, cfg: dict) -> list[dict]:
+    """全部子类目一览：监控范围里的每个子类目（月度名单），加上追踪商品、增长商品自己所在的子类目。每行：
+    追踪商品数（本期拉了日数据的）、增长商品数 / 品牌数 / 突然爆火数、增长商品的月销售额和增量（口径同画像）、
+    品类大盘（追踪商品身上的 universe.node_tide，本期没翻全市场名单时没有），以及有没有画像——没有的写原因：
+    没有增长商品 / 增长商品不到 min_items 个 / 只来自 1 个品牌 / 排在前 max 个之后 / 没有共同的主材质或特征。
+    按增量从大到小（同额看品牌数、增长商品数、突然爆火数、追踪商品数）。shown = compute 的结果。"""
+    c = cfg["thresholds"]["directions"]
+    limit, min_items, min_brands = int(c.get("max") or 0), int(c["min_items"]), int(c.get("min_brands", 1))
+    tracked: dict[str, list[dict]] = {}
+    for item in items:
+        if item.get("daily", True) and node_of(item):
+            tracked.setdefault(node_of(item), []).append(item)
+    growth: dict[str, list[dict]] = {}
+    for item in focus:
+        if node_of(item):
+            growth.setdefault(node_of(item), []).append(item)
+    names = [n.get("name_cn") or n.get("name") or "" for n in (disc or {}).get("nodes") or []]
+    names = [n for n in dict.fromkeys(names + list(tracked) + list(growth)) if n]
+    order = [node for node, _rows in ranked(focus, cfg)]
+    pos = {d["node"]: order.index(d["node"]) for d in shown}
+    last = max(pos.values(), default=-1)
+    rows = []
+    for name in names:
+        g = growth.get(name, [])
+        nb = _n_brands(g)
+        if name in pos:
+            status = None
+        elif not g:
+            status = "没有增长商品"
+        elif len(g) < min_items:
+            status = f"增长商品不到 {min_items} 个"
+        elif nb < min_brands:
+            status = f"增长商品只来自 {nb} 个品牌"
+        elif limit and len(shown) >= limit and order.index(name) > last:
+            status = f"增量排在前 {limit} 个之后"
+        else:
+            status = "没有共同的主材质或特征"
+        tide = next((i["tide"] for i in tracked.get(name, []) if i.get("tide") is not None), None)
+        rows.append({"node": name, "n_tracked": len(tracked.get(name, [])), "n": len(g), "n_brands": nb,
+                     "n_surge": sum(1 for i in g if i["label"] == "surge"),
+                     "monthly": round(sum(monthly_sales(i) for i in g)), "increment": round(sum(increment(i) for i in g)),
+                     "tide": tide, "shown": status is None, "status": status})
+    rows.sort(key=lambda r: (-r["increment"], -r["n_brands"], -r["n"], -r["n_surge"], -r["n_tracked"]))
+    return rows
 
 
 def price_text(price: dict | None) -> str:

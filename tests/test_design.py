@@ -144,8 +144,14 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     assert "外观与工艺依据" in body and "增长商品" in body and "本期要点" in body
     assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
     assert "Material 属性" in plain
-    assert body.index("<h3>开发建议</h3>") < body.index("<h3>开发方向</h3>")  # 两节都要有，不是互相替换
+    assert body.index("<h3>开发建议</h3>") < body.index("<h3>开发方向")  # 两节都要有，不是互相替换
     assert "<h3>开发方向依据</h3>" in body and 'class="dbox dir"' in body
+    # 够格的子类目全部有画像；本期要点只写前 summary_max 个，标题写明；一览表把每个子类目都列出来
+    n_dirs = body.count('class="dbox dir"')
+    top = cfg["thresholds"]["directions"]["summary_max"]
+    if n_dirs > top:
+        assert f"<h3>开发方向（增量最大的 {top} 个，全部 {n_dirs} 个见下方“开发方向依据”）</h3>" in body
+    assert f"个子类目一览：{n_dirs} 个有画像（见下方）" in body and body.count("<td>有（见下方）</td>") == n_dirs
     for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
         assert gone not in plain, gone  # 同一个概念只有一种叫法
 
@@ -324,6 +330,49 @@ def test_directions_rank_by_increment_not_brand_count(cfg):
     assert out[0]["sales"] == {"monthly": round((40 + 30) * 150 * 30), "increment": round((30 + 30) * 150 * 30)}
     assert out[1]["sales"]["increment"] == 3 * 5 * 30 * 30
     assert directions.money_text(out[0]["sales"]["increment"]) == "$27 万"
+
+
+def test_all_qualifying_subcategories_get_a_profile_and_the_rest_say_why(cfg):
+    """够格的子类目全部有画像（以前只取前 5 个：10-23 够格的 12 个、前 5 个只占增量的 70%）；一览表把监控范围里的
+    每个子类目都列出来，没有画像的写原因；本期要点、钉钉只写增量最大的前 summary_max 个，标题写明还有多少。"""
+    from radar import narrative
+    from radar.detect import directions
+    from radar.notify import dingtalk
+
+    focus = [_dir_item(f"A{k}{j}", f"子类{k}", "Bookshelf", f"B{k}{j}", recent=10 + 10 * (7 - k), prev=5)
+             for k in range(7) for j in range(2)]
+    focus += [_dir_item("S1", "单品", "Bookshelf", "S", recent=500, prev=5),
+              _dir_item("O1", "一家", "Bookshelf", "O", recent=400, prev=5),
+              _dir_item("O2", "一家", "Bookshelf", "O", recent=400, prev=5)]
+    flat = {**_dir_item("F1", "没增长", "Bookshelf", "F", label="hot"), "tide": 1.08}
+    items = focus + [flat]
+    disc = {"nodes": [{"name_cn": "子类0"}, {"name_cn": "没增长"}, {"name_cn": "空的"}], "products": {}}
+
+    out = directions.compute(focus, {"asins": {}}, {}, cfg, disc=disc)
+    assert [d["node"] for d in out] == [f"子类{k}" for k in range(7)]  # 7 个全列，不截到 5 个
+    table = {r["node"]: r for r in directions.overview(items, focus, out, disc, cfg)}
+    assert [r for r in table.values() if r["shown"]] == [table[f"子类{k}"] for k in range(7)]
+    assert table["单品"]["status"] == "增长商品不到 2 个" and table["单品"]["increment"] == round(495 * 100 * 30)
+    assert table["一家"]["status"] == "增长商品只来自 1 个品牌"
+    assert table["没增长"] == {"node": "没增长", "n_tracked": 1, "n": 0, "n_brands": 0, "n_surge": 0, "monthly": 0,
+                              "increment": 0, "tide": 1.08, "shown": False, "status": "没有增长商品"}
+    assert table["空的"]["n_tracked"] == 0 and table["空的"]["status"] == "没有增长商品"
+    # 设了 max 时，排在后面的写“增量排在前 N 个之后”
+    capped = {**cfg, "thresholds": {**cfg["thresholds"], "directions": {**cfg["thresholds"]["directions"], "max": 3}}}
+    few = directions.compute(focus, {"asins": {}}, {}, capped, disc=disc)
+    rows = {r["node"]: r for r in directions.overview(items, focus, few, disc, capped)}
+    assert len(few) == 3 and rows["子类3"]["status"] == "增量排在前 3 个之后"
+
+    text = narrative.name_the_cut("### 开发建议\n- x\n### 开发方向\n- 开发子类0\n### 风险提醒\n- y", 7, 5)
+    assert "### 开发方向（增量最大的 5 个，全部 7 个见下方“开发方向依据”）\n- 开发子类0" in text
+    assert narrative.name_the_cut("### 开发方向\n- a", 5, 5) == "### 开发方向\n- a"
+    ctx = {"title": "雷达", "report_id": "2026-11-01", "as_of": "2026-10-31", "cfg": cfg, "diff": {"first": True},
+           "traits": {"directions": out},
+           "sections": {"surge": [], "potential": [], "fake": [], "counts": {"total": 1, "surge": 0, "potential": 0,
+                                                                              "hot": 0, "fake": 0}}}
+    lines = dingtalk.build_text(ctx).splitlines()
+    k = lines.index("**🛠 开发方向**（增量最大的 5 个，共 7 个见报告）")
+    assert [line.split("：")[0] for line in lines[k + 1:] if line.startswith("- 子类")] == [f"- 子类{i}" for i in range(5)]
 
 
 def test_directions_compare_with_heads_of_the_same_subcategory(cfg):

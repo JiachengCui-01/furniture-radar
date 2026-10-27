@@ -140,9 +140,12 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     if mats or looks:
         lines.append("")
     if traits.get("directions"):
-        lines.append("**🛠 开发方向**")
+        dirs = traits["directions"]
+        top = dirs[: int(ctx["cfg"]["thresholds"]["directions"].get("summary_max") or 5)]
+        # 报告里够格的子类目全部列出，这里只写增量最大的几个
+        lines.append("**🛠 开发方向**" + (f"（增量最大的 {len(top)} 个，共 {len(dirs)} 个见报告）" if len(dirs) > len(top) else ""))
         lines += [f"- {headline(d)}" + (f"（月增量约 {money_text(d['sales']['increment'])}）" if d.get("sales") else "")
-                  for d in traits["directions"]]
+                  for d in top]
         lines.append("")
     diff = ctx["diff"]
     if not diff.get("first"):

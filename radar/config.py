@@ -92,7 +92,7 @@ DEFAULTS: dict = {
                    "min_base_daily": 3, "min_items": 40},
         "appearance": {"min_count": 2, "title_min_share": 0.1, "title_min_lift": 1.3, "image_min_gap": 0.1,
                        "common_share": 0.3, "also_share": 0.1, "per_dim": 6, "min_brands": 2},
-        "directions": {"min_items": 2, "min_brands": 2, "max": 5, "feature_min_share": 0.5, "per_dim": 3,
+        "directions": {"min_items": 2, "min_brands": 2, "max": 0, "summary_max": 5, "feature_min_share": 0.5, "per_dim": 3,
                        "head_max": 30, "head_min": 10, "head_min_gap": 0.2, "head_min_lift": 1.5},
         "relist": {"max_age_days": 180, "review_share": 0.5, "review_share_fast": 0.15, "fast_share": 0.5,
                    "fast_min_daily": 5, "ramp_days": 7},

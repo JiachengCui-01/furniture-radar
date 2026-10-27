@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 
@@ -78,8 +79,21 @@ def build_facts(ctx: dict) -> dict:
         "潜力": [brief(i) for i in sec["potential"][:6]],
         "异常信号": [brief(i) for i in sec["fake"][:5]],
         "共性特点": design_facts(ctx["traits"]),
-        "开发方向": direction_facts(ctx["traits"]),
+        # 报告里够格的子类目全部列出，本期要点只写增量最大的前 summary_max 个
+        "开发方向": direction_facts(ctx["traits"])[: summary_limit(ctx["cfg"])],
     }
+
+
+def summary_limit(cfg: dict) -> int:
+    return int(cfg["thresholds"]["directions"].get("summary_max") or 5)
+
+
+def name_the_cut(text: str, total: int, shown: int) -> str:
+    """“开发方向”小节只写了前几个时，标题写明是增量最大的几个、全部的在哪里（不然看着像只有这几个子类目）。"""
+    if total <= shown:
+        return text
+    head = f"### 开发方向（增量最大的 {shown} 个，全部 {total} 个见下方“开发方向依据”）"
+    return re.sub(r"(?m)^###\s*开发方向(?:（[^）\n]*）)?[ \t]*$", lambda _m: head, text, count=1)
 
 
 def _evidence(f: dict, tr: dict) -> str:
@@ -290,7 +304,8 @@ def guard_risks(text: str, facts: dict) -> str:
 def summary(ctx: dict, cfg: dict, api_key: str) -> tuple[str, str]:
     """返回 (markdown 文本, 来源 'llm'|'template')。大模型写的“风险提醒”会再按 guard_risks 核对一遍。"""
     facts = build_facts(ctx)
+    total, shown = len(ctx["traits"].get("directions") or []), len(facts["开发方向"])
     text = llm_summary(facts, cfg, api_key)
     if text:
-        return guard_risks(text, facts), "llm"
-    return template_summary(facts), "template"
+        return name_the_cut(guard_risks(text, facts), total, shown), "llm"
+    return name_the_cut(template_summary(facts), total, shown), "template"

@@ -550,7 +550,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     tagged = vision.tag_items(focus + reference, state, cfg, secrets.llm_api_key)
     if tagged:
         log.info(f"主图识别 {tagged} 张")
-    # 开发方向：排在前面的几个子类目，增长商品和同子类目头部商品都看主图，两边特征的来源才一致
+    # 开发方向：够格的子类目（directions.max > 0 时只看前几个），增长商品和同子类目头部商品都看主图，两边特征的来源才一致
     growth = analyze.focus_items(items)
     tagged = vision.tag_items(directions.vision_targets(growth, disc, cfg), state, cfg, secrets.llm_api_key,
                               untracked=True)
@@ -566,6 +566,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = vision.of(state, item["asin"]).get("summary") or ""
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
+    trait["direction_overview"] = directions.overview(items, growth, trait["directions"], disc, cfg)
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]

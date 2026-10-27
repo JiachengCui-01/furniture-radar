@@ -144,7 +144,14 @@ def test_directions_match_their_definition(world_run, master_key, cfg):
     growth = analyze.focus_items(items)
     out = directions.compute(growth, state, {}, cfg, disc=disc)
     c = cfg["thresholds"]["directions"]
-    assert out and len(out) <= c["max"]
+    assert out and (not c["max"] or len(out) <= c["max"])
+    # max = 0：够格的（≥min_items 个增长商品、≥min_brands 个品牌）全部列出，没列的只能是画不出画像的
+    qualified = [node for node, _rows in directions.ranked(growth, cfg)]
+    listed = [d["node"] for d in out]
+    assert listed == [n for n in qualified if n in listed]
+    table = {r["node"]: r for r in directions.overview(items, growth, out, disc, cfg)}
+    assert all(table[n]["status"] == "没有共同的主材质或特征" for n in qualified if n not in listed)
+    assert all(table[n]["shown"] and table[n]["increment"] == d["sales"]["increment"] for n, d in zip(listed, out))
     incs = [d["sales"]["increment"] for d in out]
     assert incs == sorted(incs, reverse=True)
     for d in out:
