@@ -4,7 +4,7 @@
 “新”只能靠日数据，每个 ASIN 1 次调用；所以每期约 150 个名额的分配决定了能发现多少机会。
 
 追踪池（本地计算，不花调用），按顺序填满 max_size：
-  1. 必看（≤ core_max）：往期被标为 爆火/潜力/异常 的 + 每个子类目月销量前 per_node_top、月销售额前 per_node_top_revenue
+  1. 必看：往期被标为 爆火/潜力/异常 的（≤ watch_max）+ 每个子类目月销量前 per_node_top、月销售额前 per_node_top_revenue（≤ core_max）
      （轮流取；只按件数挑会偏向便宜货：实测件数第一的价格中位数 $65，销售额第一的 $130，29 个子类目里 15 个不是同一个），
      名额还有剩就按月销量从全部子类目里补（持续热销板块按月销量排，床架这类大类目的头部不能漏）
   2. 相似款（≤ similar_max）：上期爆款的同类竞品（近 30 天数据）
@@ -147,7 +147,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
     """返回 (ASIN 列表, 入选原因)。limit：本期还能刷新多少个（预算），池子不会超过它。"""
     pcfg = cfg["pool"]
     size = int(pcfg["max_size"]) if limit is None else max(0, min(int(pcfg["max_size"]), limit))
-    core_max = min(size, int(pcfg.get("core_max", size)))
+    watch_max = min(size, int(pcfg.get("watch_max", size)))
     products = list(((disc or {}).get("products") or {}).values())
     fresh = fresh_rows(state)
     by_asin = {**fresh, **{p["asin"]: p for p in products}}
@@ -172,14 +172,16 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
         parents.add(key)
         return True
 
-    # 1. 必看：往期上榜的 + 每个子类目月销量前几（轮流取，截断时每个子类目都有覆盖）+ 全部类目里销量最大的
+    # 1. 必看：往期上榜的（最近一期的在前）+ 每个子类目月销量前几（轮流取，截断时每个子类目都有覆盖）+ 全部类目里销量最大的。
+    #    两份名额分开：往期上榜的多了（全市场名单以后每期约 90 个）也不挤掉头部
     nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
     for asin in watchlist(state, pcfg["watch_runs"]):
         rec = state["asins"].get(asin) or {}
         if nodes and rec.get("node") not in nodes:
             continue  # 范围调整后，旧范围里的商品（例如沙发、床垫）不再追踪
         if keep_product(rec, cfg):
-            add(asin, "watch", core_max)
+            add(asin, "watch", watch_max)
+    core_max = min(size, len(order) + int(pcfg.get("core_max", size)))
     by_node: dict[str, list[dict]] = {}
     for p in products:
         if "top" in p["sources"]:

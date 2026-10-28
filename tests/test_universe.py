@@ -1,4 +1,5 @@
 """全市场名单的初筛（radar/universe.py）：用自己存的往期名单算增长，只给可能达标的商品拉日数据。"""
+import statistics
 from datetime import date, timedelta
 
 from radar import universe
@@ -74,7 +75,7 @@ def test_snapshots_match_by_parent_when_the_representative_child_changes(cfg):
 def test_node_tide_is_the_median_change_of_the_node(cfg):
     """品类大盘：子类目里量够的商品近 30 天比约 30 天前的中位数；扣大促系数；基准是上个月的月度名单（已修订完）时，
     近 30 天里最后几天还会被下调，按修订幅度扣；商品太少的子类目不算；本期没翻名单时不算。"""
-    snaps = {30: {f"A{i}": 100 for i in range(12)} | {f"B{i}": 100 for i in range(3)}}
+    snaps = {28: {f"A{i}": 100 for i in range(12)} | {f"B{i}": 100 for i in range(3)}}
     rows = {f"A{i}": {**_row(100 + 10 * i), "node": "N:A"} for i in range(12)}
     rows.update({f"B{i}": {**_row(300), "node": "N:B"} for i in range(3)})
     state = _state(snaps)
@@ -86,9 +87,22 @@ def test_node_tide_is_the_median_change_of_the_node(cfg):
     state2 = _state({}, month)
     state2["universe"].update(date=TODAY.isoformat(), rows=rows)
     revised = universe.node_tide(state2, TODAY, cfg, revision={"window": 9, "median": 0.8})
-    assert revised == {"N:A": round(1.55 * (1 - 9 / 30 * 0.2), 3)}
+    shrink = 1 - 9 / 30 * 0.2  # 基准 10 月结束于 31 天前：每个商品的倍数换算到 28 天
+    assert revised == {"N:A": round(statistics.median([((1 + i / 10) * shrink) ** (28 / 31) for i in range(12)]), 3)}
     state["universe"]["date"] = "2026-11-28"
     assert universe.node_tide(state, TODAY, cfg) == {}
+
+
+def test_node_tide_is_converted_to_a_28_day_span(cfg):
+    """上升中 / 潜力比的是近 28 天和再之前 28 天；大盘的基准是 46 天前时（头一个月的第三周用 9 月名单），
+    同样的涨幅按 ^(28/46) 换算：×1.57 → ×1.32。span_days = 0 时不换算。"""
+    rows = {f"A{i}": {**_row(157), "node": "N:A"} for i in range(10)}
+    state = _state({46: {f"A{i}": 100 for i in range(10)}})
+    state["universe"].update(date=TODAY.isoformat(), rows=rows)
+    assert universe.node_tide(state, TODAY, cfg) == {"N:A": round(1.57 ** (28 / 46), 3)}
+    assert universe.node_tide(state, TODAY, cfg) == {"N:A": 1.316}
+    cfg["thresholds"]["tide"]["span_days"] = 0
+    assert universe.node_tide(state, TODAY, cfg) == {"N:A": 1.57}
 
 
 def test_young_list_finds_fresh_listings_below_the_floor(cfg):

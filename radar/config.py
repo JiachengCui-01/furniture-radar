@@ -49,6 +49,7 @@ DEFAULTS: dict = {
         "similar_cooldown_runs": 3,
     },
     "pool": {"max_size": 3000, "core_max": 100, "per_node_top": 1, "per_node_top_revenue": 1, "watch_runs": 3,
+             "watch_max": 300,
              "similar_max": 10, "opportunity_every_run": 20, "opportunity_min_units": 300,
              "opportunity_min_revenue": 40000, "opportunity_min_growth": 20,
              "opportunity_head_rising": 1.3,

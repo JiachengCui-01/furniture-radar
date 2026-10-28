@@ -306,6 +306,10 @@ def card(item: dict, kind: str, group: str = "", notes: list[tuple[str, str]] = 
         kv.append(f"<span><em>近7天日均</em> {fmt_num(item.get('recent_avg7'))} 件</span>")
         if p.get("recent_ratio"):
             kv.append(f"<span><em>较前28天</em> <b>×{p['recent_ratio']:.2f}</b></span>")
+    if kind in ("surge", "potential"):  # 这两个板块按它排（analyze.sections），和开发方向的增量同一个口径
+        inc = directions.increment(item)
+        kv.append(f"<span><em>月增量</em> <b>{esc(directions.money_text(inc))}</b>"
+                  + ("（近 28 天不比再之前 28 天多）" if inc <= 0 else "") + "</span>")
     if kind == "hot" and item.get("hot"):
         h = item["hot"]
         kv.append(f"<span><em>近6月月均</em> <b>{fmt_int(h['avg_monthly'])}</b> 件</span>")
@@ -540,7 +544,7 @@ def _direction_overview(rows: list[dict], cfg: dict) -> str:
     hint = ("子类目 = 监控范围内的子类目，加上追踪商品自己所在的其他子类目，按“比之前 28 天多”从大到小；"
             "追踪商品 = 本期拉了日数据的商品数；增长商品 = 突然爆火 + 潜力 + 上升中（不含异常信号、评分偏低的），"
             "月销售额和“比之前 28 天多”只算增长商品，口径同下方画像；"
-            + ("品类大盘 = 子类目里量够的商品近 30 天销量是约 30 天前的几倍（中位数，扣大促日，见“判定方法”）；" if has_tide else "")
+            + ("品类大盘 = 子类目里量够的商品近 30 天销量是约 30 天前的几倍（中位数，扣大促日，换算成 28 天的跨度，见“判定方法”）；" if has_tide else "")
             + f"画像：增长商品 ≥{c['min_items']} 个、来自 ≥{c.get('min_brands', 1)} 个品牌的子类目"
             + (f"按增量取前 {c['max']} 个" if int(c.get("max") or 0) else "都有")
             + "（没有任何共同主材质或特征的除外），没有的写了原因。")
@@ -676,13 +680,16 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                  if str(th.get("revision_mode") or "correct") == "correct" else "")
     short = (f"对比期在卖不到 {th['short_base_days']} 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。"
              if th.get("short_base_days") else "")
+    order = ("按月增量排序：增量销售额 =（近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30，和开发方向同一个口径；"
+             "老品换链接（之前 28 天没在卖或在卖不到 "
+             f"{th.get('short_base_days', 14)} 天）、老链接重新起量按 0；近 28 天不比再之前 28 天多的（跌下去又涨回来）排在后面。")
     return {
         "surge": scope + f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
                  f"日均销量 ≥{s['sales_ratio']:g} 倍{tide_surge}且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
-                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}{corrected}按爆发强度排序。",
+                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}{corrected}{order}同额的按爆发强度。",
         "potential": scope + f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
                      f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}；有两个以上完整月份的，月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
-                     f"没有回落；异常分 <{f['suspect_score']}。{short}{corrected}按月销量增长排序（不满两个完整月份的按近 28 天增长）。",
+                     f"没有回落；异常分 <{f['suspect_score']}。{short}{corrected}{order}同额的按月销量增长（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平（按月销量排名，同一父体只算一次）、"
                f"且这个月量够（≥{h.get('min_units', 0):g} 件或销售额 ≥${h.get('min_revenue') or 0:,.0f}）；"
                f"近 6 个月波动系数 ≤{h['max_cv']}；近 3 个月平均每月跌幅 ≤{-h['min_trend']:.0%}；"
@@ -719,6 +726,9 @@ def _method(cfg: dict) -> str:
     """共用概念的定义。各板块自己的入选条件写在对应小窗顶部，这里不重复。"""
     th = cfg["thresholds"]
     s, f, m = th["surge"], th["fake"], th["momentum"]
+    span = float((th.get("tide") or {}).get("span_days", 28) or 0)
+    tide_span = (f"；每个商品的倍数换算成 {span:g} 天的跨度（倍数 ^ ({span:g} ÷ 基准有几天)），和上升中 / 潜力的“近 28 天 vs 再之前 28 天”一致："
+                 "头一个月的基准是上个月的月度名单（每周一期时第二、三期是 39、46 天前），中间有一期没跑成时用 35 天前的快照" if span else "")
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
 <li><b>数据</b>：卖家精灵的月度头部名单（product_research，已结束月份；月份结束后不到 {cfg['discovery'].get('settle_days', 20)} 天拉的过了这么多天重拉一次，
 卖家精灵月初还没更新完；持续热销补判还用近 {th['hot'].get('list_months', 6)} 个月每个月的名单）、
@@ -735,14 +745,15 @@ def _method(cfg: dict) -> str:
 每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）。{_revision_method(th)}
 测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正。</li>
 <li><b>品类大盘</b>：每个子类目里量够的商品（全市场名单）近 30 天销量是约 30 天前的几倍，取中位数（扣掉大促日；
-商品不到 {(th.get('tide') or {}).get('min_items', 10)} 个的子类目不算）。突然爆火、潜力、上升中的增长倍数先除以它（大于 1 时）再比门槛——
+商品不到 {(th.get('tide') or {}).get('min_items', 10)} 个的子类目不算）{tide_span}。突然爆火、潜力、上升中的增长倍数先除以它（大于 1 时）再比门槛——
 整个子类目一起涨时随大流的商品不算，卡片上标“随大盘”；从零起量的爆火（新品爆发 / 老链接重新起量）没有倍数，不扣。
 回测（2025-11~2026-09 每周回放）：突然爆火去掉 14%，去掉的之后 28 天 78% 保持住、留下的 88%（12 月 60% / 77%）；
 潜力去掉的 74%（其余 86%），上升中 79%（其余 81%）——潜力、上升中主要是定义上的要求，不是预测更准。</li>
 <li><b>断货</b>：BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子（断货 / 停售 / 还没开卖）不算进对比期，
 爆火、潜力、上升中都只和真正在卖的日子比{f"；潜力、上升中（和开发方向的增量）的对比期里，连着 ≥{th['out_of_stock_zero_run']} 天销量 0 的日子也算断货（断货头几天 BSR 还没涨上去）" if th.get('out_of_stock_zero_run') else ""}。</li>
-<li><b>追踪名额</b>：必看（往期爆火/潜力/异常 + 每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}
-+ 全部类目里销量最大的）+ 机会候选。机会候选来自<b>全市场名单</b>：每期把全部子类目里近 30 天销量 ≥{cfg['pool']['opportunity_min_units']} 件
+<li><b>追踪名额</b>：必看（近 {cfg['pool']['watch_runs']} 期的爆火/潜力/异常，最多 {cfg['pool'].get('watch_max', 300)} 个；
+另给子类目头部 {cfg['pool']['core_max']} 个名额：每个子类目销量前 {cfg['pool']['per_node_top']}、销售额前 {cfg['pool'].get('per_node_top_revenue', 0)}，
+还有剩的给全部类目里销量最大的；两份名额分开，往期上榜的多了也不挤掉头部）+ 机会候选。机会候选来自<b>全市场名单</b>：每期把全部子类目里近 30 天销量 ≥{cfg['pool']['opportunity_min_units']} 件
 或销售额 ≥${cfg['pool'].get('opportunity_min_revenue') or 0:,.0f} 的商品都翻一遍，存下每个商品的近 30 天销量；名单里的增长率和日数据对不上，
 所以用自己存的往期名单算：比约 {cfg['pool'].get('screen_base_days', 28)} 天前那份高 ≥{cfg['pool']['screen_growth']:.0%}、半年内上架且没跌、
 近 {' / '.join(map(str, cfg['pool'].get('screen_short_days') or (7, 14)))} 天比那几天前那份的日均高
@@ -769,7 +780,7 @@ def _method(cfg: dict) -> str:
 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天的是“短时脉冲”，其余都不符合的是“上涨形态不稳定”，都不算爆火。
 老品换链接的“从零起量”只是新子体开始卖，不算新品爆发、也不标新品起量。
 和之前 {s['base_days']} 天比的（爆火、潜力、上升中），对比期只算在卖的日子；在卖不到 {th.get('short_base_days', 14)} 天的照样判，卡片上写明“对比期只有 X 天在卖”。
-<b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)。</li>
+<b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)（突然爆火板块按月增量排，同额时按它）。</li>
 <li><b>爆火的附加标签</b>：降价驱动 = 价格中位数下降 ≥{s['price_drop']:.0%}。
 对比期里 ≥7 天（且 ≥25%）没有销量、而更早之前卖得和现在差不多的是“断货恢复”，不算爆火。</li>
 <li><b>数据来源</b>：所有判定的数据都来自卖家精灵（月度名单、近 30 天榜单、每个商品的日数据、子类目月度销量），
@@ -792,13 +803,15 @@ def _method(cfg: dict) -> str:
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）。
 本期要点和钉钉只写前 {th['directions'].get('summary_max', 5)} 个；全部子类目有没有画像、没有的写了原因，在“开发方向依据”的一览表里。每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
-<li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、两期之间评论增速远超销量、评分短期跳升、
+<li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、
+两期之间评论增速远超销量（和之前 {f.get('review_base_days', 45)} 天里记到的最高评论数比：卖家精灵的评论数会来回跳，跌下去又涨回来的不算新增）、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；
 累计 ≥{f['suspect_score']} 分为疑似、≥{f['high_score']} 分为高度疑似。评论数和销量都是整个父体的（卖家精灵名单按父体一行），
 变体多少都直接比、不除以变体数（实测留评率不随变体数变大）；老品换链接不算新品评论/销量比；
+留评率、新品评论/销量比、两期之间评论增速是同一个证据（评论相对销量太多），第一项记 2 分，同时成立的其余几项各记 1 分；
 评论暴增且父体/变体变化的标“变体合并”、短时脉冲落在大促日的标“大促脉冲”、抽查评论里 Vine 评论 ≥30% 的标“Vine 评论多”，这三项不计分。
 Vine（亚马逊给新品安排的测评，每个商品最多 {f.get('vine_allowance', 30)} 条）不算刷评：抽查过评论的按抽到的 Vine 比例扣，
-没抽查过的、上架 ≤{f.get('vine_days', 90)} 天的新品，前 {f.get('vine_allowance', 30)} 条评论当作可能是 Vine；
+没抽查过的、上架 ≤{f.get('vine_days', 90)} 天的新品，前 {f.get('vine_allowance', 30)} 条评论当作可能是 Vine（两期之间新增的评论落在前 {f.get('vine_allowance', 30)} 条里的也一样）；
 抽查到的近 60 天评论不到按评论数推算应有的一半，说明评论是从老链接或变体合并继承来的，留评率和新品评论比都不计；
 当月新增评论比商品总评论还多的，名单里的评论数是整个父体的，也不计。每期抽查评论最多 {cfg['budget']['review_checks']} 个（14 天内查过的不重查），
 先后：可疑的上榜商品 → 本期要点和钉钉里的突然爆火、潜力，以及前几个开发方向的参考商品 → 不在榜单上、异常分 ≥{f['suspect_score'] - 1} 的

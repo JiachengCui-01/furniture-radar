@@ -329,6 +329,39 @@ def test_review_velocity_is_not_divided_by_variations(cfg):
         assert got["review_velocity"].endswith("（200%）")
 
 
+def test_review_velocity_ignores_counts_that_dip_and_come_back(cfg):
+    """评论数会来回跳：1231 → 1189 → 1237 是跌了又涨回来，和之前 45 天里最高的 1231 比只多 6 条，不算增速；
+    真涨了的照样算（起点是最高的那次，销量也从那天算起）。"""
+    f = cfg["thresholds"]["fake"]
+    d = make([10] * 120)
+
+    def obs(*counts):
+        return [{"date": (END - timedelta(days=3 * (len(counts) - 1 - k))).isoformat(), "ratings": c, "rating": 4.4}
+                for k, c in enumerate(counts)]
+
+    rebound = fakehot.score({"available": "2024-01-01", "obs": obs(1231, 1189, 1237)}, d, END, None, 2.0, f, [])
+    assert "review_velocity" not in {s["code"] for s in rebound["signals"]}
+    real = fakehot.score({"available": "2024-01-01", "obs": obs(1231, 1189, 1300)}, d, END, None, 2.0, f, [])
+    text = next(s["text"] for s in real["signals"] if s["code"] == "review_velocity")
+    assert text.startswith(f"{(END - timedelta(days=6)).isoformat()} 以来评论 +69 条，销量约 60 件")
+
+
+def test_review_velocity_allows_for_vine_and_counts_once_with_review_rate(cfg):
+    """上架 ≤90 天、没抽查过评论的新品：累计前 30 条里新增的当作可能是 Vine（10 → 27 条全在前 30 条里，不算）；
+    和留评率是同一个证据，两项都成立时这一项只计 1 分。"""
+    f = cfg["thresholds"]["fake"]
+    d = make([3] * 120)
+    young = (END - timedelta(days=60)).isoformat()
+    obs = [{"date": (END - timedelta(days=3)).isoformat(), "ratings": 10, "rating": 4.6},
+           {"date": END.isoformat(), "ratings": 27, "rating": 4.6}]
+    vine = fakehot.score({"available": young, "obs": obs}, d, END, None, 2.0, f, [])
+    assert not vine["signals"] and vine["check_reviews"]  # 扣掉 Vine 才不够的：去抽查评论
+    old = {"available": "2024-01-01", "obs": [{**obs[0], "ratings": 500}, {**obs[1], "ratings": 560}]}
+    row = {"ratings_rate": 14.0, "ratings_cv": 30}
+    both = {s["code"]: s["points"] for s in fakehot.score(old, d, END, row, 1.8, f, [])["signals"]}
+    assert both == {"review_rate": 2, "review_velocity": 1}
+
+
 def test_reviews_without_sales_counts_for_any_variation_count(cfg):
     """几乎没卖、评论却涨了：销量是整个父体的，变体多少都计分。"""
     f = cfg["thresholds"]["fake"]
@@ -936,3 +969,23 @@ def test_direction_increment_uses_revised_recent_sales():
     item = {"recent_avg28": 100, "prev_avg28": 50, "price": 10, "revised_avg28": 90}
     assert directions.increment(item) == (90 - 50) * 10 * 30 and directions.monthly_sales(item) == 90 * 10 * 30
     assert directions.increment({**item, "revised_avg28": None}) == (100 - 50) * 10 * 30
+
+
+def test_sections_rank_surge_and_potential_by_increment(cfg):
+    """突然爆火、潜力按增量销售额排（和开发方向同一个口径），同额看爆发强度 / 增长：
+    倍数大、量小的排在多卖很多钱的后面；老品换链接（之前没在卖）增量按 0；比两个月前没多卖的排最后。"""
+    def item(asin, label, recent, prev, price, strength=1.0, growth=None, **extra):
+        out = {"asin": asin, "label": label, "recent_avg28": recent, "prev_avg28": prev, "price": price, "tags": [],
+               "fake": {"score": 0}, "surge": {"strength": strength, "kind": "稳在高位"} if label == "surge" else None,
+               "potential": {"growth": growth, "recent_ratio": recent / prev if prev else None} if label == "potential" else None}
+        return {**out, **extra}
+
+    items = [item("SMALL", "surge", 12, 3, 40, strength=20),      # ×4、只多卖 9 件 × $40
+             item("BIG", "surge", 60, 30, 200, strength=5),       # ×2、多卖 30 件 × $200
+             item("RELIST", "surge", 80, None, 150, strength=30, relist={"share": 0.6}),
+             item("VSHAPE", "surge", 20, 25, 100, strength=8),    # 近 28 天反而比再之前 28 天少
+             item("RAMP", "potential", 10, 1, 100, growth=13.9),  # 月环比 +1390%，但只多卖 9 件 × $100
+             item("WIDE", "potential", 87, 61, 65, growth=2.9)]   # 多卖 26 件 × $65
+    sec = analyze.sections(items, 0)
+    assert [i["asin"] for i in sec["surge"]] == ["BIG", "SMALL", "RELIST", "VSHAPE"]
+    assert [i["asin"] for i in sec["potential"]] == ["WIDE", "RAMP"]

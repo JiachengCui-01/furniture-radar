@@ -15,7 +15,7 @@ import httpx
 
 from .. import log
 from ..analyze import display_name
-from ..detect.directions import headline, money_text
+from ..detect.directions import headline, increment, money_text
 from ..report.render import growth_text
 from ..narrative import top_design_labels
 
@@ -114,12 +114,12 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
             s = item["surge"]
             ratio = f"×{s['sales_ratio']:.1f}" if s.get("sales_ratio") else "新起量"
             tags = "·".join(t for t in item["tags"][:2])
-            lines.append(item_line(item, f" 日均{s['base_avg']:.0f}→{s['recent_avg']:.0f}（{ratio}）{tags}"))
+            lines.append(item_line(item, f" 日均{s['base_avg']:.0f}→{s['recent_avg']:.0f}（{ratio}，月增量{money_text(increment(item))}）{tags}"))
         lines.append("")
     if sec["potential"]:
         lines.append("**🌱 潜力产品**")
         for item in sec["potential"][:max_items]:
-            lines.append(item_line(item, " " + growth_text(item)))
+            lines.append(item_line(item, f" {growth_text(item)}（月增量{money_text(increment(item))}）"))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:

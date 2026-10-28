@@ -6,7 +6,8 @@
 | +2 | 留评率 ≥ max(子类目中位数×3, 6%) 且本月新增评论 ≥10（当月新增多于商品总评论的是父体数据，不计） | ✓ |
 | +2 | 新品（≤90 天）累计评论数 / 累计销量 ≥ 10%（和留评率同时成立时这一项只计 1 分：同一个证据） | ✓ |
 | —  | Vine 评论先扣掉（抽查过的按抽到的比例；没抽查过的、上架 ≤90 天的新品，前 30 条当作可能是 Vine）；抽查到的近 60 天评论不到应有的一半 = 评论是继承来的，上面两项都不计 | ✓ |
-| +2 | 两期之间新增评论 / 新增销量 ≥ 15%（或几乎无销量却涨评论） | 第 2 期起 |
+| +2 | 两期之间新增评论 / 新增销量 ≥ 15%（或几乎无销量却涨评论）：和之前 45 天里记到的最高评论数比（评论数会来回跳），
+       新品前 30 条里新增的当作可能是 Vine；和上面两项同时成立时只计 1 分（同一个证据） | 第 2 期起 |
 | +1 | 45 天内评分上升 ≥0.2 且评论数 ≥50 | 第 2 期起 |
 | +1 | 1~3 天脉冲后迅速回落（不在大促日，见 events.py） | ✓ |
 | +2 | 评论核查：评论最多的 3 天 ≥30%，且比随机分布时 3 天最多的条数（99% 分位）还多 | ✓（需额外调用） |
@@ -37,6 +38,18 @@ def previous_obs(rec: dict, as_of: date) -> dict | None:
         if day and day < as_of and entry.get("ratings") is not None:
             return entry
     return None
+
+
+def review_base(rec: dict, as_of: date, days: int) -> dict | None:
+    """评论增速的起点：as_of 之前 days 天内的观测里评论数最高的那次（并列取最近的）。
+    评论数会来回跳，跌下去又涨回来的不能算新增评论。这段时间里没有观测时返回 None（用上一期）。"""
+    best = None
+    for entry in rec.get("obs") or []:
+        day = clock.parse_day(entry.get("date"))
+        if day and day < as_of and (as_of - day).days <= days and entry.get("ratings") is not None \
+                and (best is None or entry["ratings"] >= best["ratings"]):
+            best = entry
+    return best
 
 
 def ratings_jump(rec: dict, as_of: date) -> float | None:
@@ -144,26 +157,43 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
                     + (f"，已扣掉 {vine} {vine_text}" if vine else "")
                     + ("；和留评率是同一个证据，这一项只计 1 分" if once else ""))
 
-    # 3. 两期之间的评论增速
+    # 3. 两期之间的评论增速：和之前 base_days 天里记到的最高评论数比（卖家精灵的评论数会来回跳：相邻两期 5% 是往下掉的，
+    #    1231 → 1189 → 1195 → 1237 这样跌了又涨回来的，和上一期比就成了“+42 条”）；上架 ≤ vine_days 天、没抽查过评论的，
+    #    累计前 vine_allowance 条里新增的那部分当作可能是 Vine（抽查过的按抽到的 Vine 比例扣）；
+    #    和留评率、新品评论/销量比是同一个证据（评论相对销量太多），它们已经计分时这一项只计 1 分
     prev = previous_obs(rec, as_of)
     merged = merge_detected(rec, disc_row)
     if merged:
         tags.append("变体合并")
     if prev and ratings is not None:
-        delta_ratings = ratings - prev["ratings"]
-        prev_day = clock.parse_day(prev["date"])
-        delta_units = sum_sales_between(d, prev_day, as_of) if prev_day else None
+        base = review_base(rec, as_of, int(cfg.get("review_base_days", 45))) or prev
+        base_day = clock.parse_day(base["date"])
+        raw_delta = ratings - base["ratings"]
+        delta_units = sum_sales_between(d, base_day, as_of) if base_day else None
+        if check and check.get("vine_share") is not None:
+            run_vine = int(round(max(0, raw_delta) * float(check["vine_share"])))
+        elif assumed:
+            allowance = int(cfg.get("vine_allowance", 30))
+            run_vine = max(0, min(ratings, allowance) - min(base["ratings"], allowance))
+        else:
+            run_vine = 0
+        delta_ratings = raw_delta - run_vine
+        bar = max(cfg["run_review_ratio"], cfg["review_rate_mult"] * (node_median_rate or 0) / 100)
+        raw_flag |= bool(not merged and raw_delta >= cfg["min_new_reviews"] and (not delta_units or raw_delta / delta_units >= bar))
         if delta_ratings >= cfg["min_new_reviews"] and not merged:
-            bar = max(cfg["run_review_ratio"], cfg["review_rate_mult"] * (node_median_rate or 0) / 100)
+            once = any(sig["code"] in ("review_rate", "new_listing_reviews") for sig in signals)
+            vine_note = f"，已扣掉 {run_vine} 条可能的 Vine 评论" if run_vine else ""
+            once_note = "；和留评率 / 新品评论比是同一个证据，这一项只计 1 分" if once else ""
             if not delta_units:
-                add("reviews_without_sales", 2,
-                    f"{prev['date']} 以来评论 +{int(delta_ratings)} 条，同期几乎没有销量")
+                add("reviews_without_sales", 1 if once else 2,
+                    f"{base['date']} 以来评论 +{int(delta_ratings)} 条，同期几乎没有销量{vine_note}{once_note}")
             elif delta_ratings / delta_units >= bar:
-                add("review_velocity", 2,
-                    f"{prev['date']} 以来评论 +{int(delta_ratings)} 条，销量约 {int(delta_units)} 件"
-                    f"（{delta_ratings / delta_units:.0%}）")
+                add("review_velocity", 1 if once else 2,
+                    f"{base['date']} 以来评论 +{int(delta_ratings)} 条，销量约 {int(delta_units)} 件"
+                    f"（{delta_ratings / delta_units:.0%}）{vine_note}{once_note}")
 
-        # 4. 评分跳升
+        # 4. 评分跳升（和上一期比）
+        prev_day = clock.parse_day(prev["date"])
         prev_rating, rating = prev.get("rating"), current_obs.get("rating")
         if (prev_rating is not None and rating is not None and prev_day
                 and (as_of - prev_day).days <= 45

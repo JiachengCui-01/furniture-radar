@@ -20,6 +20,29 @@ def display_name(brand: str, title: str) -> str:
     return f"{brand} {title}"
 
 
+MONTH_DAYS = 30
+
+
+def recent_daily(item: dict) -> float:
+    """近 28 天日均：本期测到了日数据修订时，用最近几天按修订幅度校正后的（item["revised_avg28"]）。"""
+    value = item.get("revised_avg28")
+    return value if value is not None else (item.get("recent_avg28") or 0)
+
+
+def monthly_sales(item: dict) -> float:
+    return recent_daily(item) * (item.get("price") or 0) * MONTH_DAYS
+
+
+def increment(item: dict) -> float:
+    """增量销售额 =（近 28 天日均 − 之前 28 天在卖日子的日均）× 当前售价 × 30。开发方向按它排（口径和例外见 detect/directions.py），
+    突然爆火、潜力两个板块也按它排（sections）。"""
+    if item.get("relist") and (item.get("prev_avg28") is None or item["relist"].get("base_short")):
+        return 0.0  # 老品换链接：之前没在卖（或只零星卖了几天），现在的销量是从老链接转过来的
+    if (item.get("surge") or {}).get("kind") == "老链接重新起量":
+        return 0.0  # 停了很久又开始卖：不是新增的需求
+    return (recent_daily(item) - (item.get("prev_avg28") or 0)) * (item.get("price") or 0) * MONTH_DAYS
+
+
 LABEL_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
             "low": "评分偏低"}
 # 不进入任何榜单和外观分析样本的标签
@@ -656,10 +679,14 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     def cut(rows: list[dict]) -> list[dict]:
         return rows if top_n <= 0 else rows[:top_n]
 
-    surge = sorted((i for i in items if i["label"] == "surge"), key=lambda i: -i["surge"]["strength"])
+    # 突然爆火、潜力按增量销售额排（同额看爆发强度 / 增长），和开发方向同一个口径：钉钉、本期要点、评论抽查的“点名”都按这个顺序取前几个。
+    # 以前爆火按“倍数 × log(销量)”、潜力按月环比排：刚开卖头几个月的小基数（6~9 月 14 / 0 / 0 / 220 件 → 每月 +1387%）排第一，
+    # 老品换链接（增量按 0）排第二；比两个月前没多卖的（近 7~14 天比之前 28 天翻倍，但近 28 天不比再之前 28 天多：跌下去又涨回来）排在后面
+    surge = sorted((i for i in items if i["label"] == "surge"),
+                   key=lambda i: (-round(increment(i)), -i["surge"]["strength"]))
     fake = sorted((i for i in items if i["label"] == "fake"),
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
-    potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: -_growth(i))
+    potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: (-round(increment(i)), -_growth(i)))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),

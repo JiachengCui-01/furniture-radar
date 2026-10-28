@@ -125,12 +125,25 @@ def test_pool_order_core_similar_then_opportunities(cfg):
              "runs": [{"labels": {"W1": ["surge", 0]}}],
              "similar": {"items": [{"asin": "S1", "parent": None, "node": "N1", "units": 900, "units_gr": 5,
                                     "rank": 1, "run": 1, "title": "Desk", "sources": ["similar"]}]}}
-    cfg["pool"].update(per_node_top=1, core_max=3, similar_max=1, opportunity_every_run=3, max_size=20)
+    cfg["pool"].update(per_node_top=1, core_max=2, similar_max=1, opportunity_every_run=3, max_size=20)
     pool, reasons = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1), limit=6)
     assert pool[:4] == ["W1", "A0", "A1", "S1"]
     assert [reasons[a] for a in pool[:4]] == ["watch", "top", "top", "similar"]
     # 机会分前 3 是 A0、A1、A2：前两个已在必看里，不重复占名额
     assert pool[4:] == ["A2", "A3"] and reasons["A2"] == "opportunity" and reasons["A3"] == "rotate"
+
+
+def test_pool_watchlist_has_its_own_quota(cfg):
+    """往期上榜的单独给名额（watch_max），多了也不挤掉子类目头部（core_max）。
+    以前两者共用 core_max：往期上榜的一多，头部一个都排不进来。"""
+    products = _opportunities(10)
+    flagged = {f"W{i}": {"node": "N0", "title": "Desk"} for i in range(4)}
+    state = {"asins": dict(flagged), "runs": [{"labels": {a: ["surge", 0] for a in flagged}}]}
+    cfg["pool"].update(per_node_top=1, per_node_top_revenue=0, core_max=2, watch_max=3, similar_max=0,
+                       opportunity_every_run=0, max_size=20)
+    pool, reasons = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1), limit=8)
+    assert [reasons[a] for a in pool[:5]] == ["watch"] * 3 + ["top"] * 2  # 往期上榜最多 3 个，头部照样 2 个
+    assert pool[3:5] == ["A0", "A1"]
 
 
 def test_find_risers_uses_recent_30_days_and_find_similar_parses(cfg):

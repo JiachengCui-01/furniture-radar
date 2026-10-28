@@ -9,7 +9,7 @@
   月销售额 = 该子类目每个增长商品的 近 28 天日均 × 当前售价 × 30，加起来；
   增量销售额 = 每个增长商品的（近 28 天日均 − 之前 28 天在卖日子的日均）× 当前售价 × 30，加起来，
         之前 28 天没在卖的按 0 算（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
-        近 28 天日均：卖家精灵会回头改最近几天的日销量，本期测到了修订幅度时用最近几天按它校正后的（recent_daily；
+        近 28 天日均：卖家精灵会回头改最近几天的日销量，本期测到了修订幅度时用最近几天按它校正后的（analyze.recent_daily；
         2026-10-20 的数据按 ×0.85 校正后，前 5 个方向顺序不变、每个方向的增量少 7~16%）；
         老品换链接（rules.relisted）之前 28 天没在卖、或在卖不到 thresholds.short_base_days 天时增量按 0：
         它的销量是从老链接转过来的，不是新增的需求（以前只看“没在卖”：之前零星卖过两天 1 件的，现在的销量几乎全算成了增量，
@@ -37,35 +37,16 @@ from __future__ import annotations
 import math
 from collections import Counter
 from .. import shipping, vision
-from ..analyze import display_name
+from ..analyze import display_name, increment, monthly_sales  # 增量、月销售额的口径见上面（突然爆火、潜力两个板块也按增量排）
 from . import design
 from .design import brand_key
 
 DIMENSIONS = ("风格", "造型", "工艺", "颜色", "功能卖点")
 VAGUE_MATERIALS = ("未注明", "木质（未注明）", "其他")
-MONTH_DAYS = 30
 
 
 def node_of(row: dict) -> str:
     return row.get("node_cn") or row.get("node_name") or ""
-
-
-def recent_daily(item: dict) -> float:
-    """近 28 天日均：本期测到了日数据修订时，用最近几天按修订幅度校正后的（analyze 的 item["revised_avg28"]）。"""
-    value = item.get("revised_avg28")
-    return value if value is not None else (item.get("recent_avg28") or 0)
-
-
-def monthly_sales(item: dict) -> float:
-    return recent_daily(item) * (item.get("price") or 0) * MONTH_DAYS
-
-
-def increment(item: dict) -> float:
-    if item.get("relist") and (item.get("prev_avg28") is None or item["relist"].get("base_short")):
-        return 0.0  # 老品换链接：之前没在卖（或只零星卖了几天），现在的销量是从老链接转过来的
-    if (item.get("surge") or {}).get("kind") == "老链接重新起量":
-        return 0.0  # 停了很久又开始卖：不是新增的需求
-    return (recent_daily(item) - (item.get("prev_avg28") or 0)) * (item.get("price") or 0) * MONTH_DAYS
 
 
 def _features(item: dict, state: dict, use_vision: bool = True) -> dict[str, set[str]]:

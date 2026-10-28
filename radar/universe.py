@@ -305,6 +305,10 @@ def node_tide(state: dict, today: date, cfg: dict, deal: dict | None = None, rev
     自己存的约 30 天前的快照，头一个月用上个月的月度名单）。潜力、上升中要先除以它再比门槛（“跑赢大盘”，analyze）。
     名单的近 30 天含大促日，按 deal（analyze.deal_factors）扣掉；基准是上个月的月度名单（已修订完）时，
     近 30 天里最后几天还会被卖家精灵下调，按 revision（本期测到的修订幅度）扣掉（两边都是自己存的快照时都含没修订的几天，不用扣）。
+    每个商品的倍数换算到 thresholds.tide.span_days 天的跨度（倍数 ^ (span_days ÷ 基准有几天)）：上升中 / 潜力比的是近 28 天和
+    再之前 28 天，大盘的基准却不一定正好 28 天前——头一个月用上个月的月度名单，每周一期时 11-08、11-15 那两期是 39、46 天前，
+    中间有一期没跑成时也会用 35 天前的快照。去年同期的日数据：涨得最多的子类目 46 天 ×1.57，折成 28 天 ×1.32，
+    不换算时它的上升中门槛是 1.3 × 1.57 = 2.04 倍，换算后 1.72 倍。
     商品数不到 thresholds.tide.min_items 的子类目不算；最多算到 thresholds.tide.max 倍。本期没翻全市场名单时返回 {}。"""
     tcfg = cfg["thresholds"].get("tide") or {}
     uni = _uni(state)
@@ -313,18 +317,19 @@ def node_tide(state: dict, today: date, cfg: dict, deal: dict | None = None, rev
     shrink = 1.0
     if revision and revision.get("window"):
         shrink = 1 - min(int(revision["window"]), 30) / 30 * (1 - float(revision.get("median") or 1))
+    span = float(tcfg.get("span_days", 28) or 0)
+    deal = deal or {}
     by_node: dict[str, list[float]] = {}
     for asin, row in uni["rows"].items():
         f = features(state, asin, row, today)
         if f["g"] is None or not row.get("node"):
             continue
-        by_node.setdefault(row["node"], []).append((1 + f["g"]) * (shrink if f["base"] == "month" else 1.0))
-    deal = deal or {}
+        ratio = (1 + f["g"]) * (shrink if f["base"] == "month" else 1.0) / float(deal.get(row["node"], deal.get("*", 1.0)) or 1.0)
+        by_node.setdefault(row["node"], []).append(ratio ** (span / f["age"]) if span and f["age"] else ratio)
     out = {}
     for node, ratios in by_node.items():
         if len(ratios) >= int(tcfg.get("min_items", 10)):
-            tide = statistics.median(ratios) / float(deal.get(node, deal.get("*", 1.0)) or 1.0)
-            out[node] = round(min(float(tcfg.get("max", 2.0)), tide), 3)
+            out[node] = round(min(float(tcfg.get("max", 2.0)), statistics.median(ratios)), 3)
     return out
 
 
