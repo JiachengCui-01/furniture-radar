@@ -316,13 +316,23 @@ def test_upholstered_seating_and_accessories_are_out_of_scope(cfg):
            "VIVO Black 32 in Standing Desk Converter, DESK-V000K",
            "OPNICE Desk Organizer and Accessories, 2-Tier Computer Monitor Stand Riser with Drawer",
            "PERLESMITH Universal TV Stand Legs for 32-70 inch TVs to 99lbs with Mount",
-           "Svartur Adjustable Locker Shelf Pink Height and Width Adjustable"]
+           "Svartur Adjustable Locker Shelf Pink Height and Width Adjustable",
+           # 11-01 彩排全市场名单里漏过的：布艺抽屉柜、带布艺文件抽屉的书桌、收纳凳、化妆凳、电视顶置物架、收纳箱、户外
+           "Sorbus Wide Fabric Closet Chests, 5 Drawer Organizer Unit for Bedroom",
+           "Computer Desk with Fabric File Drawers, Home Office Writing Desk",
+           "SONGMICS Storage Ottoman Bench, Folding Ottoman with Lid, Footrest for Bedroom",
+           "Vanity Stool with Storage, Makeup Chair for Bedroom",
+           "TV Top Shelf for Streaming Devices, Screen Top Storage Shelf",
+           "Stackable Storage Bins with Lids, Collapsible Cubes for Closet",
+           "Outdoor Storage Cabinet, Waterproof Patio Shed for Garden"]
     keep = ["Grey Dresser with Power Outlets and LED Lights 13 Drawers Long Dresser for Bedroom Faux Leather",
             "7.8\" W Faux Leather Narrow Nightstand, Modern Fully-Assembled Bedside Table with 2 Drawers",
             "Lufeiya Black Gaming Desk with LED Lights and Power Outlets, Home Office Desks with Monitor Stand",
             "Small Desk with Drawers for Small Spaces, 44'' Wood Desk with File Drawer & Monitor Stand",
             "Homleke Shoe Storage Bench, 4 Doors & Thickened Padded Seat Cushion",
-            "Modern Nightstand with Open Space Small Desk Organizer Shelf, Bamboo Desktop Organizer"]
+            "Modern Nightstand with Open Space Small Desk Organizer Shelf, Bamboo Desktop Organizer",
+            "Makeup Vanity Desk with Mirror and Lights, Vanity Table with Charging Station",
+            "Kitchen Island with Storage, Rolling Kitchen Cart Table for Indoor and Outdoor"]
     assert not any(discovery.keep_product({"title": t}, cfg) for t in out)
     assert all(discovery.keep_product({"title": t}, cfg) for t in keep)
     plain = {**cfg, "scope": {k: v for k, v in cfg["scope"].items() if k not in discovery.READ_TIME_FILTERS}}

@@ -22,16 +22,20 @@ scope:
   # 子类目自己的英文名（最后一级）要匹配“保留”且不匹配“剔除”才会追踪
   include_label_regex: '(?i)\bbeds?\b|bed frames?|headboard|desk|workstation|dresser|\bchests?\b|bookcase|shel(f|ves|ving)|nightstand|night stand|tables?\b|console|\btv\b|media|entertainment|cabinet|storage|pantr|buffet|sideboard|credenza|hutch|vanit|bench|rack|island|armoire|wardrobe|shoe|hall tree|filing|etagere'
   exclude_label_regex: '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart|display|laborator|science'
-  # 商品标题匹配下面的词直接剔除（软包、布艺抽屉、塑料等）
-  exclude_product_regex: '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\bplastic\b|\bresin\b|folding bed|rollaway|mattress set|& mattress|with (?:memory foam |foam |a )?mattress\b'
+  # 商品标题匹配下面的词直接剔除（软包、布艺抽屉、塑料等）。布艺抽屉也认“fabric closet / file / organizer drawers”“fabric chests”
+  # （11-01 彩排里爆火第 1 是标题写“Wide Fabric Closet Chests”的布艺抽屉柜，带布艺文件抽屉的书桌也漏过）
+  exclude_product_regex: '(?i)upholster|tufted headboard|fabric (?:closet |file |organizer )?(?:drawers?|bins?|storage|dressers?|chests?)|\bplastic\b|\bresin\b|folding bed|rollaway|mattress set|& mattress|with (?:memory foam |foam |a )?mattress\b'
   # 软包的床 / 床头板 / 长凳 / 椅凳：标题里有皮革、丝绒、泰迪绒等面料，而且是床、床头板、长凳、椅凳。
   # 只是表面贴皮的柜子（PU 皮面五斗柜、皮面床头柜）不算。回测（已知的 4,392 个商品标题）：剔除 25 个，都是软包床 / 床头板 / 软包长凳
   upholstered_material_regex: '(?i)\b(?:faux|pu|vegan|synthetic) leather\b|\bleatherette\b|\bvelvet\b|\bboucl[eé]|\bsherpa\b|\bchenille\b'
   upholstered_item_regex: '(?i)\b(?:beds?|bed frames?|headboards?|bench(?:es)?|banquettes?|chairs?|stools?|ottomans?)\b'
   # 配件不是家具：升降台（桌面上的站立办公增高架）、显示器增高架、电视支架腿 / 壁挂架、储物柜隔板。
-  # 配件词出现在任何家具名词之前才算（“带显示器架的电脑桌”是桌子，不剔除）。回测：剔除 27 个，没有误剔
-  accessory_regex: '(?i)desk (?:converter|riser)|monitor (?:stand )?riser|laptop stand|tv stand legs|\btv legs\b|tabletop tv stand|\btv (?:wall )?mounts?\b|locker (?:organizer )?shel(?:f|ves)'
-  furniture_noun_regex: '(?i)\b(?:desk(?! converter| riser| organizer)|table|nightstand|dresser|cabinet|bookcase|bookshelf|tv stand(?! legs)|console|bench|bed|wardrobe|armoire|sideboard|buffet|hutch|vanity|chest|credenza|shelving unit|etagere)\b'
+  # 配件词出现在任何家具名词之前才算（“带显示器架的电脑桌”是桌子，不剔除）。回测：剔除 27 个，没有误剔。
+  # 后来加的（不在监控范围的品类，同样出现在任何家具名词之前才剔除）：收纳凳（storage ottoman）、化妆椅 / 化妆凳、电视 / 显示器顶上的置物架、
+  # 支架（mount bracket）、可叠 / 可折叠收纳箱、户外 / 庭院家具；“vanity chair / stool”不算梳妆台，“island”算家具名词。
+  # 回测（11-01 彩排全市场名单 3,422 个标题）：多剔除 21 个，都是上面这几类，没有多放进来的
+  accessory_regex: '(?i)desk (?:converter|riser)|monitor (?:stand )?riser|laptop stand|tv stand legs|\btv legs\b|tabletop tv stand|\btv (?:wall )?mounts?\b|locker (?:organizer )?shel(?:f|ves)|\bottomans?\b|\b(?:vanity|makeup) (?:chairs?|stools?)\b|\b(?:tv|monitor|computer) (?:screen )?top (?:shelf|shelves|storage)\b|\bmount bracket\b|\b(?:stackable|foldable|collapsible) (?:storage )?(?:bins?|cubes?)\b|\boutdoor\b|\bpatio\b'
+  furniture_noun_regex: '(?i)\b(?:desk(?! converter| riser| organizer)|table|nightstand|dresser|cabinet|bookcase|bookshelf|tv stand(?! legs)|console|bench|bed|wardrobe|armoire|sideboard|buffet|hutch|vanity(?! chairs?| stools?)|island|chest|credenza|shelving unit|etagere)\b'
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
   extra_nodes: []
   #  - path: "1055398:1063306:1063318:3733551"
@@ -182,7 +186,9 @@ thresholds:
   few_ratings_min_rating: 4.2
   # 对比期（之前 28 天）只算在卖的日子；在卖不到 N 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。
   # 回测（2025-11~2026-09 每周回放）：对比期 1~13 天的潜力之后 28 天 67~72% 保持住、上升中 78~88%，
-  # 对比期完整的潜力 74%、上升中 72%，并不更差，所以不排除，只写明
+  # 对比期完整的潜力 74%、上升中 72%，并不更差，所以不排除，只写明。
+  # 增量（开发方向、爆火 / 潜力排序）也用它：老品换链接、上架超过 surge.new_listing_max_age_days 天的老链接，之前 28 天在卖不到 N 天的增量按 0
+  #（多是断货很久后恢复、销量从老链接转过来；回放 45 周：这样的老链接 6 周进了钉钉的爆火前 3，7 周改变了前 5 个开发方向）
   short_base_days: 14
   # 卖家精灵会回头改最近几天的日销量（2026-10-22 隔 2 天重拉 20 个商品：最近 9 天里 75% 被改、中位数是原来的 85%，更早的没变；
   # 用改过的数重判 5 个变了；10-23 那期 386 个商品，最近 9 天 96% 被改、中位数 ×0.82）。每期拿上期存的日数据和这期新拉的比，

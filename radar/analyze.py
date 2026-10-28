@@ -33,14 +33,32 @@ def monthly_sales(item: dict) -> float:
     return recent_daily(item) * (item.get("price") or 0) * MONTH_DAYS
 
 
+def zero_increment_reason(item: dict) -> str | None:
+    """增量按 0 算的原因（卡片、钉钉照写），不按 0 的返回 None。"""
+    if item.get("relist") and (item.get("prev_avg28") is None or item["relist"].get("base_short")):
+        return "老品换链接，销量是从老链接转过来的"  # 之前没在卖（或只零星卖了几天）
+    if (item.get("surge") or {}).get("kind") == "老链接重新起量":
+        return "老链接重新起量，不是新增的需求"  # 停了很久又开始卖
+    if item.get("dormant"):  # 上架超过半年、之前 28 天在卖不到 short_base_days 天：多是断货很久后恢复
+        days = item["prev_in28"]
+        return (f"老链接之前 28 天只有 {days} 天在卖" if days else "老链接之前 28 天没在卖") + "，不是新增的需求"
+    return None
+
+
 def increment(item: dict) -> float:
     """增量销售额 =（近 28 天日均 − 之前 28 天在卖日子的日均）× 当前售价 × 30。开发方向按它排（口径和例外见 detect/directions.py），
     突然爆火、潜力两个板块也按它排（sections）。"""
-    if item.get("relist") and (item.get("prev_avg28") is None or item["relist"].get("base_short")):
-        return 0.0  # 老品换链接：之前没在卖（或只零星卖了几天），现在的销量是从老链接转过来的
-    if (item.get("surge") or {}).get("kind") == "老链接重新起量":
-        return 0.0  # 停了很久又开始卖：不是新增的需求
+    if zero_increment_reason(item):
+        return 0.0
     return (recent_daily(item) - (item.get("prev_avg28") or 0)) * (item.get("price") or 0) * MONTH_DAYS
+
+
+def increment_note(item: dict) -> str:
+    """月增量后面的说明：按 0 算的写原因，近 28 天没多卖的写明，其余为空。"""
+    reason = zero_increment_reason(item)
+    if reason:
+        return f"按 0 算：{reason}"
+    return "近 28 天不比再之前 28 天多" if increment(item) <= 0 else ""
 
 
 LABEL_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
@@ -259,9 +277,16 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     obs = (rec.get("obs") or [{}])[-1]
     months = closed_months(rec.get("months") or [], as_of)
     oos, zero_run = th.get("out_of_stock_bsr"), int(th.get("out_of_stock_zero_run") or 0)
-    if relist and idx is not None:
+    prev_in = len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run)) if idx is not None else None  # 之前 28 天在卖的天数
+    if relist and prev_in is not None:
         # 之前 28 天在卖不到 short_base_days 天：开发方向的增量按 0（之前那几天零星卖几件，现在的销量几乎都是从老链接转过来的）
-        relist = {**relist, "base_short": len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run)) < short}
+        relist = {**relist, "base_short": prev_in < short}
+    # 上架超过 new_listing_max_age_days 天、之前 28 天在卖不到 short_base_days 天的老链接：增量也按 0（zero_increment_reason），
+    # 现在的销量多是断货很久后恢复，不是新增的需求（例：2019 年上架的书桌全年几乎无货，10 月起每天 115 件，按全额增量排到爆火第 2）。
+    # 回放 2025-11~2026-09 每周：这样的占增长判定的 1.9%，6 周进了钉钉的爆火前 3（3 周第 1），7 周改变了前 5 个开发方向；
+    # 之后 28 天 91% 保持住，所以只改增量、不改标签
+    max_new = th["surge"].get("new_listing_max_age_days")
+    dormant = bool(max_new is not None and age is not None and age > max_new and prev_in is not None and prev_in < short)
     return {
         "asin": asin,
         "title": clean_text(rec.get("title") or (disc_row or {}).get("title") or asin),
@@ -297,6 +322,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "recent_avg28": _avg(d, idx, 28),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
         "prev_avg28": _avg(d, idx - 28, 28, oos, zero_run) if idx is not None else None,
+        "prev_in28": prev_in,
+        "dormant": dormant,
         "pkg": rec.get("pkg") or (disc_row or {}).get("pkg"),
         "fetched_run": rec.get("fetched_run"),
         "source": rec.get("pool_reason"),
@@ -309,7 +336,7 @@ def _spiked_on_events(d: Daily, idx: int, events, cfg: dict, lookback: int = 56)
     base_days, jump = int(cfg["base_days"]), float(cfg["jump"])
     for day in events:
         i = d.index_of(day)
-        if not 0 <= idx - i < lookback or i >= len(d.sales) or d.sales[i] is None:
+        if not 0 <= idx - i < lookback or not 0 <= i < len(d.sales) or d.sales[i] is None:
             continue
         prior = [d.sales[j] for j in range(max(0, i - base_days), i)
                  if d.sales[j] is not None and d.day(j) not in events]

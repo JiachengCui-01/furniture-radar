@@ -10,7 +10,7 @@ import html
 import re
 
 from .. import shipping
-from ..analyze import display_name
+from ..analyze import display_name, increment_note
 from ..detect import directions, events
 from ..tracking import REASON_CN
 from .sparkline import HOVER_JS, bars, sparkline
@@ -307,9 +307,9 @@ def card(item: dict, kind: str, group: str = "", notes: list[tuple[str, str]] = 
         if p.get("recent_ratio"):
             kv.append(f"<span><em>较前28天</em> <b>×{p['recent_ratio']:.2f}</b></span>")
     if kind in ("surge", "potential"):  # 这两个板块按它排（analyze.sections），和开发方向的增量同一个口径
-        inc = directions.increment(item)
-        kv.append(f"<span><em>月增量</em> <b>{esc(directions.money_text(inc))}</b>"
-                  + ("（近 28 天不比再之前 28 天多）" if inc <= 0 else "") + "</span>")
+        note = increment_note(item)
+        kv.append(f"<span><em>月增量</em> <b>{esc(directions.money_text(directions.increment(item)))}</b>"
+                  + (f"（{esc(note)}）" if note else "") + "</span>")
     if kind == "hot" and item.get("hot"):
         h = item["hot"]
         kv.append(f"<span><em>近6月月均</em> <b>{fmt_int(h['avg_monthly'])}</b> 件</span>")
@@ -560,7 +560,9 @@ def _directions(tr: dict, cfg: dict) -> str:
             f"本期要点和钉钉消息只写前 {c.get('summary_max', 5)} 个。"
             "月销售额 = 每个增长商品的近 28 天日均 × 当前售价 × 30 的合计；增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）"
             "× 售价 × 30 的合计，之前没在卖的按 0、老品换链接之前没在卖（或在卖不到 "
-            f"{cfg['thresholds'].get('short_base_days', 14)} 天）的增量按 0、老链接重新起量的增量按 0（销量是卖家精灵按 BSR 估算的，大促日不算；"
+            f"{cfg['thresholds'].get('short_base_days', 14)} 天）的增量按 0、老链接重新起量的增量按 0、"
+            f"上架超过 {cfg['thresholds']['surge'].get('new_listing_max_age_days', 180)} 天且之前 28 天在卖不到 "
+            f"{cfg['thresholds'].get('short_base_days', 14)} 天的老链接增量也按 0（销量是卖家精灵按 BSR 估算的，大促日不算；"
             "本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的）。"
             "特征按品牌计数，同一品牌的多个商品只算一次（该品牌任一增长商品的标题或主图有就算），数字 = 具备的品牌数 / 品牌数，"
             "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里的，按月销量取前 "
@@ -682,7 +684,8 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
              if th.get("short_base_days") else "")
     order = ("按月增量排序：增量销售额 =（近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30，和开发方向同一个口径；"
              "老品换链接（之前 28 天没在卖或在卖不到 "
-             f"{th.get('short_base_days', 14)} 天）、老链接重新起量按 0；近 28 天不比再之前 28 天多的（跌下去又涨回来）排在后面。")
+             f"{th.get('short_base_days', 14)} 天）、老链接重新起量、上架超过 {s.get('new_listing_max_age_days', 180)} 天且之前 28 天在卖不到 "
+             f"{th.get('short_base_days', 14)} 天的老链接按 0（卡片上写明原因）；近 28 天不比再之前 28 天多的（跌下去又涨回来）排在后面。")
     return {
         "surge": scope + f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
                  f"日均销量 ≥{s['sales_ratio']:g} 倍{tide_surge}且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
@@ -778,6 +781,7 @@ def _method(cfg: dict) -> str:
 <b>稳在高位</b> = 近 7 天里 ≥{s['sustained_days']} 天达到之前水平的 {s['sustained_mult']} 倍，且最近 3 天日均与近 7 天相差 ≤{s['steady_band']:.0%}；
 <b>仍在上涨</b> = 近 7 天日均比前 7 天高 ≥{s['climb_ratio'] - 1:.0%}，且最近 3 天日均高于近 7 天。
 近 7 天的增量 ≥{s['pulse_share']:.0%} 来自 ≤2 天的是“短时脉冲”，其余都不符合的是“上涨形态不稳定”，都不算爆火。
+形态里的“近 7 天”“最近 3 天”“前 7 天”按不是大促日的日子数（最多往前看 14 天）：大促那一周去掉大促日后，按日历的近 7 天只剩两三天，增量必然集中在两天里、“稳在高位”也不可能。
 老品换链接的“从零起量”只是新子体开始卖，不算新品爆发、也不标新品起量。
 和之前 {s['base_days']} 天比的（爆火、潜力、上升中），对比期只算在卖的日子；在卖不到 {th.get('short_base_days', 14)} 天的照样判，卡片上写明“对比期只有 X 天在卖”。
 <b>爆发强度</b> = 销量倍数（最多按 10 倍算）× ln(1 + 近期日均)（突然爆火板块按月增量排，同额时按它）。</li>
@@ -798,7 +802,7 @@ def _method(cfg: dict) -> str:
 标题统计（增长商品 vs 全部头部商品）和 AI 主图识别（增长商品里势头最强的 {cfg['llm']['vision_focus']} 个 vs 持续热销对照组，
 对照组不含增长商品），同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的哪一档都不列；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
 <li><b>开发方向</b>：增长商品 ≥{th['directions']['min_items']} 个、来自 ≥{th['directions'].get('min_brands', 1)} 个品牌的子类目{f"按增量销售额取前 {th['directions']['max']} 个" if int(th['directions'].get('max') or 0) else "都列，按增量销售额从大到小"}（增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30 的合计；
-老链接重新起量的增量按 0；
+老链接重新起量的增量按 0；上架超过 {s.get('new_listing_max_age_days', 180)} 天、之前 28 天在卖不到 {th.get('short_base_days', 14)} 天的老链接增量也按 0（多是断货很久后恢复，不是新增的需求）；
 本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的），
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）。

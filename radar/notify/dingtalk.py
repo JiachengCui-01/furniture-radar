@@ -14,7 +14,7 @@ import urllib.parse
 import httpx
 
 from .. import log
-from ..analyze import display_name
+from ..analyze import display_name, zero_increment_reason
 from ..detect.directions import headline, increment, money_text
 from ..report.render import growth_text
 from ..narrative import top_design_labels
@@ -85,6 +85,15 @@ def _short(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def increment_text(item: dict) -> str:
+    """“月增量$33 万”；按 0 算的写原因、近 28 天没多卖的写明（同报告卡片，analyze.increment_note）。"""
+    reason = zero_increment_reason(item)
+    if reason:
+        return f"月增量按 0：{reason}"
+    inc = increment(item)
+    return f"月增量{money_text(inc)}" + ("，近 28 天不比再之前 28 天多" if inc <= 0 else "")
+
+
 DATA_TAGS = ("变体变多", "名单和日数据对不上", "最近 28 天有")  # analyze.data_tags 打的“数据可能有问题”的标签
 
 
@@ -114,12 +123,12 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
             s = item["surge"]
             ratio = f"×{s['sales_ratio']:.1f}" if s.get("sales_ratio") else "新起量"
             tags = "·".join(t for t in item["tags"][:2])
-            lines.append(item_line(item, f" 日均{s['base_avg']:.0f}→{s['recent_avg']:.0f}（{ratio}，月增量{money_text(increment(item))}）{tags}"))
+            lines.append(item_line(item, f" 日均{s['base_avg']:.0f}→{s['recent_avg']:.0f}（{ratio}，{increment_text(item)}）{tags}"))
         lines.append("")
     if sec["potential"]:
         lines.append("**🌱 潜力产品**")
         for item in sec["potential"][:max_items]:
-            lines.append(item_line(item, f" {growth_text(item)}（月增量{money_text(increment(item))}）"))
+            lines.append(item_line(item, f" {growth_text(item)}（{increment_text(item)}）"))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:

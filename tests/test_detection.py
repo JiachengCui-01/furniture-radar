@@ -234,6 +234,19 @@ def test_surge_shapes_match_their_definitions(cfg):
     assert dipping["label"] == "watch" and dipping["tags"][0] == "最近回落（最近3天日均 12.3 件，再之前3天 20.0 件，近4周最高的3天 20.3 件；近7天最高 21 件，之后 5 天没回升，最近一天 12 件）"
 
 
+def test_deal_week_shape_counts_non_deal_days(cfg):
+    """大促日去掉后，近 7 天只剩 3 天：增量必然集中在两天里（≥60% 就是“短时脉冲”）、“≥5 天在高位”也不可能，
+    回放 2025-11-29（4 个大促日）、2026-06-27（5 个）的爆火全被判成短时脉冲，也因此不算潜力 / 上升中。
+    形态改按最近 7 个不是大促日的日子判（最多往前看 14 天）；没有大促日的周和以前一样。"""
+    d = make([5] * 106 + [18] * 10 + [40] * 4)
+    deal = {END - timedelta(days=k) for k in range(4)}
+    s = evaluate_surge(d.without(deal), len(d) - 1, surge_cfg(cfg))
+    assert s["kind"] == "稳在高位" and not s["pulse"] and s["days_elevated"] == 7 and s["last3_ratio"] == 1.0
+    assert d.without(deal).open_days(len(d) - 1, 7, 14) == list(range(109, 116))
+    spike = evaluate_surge(make([5] * 113 + [5, 5, 5, 12, 12, 80, 90]), 119, surge_cfg(cfg))
+    assert spike["pulse"] and spike["kind"] is None
+
+
 def test_fading_means_past_the_peak_and_still_going_down(cfg):
     """回落 = ① 最近 3 天比近 4 周最高的 3 天低 25% 以上，且比再之前 3 天低 10% 以上；或 ② 近 7 天中位数比再之前 7 天低 15% 以上；
     或 ③ 近 7 天最高那天之后至少 3 天没回升，且最近一天比最高那天低 30% 以上。
@@ -731,6 +744,42 @@ def test_relisted_increment_is_zero_without_earlier_sales():
     assert directions.increment({**item, "prev_avg28": 40, "relist": {"share": 0.6}}) == 60 * 50 * 30
     # 之前 28 天只零星卖了几天（在卖不到 short_base_days 天）：现在的销量几乎都是从老链接转过来的，增量也按 0
     assert directions.increment({**item, "prev_avg28": 1, "relist": {"share": 0.2, "base_short": True}}) == 0
+
+
+def test_dormant_old_listing_adds_no_increment(cfg):
+    """上架超过 180 天、之前 28 天在卖不到 14 天的老链接：增量按 0，标签不变（卡片、钉钉写明原因）。
+    实测：2019 年上架的书桌全年几乎无货，10 月起每天 115 件；只有“之前日均 <0.5 件”才算老链接重新起量，它按全额增量排到爆火第 2。
+    回放 45 周：这样的 6 周进了钉钉的爆火前 3（3 周第 1），7 周改变了前 5 个开发方向；之后 91% 保持住，所以只改增量。"""
+    back = _rec([4] * 70 + [0] * 22 + [30] * 28, 4.5, available="2019-03-01")
+    item = analyze.analyze({"asins": {"B1": back}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["label"] == "surge" and item["surge"]["kind"] == "稳在高位" and item["prev_in28"] == 6 and item["dormant"]
+    assert analyze.increment(item) == 0
+    assert analyze.increment_note(item) == "按 0 算：老链接之前 28 天只有 6 天在卖，不是新增的需求"
+    steady = _rec([5] * 106 + [18] * 14, 4.5, available="2019-03-01")  # 之前 28 天一直在卖：照常算
+    item = analyze.analyze({"asins": {"B1": steady}}, None, ["B1"], cfg, END)["items"][0]
+    assert not item["dormant"] and analyze.increment(item) == (11.5 - 5) * 100 * 30 and analyze.increment_note(item) == ""
+
+
+def test_increment_note_says_why_it_is_zero():
+    """卡片、钉钉的月增量：按 0 算的写原因（以前一律写“近 28 天不比再之前 28 天多”：10-23 那期日均 77 件、
+    之前 28 天没在卖的老品换链接也这么写），真的没多卖的才写“不比再之前 28 天多”。"""
+    from radar.notify.dingtalk import increment_text
+
+    base = {"recent_avg28": 60, "prev_avg28": None, "price": 100}
+    relist = {**base, "relist": {"share": 0.6}}
+    assert analyze.increment_note(relist) == "按 0 算：老品换链接，销量是从老链接转过来的"
+    assert increment_text(relist) == "月增量按 0：老品换链接，销量是从老链接转过来的"
+    assert analyze.increment_note({**base, "surge": {"kind": "老链接重新起量"}}) == "按 0 算：老链接重新起量，不是新增的需求"
+    assert analyze.increment_note({**base, "prev_avg28": 70}) == "近 28 天不比再之前 28 天多"
+    assert increment_text({**base, "prev_avg28": 70}) == "月增量-$3 万，近 28 天不比再之前 28 天多"
+    assert analyze.increment_note({**base, "prev_avg28": 20}) == "" and increment_text({**base, "prev_avg28": 20}) == "月增量$12 万"
+
+
+def test_short_series_does_not_break_event_check(cfg):
+    """日数据不到 56 天时，近 56 天的大促日可能在序列开始之前：以前按负数下标去取（越界就报错，没越界就取到序列末尾的数）。"""
+    d, ev = make([5] * 20 + [30] * 4), cfg["thresholds"]["events"]
+    assert analyze._spiked_on_events(d, len(d) - 1, {END - timedelta(days=52)}, ev) is False
+    assert analyze._spiked_on_events(d, len(d) - 1, {END - timedelta(days=52), END - timedelta(days=3)}, ev) is True
 
 
 def test_hot_needs_steady_months_without_any_seasonal_adjustment(cfg):

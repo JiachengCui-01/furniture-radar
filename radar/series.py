@@ -63,6 +63,15 @@ class Daily:
         lo = max(0, end - length + 1)
         return [v for i, v in enumerate(values[lo:end + 1], lo) if i not in self.masked]
 
+    def open_days(self, end: int, n: int, reach: int) -> list[int]:
+        """end 往前（含）最近 n 个不是去掉的日子（masked）的下标，最多往前看 reach 天，按时间先后。"""
+        out, k = [], end
+        while k >= 0 and end - k < reach and len(out) < n:
+            if k not in self.masked:
+                out.append(k)
+            k -= 1
+        return out[::-1]
+
     def in_stock_window(self, name: str, end: int, length: int, oos_bsr: float | None, zero_run: int = 0) -> list:
         """同 window()，但跳过断货的日子：BSR 缺失或 ≥ oos_bsr（断货 / 停售 / 还没开卖，BSR 会飙到几百万）。
         对比期用它：没在卖的日子不能当“之前的水平”。oos_bsr 为空时等于 window()。
@@ -227,16 +236,20 @@ def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
 def surge_shape(d: Daily, as_of_idx: int, base_avg: float, mult: float) -> dict:
     """近 7 天的形态：
     days_elevated 达到基线 mult 倍的天数；top2_share 增量里最大两天的占比（脉冲）；
-    last3_ratio 最近 3 天日均 ÷ 近 7 天日均（走平≈1，还在涨 >1，在掉 <1）；week_ratio 近 7 天 ÷ 前 7 天日均。"""
-    recent = [v for v in d.raw_window("sales", as_of_idx, 7)]
+    last3_ratio 最近 3 天日均 ÷ 近 7 天日均（走平≈1，还在涨 >1，在掉 <1）；week_ratio 近 7 天 ÷ 前 7 天日均。
+    “近 7 天”“最近 3 天”“前 7 天”都按不是大促日的日子数（最多往前看 14 天）：大促那一周去掉大促日后只剩两三天，
+    增量必然集中在两天里、“≥5 天在高位”也不可能，回测（2025-11-29、2026-06-27）爆火全被判成了短时脉冲。"""
+    days = d.open_days(as_of_idx, 7, 14)
+    recent = [d.sales[k] if k < len(d.sales) else None for k in days]
     values = [v or 0 for v in recent]
     days_elevated = sum(1 for v in values if base_avg > 0 and v >= mult * base_avg) if base_avg > 0 \
         else sum(1 for v in values if v > 0)
     excess = sorted((max(0.0, v - base_avg) for v in values), reverse=True)
     total = sum(excess)
     top2_share = (sum(excess[:2]) / total) if total > 0 else 0.0
-    avg7, avg3 = mean(d.window("sales", as_of_idx, 7)), mean(d.window("sales", as_of_idx, 3))
-    prev7 = mean(d.window("sales", as_of_idx - 7, 7))
+    avg7, avg3 = mean(recent), mean(recent[-3:])
+    before = d.open_days(days[0] - 1, 7, 14) if days else []
+    prev7 = mean([d.sales[k] if k < len(d.sales) else None for k in before])
     return {"days_elevated": days_elevated, "top2_share": top2_share,
             "last3_ratio": (avg3 / avg7) if avg3 is not None and avg7 else None,
             "week_ratio": (avg7 / prev7) if avg7 is not None and prev7 else None}
