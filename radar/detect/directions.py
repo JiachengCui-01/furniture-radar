@@ -11,7 +11,9 @@
         之前 28 天没在卖的按 0 算（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
         近 28 天日均：卖家精灵会回头改最近几天的日销量，本期测到了修订幅度时用最近几天按它校正后的（recent_daily；
         2026-10-20 的数据按 ×0.85 校正后，前 5 个方向顺序不变、每个方向的增量少 7~16%）；
-        老品换链接（rules.relisted）之前 28 天没在卖时增量按 0：它的销量是从老链接转过来的，不是新增的需求；
+        老品换链接（rules.relisted）之前 28 天没在卖、或在卖不到 thresholds.short_base_days 天时增量按 0：
+        它的销量是从老链接转过来的，不是新增的需求（以前只看“没在卖”：之前零星卖过两天 1 件的，现在的销量几乎全算成了增量，
+        11-01 彩排里一个这样的梳妆台占了增量第一的方向的 27%）；
         老链接重新起量（上架超过 180 天、停了很久又开始卖）增量也按 0：多是断货很久后恢复、或销量从别的链接转过来，
         不是新增的需求（回放：有它的 7 个日期里 5 次改变了前 5 个方向，3 次靠它一个商品排到第一，占该子类目增量的 83~99%）；
         只按品牌数排序时，便宜、门槛低的品类会排前面（实测 2026-10-20：$35 的衣帽架 8 个品牌排第一，增量约 $26 万；
@@ -59,8 +61,8 @@ def monthly_sales(item: dict) -> float:
 
 
 def increment(item: dict) -> float:
-    if item.get("relist") and item.get("prev_avg28") is None:
-        return 0.0  # 老品换链接：之前没在卖，现在的销量是从老链接转过来的
+    if item.get("relist") and (item.get("prev_avg28") is None or item["relist"].get("base_short")):
+        return 0.0  # 老品换链接：之前没在卖（或只零星卖了几天），现在的销量是从老链接转过来的
     if (item.get("surge") or {}).get("kind") == "老链接重新起量":
         return 0.0  # 停了很久又开始卖：不是新增的需求
     return (recent_daily(item) - (item.get("prev_avg28") or 0)) * (item.get("price") or 0) * MONTH_DAYS
@@ -112,6 +114,16 @@ def heads(node: str, disc: dict | None, focus: list[dict], cfg: dict) -> list[di
             if node_of(r) == node and r["asin"] not in taken and not (r.get("parent") and r["parent"] in parents)]
     rows.sort(key=lambda r: -(r.get("units") or 0))
     return rows[: int(c.get("head_max", 30))]
+
+
+def ref_candidates(rows: list[dict], n: int = 2) -> list[dict]:
+    """参考商品：按势头顺序，没有异常信号（异常分 0）、来自不同品牌的前 n 个。"""
+    refs: list[dict] = []
+    for item in rows:
+        if len(refs) < n and not (item.get("fake") or {}).get("score") \
+                and brand_key(item) not in {brand_key(r) for r in refs}:
+            refs.append(item)
+    return refs
 
 
 def vision_targets(focus: list[dict], disc: dict | None, cfg: dict, spare: int = 2) -> list[dict]:
@@ -188,11 +200,7 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
                 and not any(m["label"] not in VAGUE_MATERIALS for m in materials):
             continue  # 没有任何共同的主材质或特征：画不出产品画像，换下一个子类目
         prices = [float(i["price"]) for i in rows if i.get("price")]
-        refs: list[dict] = []
-        for item in rows:  # 势头顺序；有异常信号的不当参考，两个参考来自不同品牌
-            if len(refs) < 2 and not (item.get("fake") or {}).get("score") \
-                    and brand_key(item) not in {brand_key(r) for r in refs}:
-                refs.append(item)
+        refs = ref_candidates(rows)  # 势头顺序；有异常信号的不当参考，两个参考来自不同品牌
         out.append({
             "node": node, "n": n, "n_brands": nb, "need": need,
             "n_surge": sum(1 for i in rows if i["label"] == "surge"),

@@ -95,7 +95,7 @@ DEFAULTS: dict = {
         "directions": {"min_items": 2, "min_brands": 2, "max": 0, "summary_max": 5, "feature_min_share": 0.5, "per_dim": 3,
                        "head_max": 30, "head_min": 10, "head_min_gap": 0.2, "head_min_lift": 1.5},
         "relist": {"max_age_days": 180, "review_share": 0.5, "review_share_fast": 0.15, "fast_share": 0.5,
-                   "fast_min_daily": 5, "ramp_days": 7},
+                   "fast_min_daily": 5, "step_pre_share": 0.1, "ramp_days": 7},
         "potential": {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,
@@ -104,7 +104,7 @@ DEFAULTS: dict = {
             "suspect_score": 3, "high_score": 5, "review_rate_mult": 3,
             "review_rate_floor": 6, "min_new_reviews": 10, "new_listing_days": 90,
             "new_listing_review_ratio": 0.10, "run_review_ratio": 0.15,
-            "max_variations_for_ratio": 3, "rating_jump": 0.2,
+            "rating_jump": 0.2,
             "rating_jump_min_ratings": 50, "pulse_mult": 3, "pulse_min_sales": 6,
             "pulse_revert": 1.3, "merge_jump": 0.3, "review_burst_share": 0.3,
             "unverified_share": 0.5,

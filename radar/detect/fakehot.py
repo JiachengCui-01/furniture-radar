@@ -13,11 +13,12 @@
 | +1 | 评论核查：非验证购买占比 ≥50% | ✓（需额外调用） |
 | 标签 | 评论数暴增 ≥30% 且父体/变体数变化 → 变体合并（不计分） | 第 2 期起 |
 
-评论数是整个父体共享的，而销量是单个子体的，所以变体多（> max_variations_for_ratio）的商品，留评率和两种“评论/销量”比
-都先除以变体数再判（相当于假设每个变体都卖得和它一样多；名单里的多是父体里卖得最多的子体，销量本来就是父体的时只会少算）。
-以前变体多的整项不算：10-23 那期 4 个变体、名单留评率 89%（÷4 后 21%）的商品 0 分，按 ÷变体数那期 5 个商品 +2 分；
-更早不排除时 15、17 个变体的商品也计分（10-20 那期 8 个异常里 4 个）。
-几乎没有销量却涨评论这一项，变体多的不算（评论可能是别的变体带来的）。
+评论数和销量都是整个父体的（卖家精灵名单按父体一行，日数据也是父体的），变体多少都直接比，不除以变体数。
+实测（2026-10-23 全覆盖试跑 7,536 个商品）：名单留评率的中位数按变体数 1 / 2~3 / 4~6 / 7~15 / 16+ 个是
+1.7% / 3.2% / 3.0% / 2.8% / 2.3%，不随变体数变大；名单近 30 天销量 ÷ 日数据近 30 天合计各档都是 1.00~1.05。
+如果销量只是一个子体的，16 个以上变体的比值应该高好几倍。以前按“销量是一个子体的”先除以变体数（再之前是整项不算），
+4 个以上变体的商品留评率信号 208 个只剩 19 个（7~15 个变体 74 → 1，16 个以上 24 → 0），等于对多变体商品关掉了这几项。
+变体合并（新子体带着评论挂进来）另有拦截：当月新增评论比总评论还多的是父体数据、抽查到的评论是继承来的、评论暴增且父体/变体变化。
 老品换链接（rules.relisted）的评论是从老链接继承来的，不算“新品评论/销量比”。
 """
 from __future__ import annotations
@@ -28,16 +29,6 @@ from functools import lru_cache
 
 from .. import clock
 from ..series import Daily, find_pulses, sum_sales_between
-
-
-def shared_by(rec: dict, cfg: dict) -> int:
-    """评论/销量比要除以的变体数：变体不超过 max_variations_for_ratio 个（或不知道几个）的按 1，更多的按变体数。"""
-    v = rec.get("variations")
-    return int(v) if v and v > cfg["max_variations_for_ratio"] else 1
-
-
-def _shared_text(n: int) -> str:
-    return f"{n} 个变体共用评论，已 ÷{n}" if n > 1 else ""
 
 
 def previous_obs(rec: dict, as_of: date) -> dict | None:
@@ -82,7 +73,6 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     def add(code: str, points: int, text: str) -> None:
         signals.append({"code": code, "points": points, "text": text})
 
-    split = shared_by(rec, cfg)
     check = (rec.get("checks") or {}).get("review")
     total = ((rec.get("obs") or [{}])[-1]).get("ratings")
     if total is None:
@@ -100,9 +90,9 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         vine_text = f"条可能的 Vine 评论（新品最多 {int(cfg.get('vine_allowance', 30))} 条，没抽查过评论）"
     raw_flag = False  # 不扣 Vine 时评论信号是否成立
 
-    # 1. 留评率（来自月度数据）：评论是父体共享的，变体多的先除以变体数
+    # 1. 留评率（来自月度数据）：当月新增评论 ÷ 销量，都是整个父体的
     if disc_row and disc_row.get("ratings_rate") is not None:
-        rate = disc_row["ratings_rate"] / split
+        rate = disc_row["ratings_rate"]
         new_reviews = disc_row.get("ratings_cv") or 0
         # 当月新增评论比这个商品一共的评论还多：名单行里的评论数是整个父体的，不是它的（实测 1 条评论的商品“当月新增 403 条”）
         family = total is not None and new_reviews > total * 1.05 + 5
@@ -121,8 +111,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
             elif inherited(check, new_reviews):
                 tags.append(f"评论多是继承来的（抽查近 60 天只有 {_actual(check)} 条），留评率不计分")
             else:
-                shared = f"（名单留评率 {disc_row['ratings_rate']:.1f}%，{_shared_text(split)}）" if split > 1 else ""
-                add("review_rate", 2, f"留评率 {rate:.1f}%{shared}，远高于子类目中位数 {node_median_rate or 0:.1f}%"
+                add("review_rate", 2, f"留评率 {rate:.1f}%，远高于子类目中位数 {node_median_rate or 0:.1f}%"
                                       f"（当月新增评论 {int(new_reviews)} 条{f'，已按 {vine} {vine_text}扣过' if vine else ''}）")
 
     if d is None or as_of is None:
@@ -139,9 +128,9 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         launch = clock.month_key(available)
         units = sum((m[1] or 0) for m in rec.get("months") or [] if m[0] >= launch)
         own = max(0, ratings - vine)
-        raw_flag |= bool(units > 0 and ratings / units / split >= cfg["new_listing_review_ratio"])
-        if units > 0 and own / units / split >= cfg["new_listing_review_ratio"]:
-            ratio = own / units / split
+        raw_flag |= bool(units > 0 and ratings / units >= cfg["new_listing_review_ratio"])
+        if units > 0 and own / units >= cfg["new_listing_review_ratio"]:
+            ratio = own / units
             # 抽查评论能看到的近 60 天里，评论应该至少有（上架天数里平摊到 60 天的）一半；远少于这个数的，评论是继承来的
             if inherited(check, ratings * min(1.0, 60 / max(age, 1))):
                 tags.append(f"评论多是继承来的（抽查近 60 天只有 {_actual(check)} 条），新品评论/销量比不计分")
@@ -151,7 +140,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
                 once = any(sig["code"] == "review_rate" for sig in signals)
                 add("new_listing_reviews", 1 if once else 2,
                     f"上架仅 {age} 天，累计评论 {int(own)} 条 / 累计销量约 {int(units)} 件"
-                    f"（{ratio:.0%}{'，' + _shared_text(split) if split > 1 else ''}）"
+                    f"（{ratio:.0%}）"
                     + (f"，已扣掉 {vine} {vine_text}" if vine else "")
                     + ("；和留评率是同一个证据，这一项只计 1 分" if once else ""))
 
@@ -167,13 +156,12 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         if delta_ratings >= cfg["min_new_reviews"] and not merged:
             bar = max(cfg["run_review_ratio"], cfg["review_rate_mult"] * (node_median_rate or 0) / 100)
             if not delta_units:
-                if split == 1:  # 变体多的：这个子体没卖，评论可能是别的变体带来的
-                    add("reviews_without_sales", 2,
-                        f"{prev['date']} 以来评论 +{int(delta_ratings)} 条，同期几乎没有销量")
-            elif delta_ratings / delta_units / split >= bar:
+                add("reviews_without_sales", 2,
+                    f"{prev['date']} 以来评论 +{int(delta_ratings)} 条，同期几乎没有销量")
+            elif delta_ratings / delta_units >= bar:
                 add("review_velocity", 2,
                     f"{prev['date']} 以来评论 +{int(delta_ratings)} 条，销量约 {int(delta_units)} 件"
-                    f"（{delta_ratings / delta_units / split:.0%}{'，' + _shared_text(split) if split > 1 else ''}）")
+                    f"（{delta_ratings / delta_units:.0%}）")
 
         # 4. 评分跳升
         prev_rating, rating = prev.get("rating"), current_obs.get("rating")

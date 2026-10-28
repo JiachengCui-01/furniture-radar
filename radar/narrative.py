@@ -50,6 +50,9 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    报告里会变成点开就是亚马逊商品页的链接。同一条里同一个商品只写一次链接，链接里的 ASIN 不计入字数。"""
 
 
+FACT_ITEMS = 6  # 本期要点给大模型看的突然爆火、潜力各前几个（钉钉列前 notify.max_items 个，都在这里面）
+
+
 def build_facts(ctx: dict) -> dict:
     def brief(item: dict) -> dict:
         out = {
@@ -75,8 +78,8 @@ def build_facts(ctx: dict) -> dict:
     return {
         "数据截至": ctx["as_of"],
         "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子）",
-        "突然爆火": [brief(i) for i in sec["surge"][:6]],
-        "潜力": [brief(i) for i in sec["potential"][:6]],
+        "突然爆火": [brief(i) for i in sec["surge"][:FACT_ITEMS]],
+        "潜力": [brief(i) for i in sec["potential"][:FACT_ITEMS]],
         "异常信号": [brief(i) for i in sec["fake"][:5]],
         "共性特点": design_facts(ctx["traits"]),
         # 报告里够格的子类目全部列出，本期要点只写增量最大的前 summary_max 个

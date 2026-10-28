@@ -6,6 +6,7 @@ import math
 from datetime import date
 
 from .. import clock
+from .fakehot import _actual, inherited
 from ..series import (Daily, closed_months, cv, daily_avg_of_month, log_growth, mean, median, surge_metrics,
                       surge_shape)
 
@@ -34,15 +35,23 @@ def low_rating(rating: float | None, ratings: float | None, th: dict) -> bool:
 
 
 def relisted(d: Daily | None, as_of_idx: int | None, ratings: float | None, age: int | None,
-             cfg: dict) -> dict | None:
+             cfg: dict, check: dict | None = None) -> dict | None:
     """老品换链接：新子体挂进老父体（或老品换了新 ASIN），继承了评论和排名，上架天数不代表商品是新的。
     条件：上架 ≤ max_age_days 天，且 评论数 ≥ 这个 ASIN 自己累计销量的 review_share，
-          或 评论数 ≥ 累计销量的 review_share_fast 且 上架第一周日均 ≥ 近 7 天日均的 fast_share（且 ≥ fast_min_daily 件）。
-    累计销量 = 日数据里这个 ASIN 卖出的全部件数；第一周 = 从第一天卖出东西起的 7 天（之前 0 销量的日子不算）。
-    正常留评率 1~3%、Vine 最多 30 条，只“第一周就卖得多”、评论正常的多是投广告推起来的真新品，不算。"""
+          或 评论数 ≥ 累计销量的 review_share_fast 且下面任一：
+            ① 第一周满速：从第一天卖出东西起的 7 天日均 ≥ 近 7 天日均的 fast_share（且 ≥ fast_min_daily 件）；
+            ② 一步跳到满速：第一个达到 max(fast_min_daily, 近 7 天日均 × fast_share) 的日子起 7 天日均也达到，
+               而它之前 7 天日均 ≤ 那 7 天的 step_pre_share（开卖前不足 7 天的按 0 补）——开卖头几天每天零星卖一两件、
+               过了几周一下子跳到满速，按 ① 第一周只有一两件（实测：上架 57 天、339 条评论，前 6 天每天 1 件，之后每天 149 件）；
+            ③ 抽查评论（verify）看到近 60 天的评论不到按评论数推算应有的一半：评论是继承来的（fakehot.inherited）。
+    累计销量 = 日数据里这个 ASIN 卖出的全部件数。
+    正常留评率 1~3%、Vine 最多 30 条，只“第一周就卖得多”、评论正常的多是投广告推起来的真新品，不算。
+    ② 的回测（10-23 全覆盖试跑里上架 ≤180 天的 1,840 个）：多认出 3 个，评论 236~342 条、是累计销量的 15%~28%；
+    “第一周”只改成从第一个日销 ≥5 件的日子算会多认出 38 个，大多是评论正常的小新品（16 个扣掉 30 条 Vine 后不到 15%）。"""
     if d is None or as_of_idx is None or age is None or age > cfg["max_age_days"] or not ratings:
         return None
-    values = [v for v in d.sales[: as_of_idx + 1] if v is not None]
+    days = [(k, v) for k, v in enumerate(d.sales[: as_of_idx + 1]) if v is not None]
+    values = [v for _, v in days]
     if not values:
         return None
     total = sum(values)
@@ -52,12 +61,24 @@ def relisted(d: Daily | None, as_of_idx: int | None, ratings: float | None, age:
     last7 = mean(d.window("sales", as_of_idx, 7))
     fast = bool(first7 is not None and last7 and first7 >= cfg["fast_min_daily"]
                 and first7 >= cfg["fast_share"] * last7 - 1e-9)
-    if not (share >= cfg["review_share"] - 1e-9 or (fast and share >= cfg["review_share_fast"] - 1e-9)):
+    step = None
+    need = max(float(cfg["fast_min_daily"]), cfg["fast_share"] * (last7 or 0))
+    jump = next((k for k, v in enumerate(values) if v >= need - 1e-9), None) if last7 else None
+    if not fast and jump is not None and cfg.get("step_pre_share") is not None:
+        after, before = mean(values[jump: jump + 7]), sum(values[max(0, jump - 7): jump]) / 7
+        if after >= need - 1e-9 and before <= float(cfg["step_pre_share"]) * after + 1e-9:
+            step = {"day": d.day(days[jump][0]).isoformat(), "before": round(before, 1), "after": round(after, 1)}
+    seen = None
+    if inherited(check, ratings * min(1.0, 60 / max(age, 1))):
+        seen = _actual(check)
+    if not (share >= cfg["review_share"] - 1e-9
+            or ((fast or step or seen is not None) and share >= cfg["review_share_fast"] - 1e-9)):
         return None
     first = first_sale_index(d, as_of_idx)
     return {"ratings": int(ratings), "sales": int(round(total)), "share": round(share, 3), "fast": fast,
             "first7": None if first7 is None else round(first7, 1), "last7": None if last7 is None else round(last7, 1),
-            "age": age, "first_day": None if first is None else d.day(first).isoformat()}
+            "age": age, "first_day": None if first is None else d.day(first).isoformat(), "step": step,
+            "inherited": seen}
 
 
 def first_sale_index(d: Daily, as_of_idx: int) -> int | None:
@@ -83,6 +104,11 @@ def relist_text(r: dict) -> str:
     text = f"老品换链接（上架 {r['age']} 天已有 {r['ratings']} 条评论，是自己累计销量的 {r['share']:.0%}"
     if r["fast"]:
         text += f"；开卖第一周日均 {r['first7']:g} 件，近 7 天 {r['last7']:g} 件"
+    elif r.get("step"):
+        s = r["step"]
+        text += f"；{s['day']} 前 7 天日均 {s['before']:g} 件，当天起一周日均 {s['after']:g} 件（一步跳到满速）"
+    if r.get("inherited") is not None:
+        text += f"；抽查近 60 天只有 {r['inherited']} 条评论，评论是继承来的"
     return text + "）"
 
 

@@ -41,11 +41,9 @@ def node_stats(disc: dict | None, cfg: dict) -> dict[str, dict]:
                 per_parent[key] = max(per_parent.get(key, 0), p["units"] or 0)
         units = sorted(per_parent.values(), reverse=True)
         threshold = (units[rank - 1] if len(units) >= rank else units[-1]) if units else None
-        # 留评率的中位数只算变体不多的商品（变体多的评论是父体共享的，打分时比值先除以变体数，再和这个中位数比）
-        max_vars = cfg["thresholds"]["fake"]["max_variations_for_ratio"]
+        # 留评率的中位数用全部商品（评论和销量都是整个父体的，变体多少都直接比，见 detect/fakehot.py）
         stats[node] = {
-            "median_rate": median([p.get("ratings_rate") for p in items
-                                   if p.get("variations") is None or p["variations"] <= max_vars]),
+            "median_rate": median([p.get("ratings_rate") for p in items]),
             "threshold": threshold,
             "count": len(items),
         }
@@ -150,7 +148,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     d = full.without(events) if full is not None and events else full
     rating, n_ratings = current_rating(rec, disc_row)
     age = clock.days_between(clock.parse_day(rec.get("available")), as_of or today)
-    relist = relisted(full, idx, n_ratings, age, th["relist"]) if th.get("relist") else None
+    relist = (relisted(full, idx, n_ratings, age, th["relist"], (rec.get("checks") or {}).get("review"))
+              if th.get("relist") else None)
 
     g = _judge_growth(d, idx, as_of, rec, st, th, stale, relist, age, tide)
     # 大促拉动：近 56 天里有大促日、这个商品自己在大促日冲高了，而且算上大促日能达到爆火 / 潜力 / 上升中、去掉就达不到
@@ -236,6 +235,10 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
 
     obs = (rec.get("obs") or [{}])[-1]
     months = closed_months(rec.get("months") or [], as_of)
+    oos, zero_run = th.get("out_of_stock_bsr"), int(th.get("out_of_stock_zero_run") or 0)
+    if relist and idx is not None:
+        # 之前 28 天在卖不到 short_base_days 天：开发方向的增量按 0（之前那几天零星卖几件，现在的销量几乎都是从老链接转过来的）
+        relist = {**relist, "base_short": len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run)) < short}
     return {
         "asin": asin,
         "title": clean_text(rec.get("title") or (disc_row or {}).get("title") or asin),
@@ -270,8 +273,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "recent_avg7": (surge or {}).get("recent_avg") if surge else _avg(d, idx, 7),
         "recent_avg28": _avg(d, idx, 28),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
-        "prev_avg28": (_avg(d, idx - 28, 28, th.get("out_of_stock_bsr"), int(th.get("out_of_stock_zero_run") or 0))
-                       if idx is not None else None),
+        "prev_avg28": _avg(d, idx - 28, 28, oos, zero_run) if idx is not None else None,
         "pkg": rec.get("pkg") or (disc_row or {}).get("pkg"),
         "fetched_run": rec.get("fetched_run"),
         "source": rec.get("pool_reason"),
@@ -618,8 +620,6 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
         if not hot:
             continue
         rec = dict(state["asins"].get(p["asin"]) or {})
-        if rec.get("variations") is None:
-            rec["variations"] = p.get("variations")  # 变体多的评论是父体共享的，留评率先除以变体数
         fake = fakehot.score(rec, None, None, p, stats[p["node"]].get("median_rate"), th["fake"])
         if fake["level"]:
             continue

@@ -1,4 +1,4 @@
-"""对可疑商品和报告推荐的爆火、潜力做额外核查（每期最多 review_checks 个，每个 1 次调用）：
+"""对可疑商品、报告点名的商品和其余爆火、潜力做额外核查（每期最多 review_checks 个，每个 1 次调用，先后见 select）：
 
 * 评论核查（review）：近 60 天评论是否集中在少数几天、非验证购买占比、Vine 占比。
 * 详情核查（asin_detail）：评论数暴增时看父体/变体是否变化，区分“变体合并”和“刷评”。
@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 
-from . import clock, log, materials
+from . import analyze, clock, log, materials, narrative
+from .detect import directions
 from .detect.fakehot import ratings_jump
 from .vendor import BudgetExhausted, Vendor
 
@@ -59,11 +60,24 @@ def _fresh(check: dict | None, today: date) -> bool:
     return bool(day and (today - day).days < RECHECK_DAYS)
 
 
+def named(items: list[dict], cfg: dict, spare: int = 2) -> set[str]:
+    """报告里点名、团队会照着去看的商品：本期要点里的突然爆火、潜力（各前 narrative.FACT_ITEMS 个，钉钉列的前几个也在里面），
+    和增量最大的前 directions.summary_max 个开发方向（多看 spare 个：有的方向画不出画像会被跳过）的参考商品候选
+    （势头最强、没有异常信号、不同品牌的前 3 个：抽查后有一个变成异常时，第 3 个顶上当参考）。"""
+    sec = analyze.sections([i for i in items if i["label"] in ("surge", "potential")], 0)
+    out = {i["asin"] for key in ("surge", "potential") for i in sec[key][:narrative.FACT_ITEMS]}
+    top = narrative.summary_limit(cfg) + spare
+    for _node, rows in directions.ranked(analyze.focus_items(items), cfg)[:top]:
+        out |= {i["asin"] for i in directions.ref_candidates(rows, 3)}
+    return out
+
+
 def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple[str, str]]:
     """返回 [(asin, 'review'|'detail')]，按优先级排序，长度不超过 review_checks。"""
     fcfg = cfg["thresholds"]["fake"]
     limit = int(cfg["budget"]["review_checks"])
     jobs: list[tuple[float, str, str]] = []
+    shown = named(items, cfg)
     for item in items:
         if item["label"] == "low":
             continue  # 评分不达标的不会上榜，不必花调用核查
@@ -76,18 +90,23 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
         if _fresh(checks.get("review"), today):
             continue
         # 评论核查的先后（名额不够时先查前面的）：① 可疑的（异常分 ≥ 疑似线 − 1，且是爆火 / 潜力 / 异常 / 持续热销）；
-        # ② 报告推荐的爆火、潜力（以前只查异常分 ≥2 的，10-23 那期 31 个爆火 / 潜力一个都没查过评论）；
-        # ③ 不在榜单上、异常分 ≥ 疑似线 − 1 的（以前不查，只有一条信号的永远到不了疑似线：10-23 那期 7 个 2 分的）；
-        # ④ 按“可能是 Vine”扣过才不够评论信号的新品（fakehot 的 check_reviews：查了按抽到的 Vine 比例重算）
+        # ② 报告点名的（named：本期要点、钉钉里的爆火 / 潜力，前几个开发方向的参考商品候选）——团队照着去看的先查；
+        # ③ 不在榜单上、异常分 ≥ 疑似线 − 1 的（只有一条信号的，查了才可能有第二条：10-23 那期 7 个 2 分的）；
+        # ④ 其余爆火、潜力（以前只查异常分 ≥2 的，10-23 那期 31 个爆火 / 潜力一个都没查过评论）；
+        # ⑤ 按“可能是 Vine”扣过才不够评论信号的新品（fakehot 的 check_reviews：查了按抽到的 Vine 比例重算）。
+        # 以前 ② 和 ④ 不分、排在 ③ 前面：11-01 彩排（全市场名单）爆火 + 潜力 88 个把 40 个名额占满，③ 一个都查不到，
+        # 开发方向的 42 个参考商品只有 21 个排进前 40
         interesting = item["label"] in ("surge", "potential", "fake") or item.get("hot")
         strength = (item.get("surge") or {}).get("strength", 0) / 100
         suspect = item["fake"]["score"] >= fcfg["suspect_score"] - 1
         if suspect and interesting:
+            jobs.append((400 + item["fake"]["score"] + strength, item["asin"], "review"))
+        elif item["asin"] in shown:
             jobs.append((300 + item["fake"]["score"] + strength, item["asin"], "review"))
-        elif item["label"] in ("surge", "potential"):
-            jobs.append((200 + item["fake"]["score"] + strength, item["asin"], "review"))
         elif suspect:
-            jobs.append((150 + item["fake"]["score"], item["asin"], "review"))
+            jobs.append((200 + item["fake"]["score"], item["asin"], "review"))
+        elif item["label"] in ("surge", "potential"):
+            jobs.append((150 + item["fake"]["score"] + strength, item["asin"], "review"))
         elif item["fake"].get("check_reviews"):
             jobs.append((100 + item["fake"]["score"], item["asin"], "review"))
     jobs.sort(key=lambda j: -j[0])

@@ -317,27 +317,27 @@ def test_variation_merge_is_tagged_not_scored(cfg):
     assert "变体合并" in result["tags"] and result["score"] == 0
 
 
-def test_many_variations_divide_review_velocity(cfg):
-    """两期之间评论 +60、销量约 30 件（200%）：30 个变体 ÷30 只有 7%，不计；4 个变体 ÷4 还有 50%，计分。"""
+def test_review_velocity_is_not_divided_by_variations(cfg):
+    """两期之间评论 +60、销量约 30 件（200%）：评论和销量都是父体的，30 个变体和 2 个变体一样计分。"""
     f = cfg["thresholds"]["fake"]
     d = make([10] * 120)
     rec = {"variations": 30, "available": "2024-01-01",
            "obs": [{"date": (END - timedelta(days=3)).isoformat(), "ratings": 500, "rating": 4.4},
                    {"date": END.isoformat(), "ratings": 560, "rating": 4.4}]}
-    assert fakehot.score(rec, d, END, None, 2.0, f, [])["score"] == 0
-    got = {s["code"]: s["text"] for s in fakehot.score({**rec, "variations": 4}, d, END, None, 2.0, f, [])["signals"]}
-    assert "4 个变体共用评论，已 ÷4" in got["review_velocity"]
+    for variations in (30, 2):
+        got = {s["code"]: s["text"] for s in fakehot.score({**rec, "variations": variations}, d, END, None, 2.0, f, [])["signals"]}
+        assert got["review_velocity"].endswith("（200%）")
 
 
-def test_many_variations_skip_reviews_without_sales(cfg):
-    """这个子体几乎没卖、评论却涨了：变体多的评论可能是别的变体带来的，不计。"""
+def test_reviews_without_sales_counts_for_any_variation_count(cfg):
+    """几乎没卖、评论却涨了：销量是整个父体的，变体多少都计分。"""
     f = cfg["thresholds"]["fake"]
     d = make([10] * 110 + [0] * 10)
     rec = {"variations": 2, "available": "2024-01-01",
            "obs": [{"date": (END - timedelta(days=3)).isoformat(), "ratings": 500, "rating": 4.4},
                    {"date": END.isoformat(), "ratings": 560, "rating": 4.4}]}
-    assert "reviews_without_sales" in {s["code"] for s in fakehot.score(rec, d, END, None, 2.0, f, [])["signals"]}
-    assert fakehot.score({**rec, "variations": 4}, d, END, None, 2.0, f, [])["score"] == 0
+    for variations in (2, 12):
+        assert "reviews_without_sales" in {s["code"] for s in fakehot.score({**rec, "variations": variations}, d, END, None, 2.0, f, [])["signals"]}
 
 
 def test_review_burst_summary():
@@ -487,6 +487,24 @@ def test_listed_surges_and_potentials_all_get_a_review_check(cfg):
     assert jobs == [("SUS", "review"), ("SURGE", "review"), ("POT", "review")]
 
 
+def test_named_products_are_checked_before_other_surges(cfg):
+    """评论核查先查报告点名的（本期要点、钉钉里的爆火 / 潜力各前 6 个，前几个开发方向的参考商品候选），
+    再查不在榜单上、异常分 ≥2 的，再查其余爆火、潜力（全市场名单时爆火 + 潜力 88 个，以前按顺序把 40 个名额占满）。"""
+    from radar import verify
+
+    def surge(k, strength):
+        return {"asin": f"S{k}", "label": "surge", "fake": {"score": 0}, "as_of": None, "brand": f"B{k}",
+                "node_cn": "其他", "surge": {"strength": strength}, "recent_avg28": 1, "price": 1}
+
+    surges = [surge(k, 50 - k) for k in range(8)]  # S0 势头最强 … S7 最弱：前 6 个在本期要点里
+    rising = [{"asin": f"R{k}", "label": "watch", "fake": {"score": 0}, "as_of": None, "brand": f"RB{k}", "node_cn": "梳妆台",
+               "rising": {"ratio": 3.0 - k / 10}, "recent_avg28": 50, "prev_avg28": 10, "price": 100} for k in range(4)]
+    unlisted = {"asin": "W2", "label": "watch", "fake": {"score": 2}, "as_of": None}
+    order = [a for a, _ in verify.select(surges + rising + [unlisted], {"asins": {}}, cfg, END)]
+    assert set(order[:9]) == {f"S{k}" for k in range(6)} | {"R0", "R1", "R2"}  # 梳妆台方向的前 3 个参考候选
+    assert order[9:] == ["W2", "S6", "S7", "R3"][: len(order) - 9] and "R3" not in order
+
+
 def test_unlisted_suspects_get_a_review_check_after_listed_ones(cfg):
     """不在榜单上、异常分 ≥2 的也抽查评论（只有一条信号的，查了才可能有第二条），排在爆火、潜力之后、
     按“可能是 Vine”扣过才不够的新品之前；名额不够时先查前面的。"""
@@ -531,18 +549,17 @@ def test_restock_is_not_a_surge(cfg):
     assert s and s["restock"] and s["kind"] == "断货恢复"
 
 
-def test_many_variations_divide_new_listing_ratio(cfg):
-    """变体共享父体评论：新品评论/销量比先除以变体数。1,363 条（扣掉 30 条可能的 Vine）/ 2,834 件 = 48%：
-    24 个变体 ÷24 只有 2%，不计；4 个变体 ÷4 还有 12%，计分。"""
+def test_new_listing_ratio_is_not_divided_by_variations(cfg):
+    """评论数和销量都是整个父体的：新品评论/销量比变体多少都直接比（实测留评率不随变体数变大）。
+    1,363 条（扣掉 30 条可能的 Vine）/ 2,834 件 = 48%：24 个变体和 1 个变体一样计分。"""
     f = cfg["thresholds"]["fake"]
     d = make([0] * 50 + [80] * 70)
     rec = {"variations": 24, "available": (END - timedelta(days=60)).isoformat(),
            "obs": [{"date": END.isoformat(), "ratings": 1393, "rating": 4.4}],
            "months": _months([2482, 352])}
-    result = fakehot.score(rec, d, END, None, 2.0, f, [])
-    assert "new_listing_reviews" not in {s["code"] for s in result["signals"]}
-    got = {s["code"]: s["text"] for s in fakehot.score({**rec, "variations": 4}, d, END, None, 2.0, f, [])["signals"]}
-    assert "（12%，4 个变体共用评论，已 ÷4）" in got["new_listing_reviews"]
+    for variations in (24, 1):
+        got = {s["code"]: s["text"] for s in fakehot.score({**rec, "variations": variations}, d, END, None, 2.0, f, [])["signals"]}
+        assert "（48%）" in got["new_listing_reviews"] and "÷" not in got["new_listing_reviews"]
 
 
 def test_period_diff_lists_each_product_once():
@@ -598,6 +615,37 @@ def test_relisted_listing_needs_inherited_reviews(cfg):
     assert relisted(ramp, len(ramp) - 1, int(total * 0.2), 50, th) is None  # 20%，慢慢起量
 
 
+def test_relisted_listing_that_jumps_to_full_speed_after_a_trickle(cfg):
+    """开卖头几天零星卖一两件、几周后一下子跳到满速（之前 7 天日均 ≤ 之后 7 天的一成）：和“第一周满速”一样算老品换链接；
+    慢慢爬上来的不算。实测：上架 57 天、339 条评论，前 6 天每天 1 件、之后 20 天没卖，然后每天 149 件。"""
+    from radar.detect.rules import relist_text, relisted
+
+    th = cfg["thresholds"]["relist"]
+    jump_sales = [0] * 60 + [1] * 6 + [0] * 20 + [150] * 10 + [60] * 24
+    jump = make(jump_sales)
+    r = relisted(jump, len(jump) - 1, 900, 57, th)
+    assert r and not r["fast"] and r["step"] == {"day": jump.day(86).isoformat(), "before": 0.0, "after": 150.0}
+    assert "前 7 天日均 0 件，当天起一周日均 150 件（一步跳到满速）" in relist_text(r)
+    climb_sales = [0] * 60 + [1] * 6 + [k * 2 for k in range(1, 55)]
+    climb = make(climb_sales)
+    assert relisted(climb, len(climb) - 1, int(0.3 * sum(climb_sales)), 57, th) is None  # 慢慢爬上来的：之前 7 天不是接近 0
+    assert relisted(jump, len(jump) - 1, int(0.1 * sum(jump_sales)), 57, th) is None     # 评论只有累计销量的 10%
+
+
+def test_relisted_listing_from_a_review_check_showing_inherited_reviews(cfg):
+    """抽查评论看到近 60 天的评论不到应有的一半（评论是继承来的），且评论 ≥ 累计销量的 15%：也算老品换链接。"""
+    from radar.detect.rules import relist_text, relisted
+
+    th = cfg["thresholds"]["relist"]
+    slow_sales = [0] * 60 + [k * 0.7 for k in range(1, 61)]
+    slow = make(slow_sales)
+    ratings = int(0.2 * sum(slow_sales))
+    assert relisted(slow, len(slow) - 1, ratings, 57, th) is None
+    r = relisted(slow, len(slow) - 1, ratings, 57, th, {"n": 4, "total": 4})
+    assert r and r["inherited"] == 4 and "抽查近 60 天只有 4 条评论，评论是继承来的" in relist_text(r)
+    assert relisted(slow, len(slow) - 1, ratings, 57, th, {"n": 20, "total": 300}) is None  # 近 60 天评论够多：不是继承来的
+
+
 def test_relisted_listing_is_not_potential_or_a_new_listing_surge(cfg):
     """老品换链接不算潜力、不算新品爆发（也不标新品起量），卡片上写明依据；评论不多的同款照常判。"""
     ramp = [round(0.6 * 2.718 ** (i / 38), 1) for i in range(115)]
@@ -626,21 +674,19 @@ def test_relisted_listing_skips_new_listing_review_ratio(cfg):
     assert fakehot.score(rec, d, END, None, 2.0, f, [], relisted=True)["score"] == 0
 
 
-def test_review_rate_divides_by_many_variations(cfg):
-    """留评率用的评论数是父体共享的：变体多的先除以变体数（和两种评论/销量比一致）。门槛 6%：
-    14% 的 15 个变体 ÷15 不到 1%，不计；40% 的 4 个变体 ÷4 还有 10%，计分。"""
+def test_review_rate_is_not_divided_by_variations(cfg):
+    """留评率（当月新增评论 ÷ 销量）两边都是整个父体的：变体多少都直接和门槛比（门槛 6%），15 个变体的 14% 照样计分。"""
     f = cfg["thresholds"]["fake"]
     row = {"ratings_rate": 14.0, "ratings_cv": 30}
-    assert fakehot.score({"obs": [], "variations": 2}, None, None, row, 1.8, f, [])["score"] == 2
-    assert fakehot.score({"obs": [], "variations": 15}, None, None, row, 1.8, f, [])["score"] == 0
-    got = fakehot.score({"obs": [], "variations": 4}, None, None, {**row, "ratings_rate": 40.0}, 1.8, f, [])["signals"]
-    assert [s["text"].split("，远高于")[0] for s in got] == ["留评率 10.0%（名单留评率 40.0%，4 个变体共用评论，已 ÷4）"]
+    for variations in (2, 15):
+        got = fakehot.score({"obs": [], "variations": variations}, None, None, row, 1.8, f, [])["signals"]
+        assert [s["text"].split("，远高于")[0] for s in got] == ["留评率 14.0%"]
 
 
-def test_node_median_review_rate_ignores_many_variations(cfg):
+def test_node_median_review_rate_uses_every_product(cfg):
     products = {f"A{k}": {"asin": f"A{k}", "node": "N", "sources": ["top"], "units": 100, "ratings_rate": rate,
                           "variations": vars_} for k, (rate, vars_) in enumerate([(1.0, 1), (2.0, 2), (3.0, 3), (40.0, 20), (50.0, 30)])}
-    assert analyze.node_stats({"products": products}, cfg)["N"]["median_rate"] == 2.0
+    assert analyze.node_stats({"products": products}, cfg)["N"]["median_rate"] == 3.0
 
 
 def test_relisted_increment_is_zero_without_earlier_sales():
@@ -650,6 +696,8 @@ def test_relisted_increment_is_zero_without_earlier_sales():
     assert directions.increment(item) == 100 * 50 * 30
     assert directions.increment({**item, "relist": {"share": 0.6}}) == 0
     assert directions.increment({**item, "prev_avg28": 40, "relist": {"share": 0.6}}) == 60 * 50 * 30
+    # 之前 28 天只零星卖了几天（在卖不到 short_base_days 天）：现在的销量几乎都是从老链接转过来的，增量也按 0
+    assert directions.increment({**item, "prev_avg28": 1, "relist": {"share": 0.2, "base_short": True}}) == 0
 
 
 def test_hot_needs_steady_months_without_any_seasonal_adjustment(cfg):
