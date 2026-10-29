@@ -8,10 +8,15 @@
 名单里的“增长率”和日数据对不上（试跑：414 个里 267 个差 20 个百分点以上），所以增长用自己存的往期快照算：
   g   = 本期近 30 天销量 ÷ 基准 − 1。基准：自己存的、约 pool.screen_base_days 天前（27~36 天）的那份；头一个月没有时，
         用上个月的月度名单（同样的门槛翻全，按天数折成 30 天）或别的 21~47 天前的快照（screen_ladder 按基准的新旧定门槛）；
-  短期倍数 rN（N = pool.screen_short_days，每周一期是 7 / 14）= 近 a 天的日均 ÷ a 天前那份的日均，a 是那份快照实际隔了几天
+  短期倍数 rN（N = pool.screen_short_days，两周一期是 14，每周一期时 7 / 14）= 近 a 天的日均 ÷ a 天前那份的日均，a 是那份快照实际隔了几天
         （N±2 天里最接近的一份；掉出窗口的那几天按那份的日均估）。
 只给可能达标的商品拉日数据（screen）：稳定以后 = g ≥ screen_growth、半年内上架且没跌、任一短期倍数 ≥ screen_short 之一；
 基准是上个月的月度名单时（头三周）再加上名单的近 7 天 BSR 改善 ≥ screen_bsr_cr%。新进名单（没有基准）的都拉。
+预算不够拉全部时的先后（优先级）：新进名单最先，其余按“比基准的倍数（1 + g）和短期倍数里小的那个”从大到小——长、短两段都在涨的先拉。
+以前按大的那个排：只是近两周冲了一下、或者一个月前涨过现在不涨的，也排在前面。回测（10-23 全覆盖试跑门槛以上 1,981 个商品，
+2026-05-08 ~ 10-23 每 4 周一个日期共 7 个，两周一期的快照由日数据加出来）：只拉全市场的 10% / 15% / 20% 时，
+抓到的增长商品 38% / 56% / 73% → 42% / 66% / 78%（按月增量 44% / 60% / 75% → 48% / 72% / 81%），7 个日期每个都更多；
+只按短期倍数排 59%、两个倍数相乘 61%、按估算的月增量排 43%（拉 15% 时）。
 回测（2026-10-23 全覆盖试跑：门槛以上 2,051 个商品、195 个增长商品，自己存的快照按“最近 9 天会被改成 0.82”模拟，按每周一期）：
 稳定以后（28 天前的快照 + 7 / 14 天）不漏、拉 42%（和每 3 天一期的 30 天 + 6 / 12 天一样）；头一个月：
 9 月名单 32 / 39 / 46 天前 + 门槛 15% / 10% / 10% + 排名改善，不漏、拉 52% / 57% / 59%，预算只够拉 900 个时按优先级拉，召回 98~99.5%；
@@ -269,7 +274,7 @@ def features(state: dict, asin: str, row: dict, today: date, base_days: int = 28
 
 
 def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[tuple[str, float, str]]:
-    """可能达标、要拉日数据的商品：[(asin, 优先级, 依据)]，优先级从高到低（预算不够时先拉前面的）。规则见模块说明。"""
+    """可能达标、要拉日数据的商品：[(asin, 优先级, 依据)]，优先级从高到低（预算不够时先拉前面的）。规则和先后见模块说明。"""
     pcfg = cfg["pool"]
     growth, short = float(pcfg["screen_growth"]), float(pcfg["screen_short"])
     young_days, bsr_cr = int(pcfg["opportunity_max_age_days"]), float(pcfg["screen_bsr_cr"])
@@ -295,7 +300,7 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
         if f["base"] == "month" and (row.get("bsr_cr") or 0) >= bsr_cr:  # 基准是上个月的名单时（头三周）
             why.append(f"近 7 天排名改善 {row['bsr_cr']:.0f}%")
         if why:
-            out.append((asin, max([f["g"]] + [r - 1 for r in shorts]), "；".join(why)))
+            out.append((asin, min([1 + f["g"]] + shorts) - 1, "；".join(why)))  # 先后见模块说明
     out.sort(key=lambda t: -t[1])
     return out
 

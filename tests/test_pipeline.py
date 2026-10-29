@@ -604,6 +604,7 @@ def test_a_crash_after_fetching_saves_the_data_and_the_next_run_reuses_it(cfg, m
 
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     cfg["budget"].update(per_run=400, bootstrap_run=400)
+    cfg["pool"].update(core_max=60, per_node_top_revenue=1, similar_max=10)  # 合成数据里要拉到足够多的商品（和线上名额无关）
     secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
     world = SyntheticWorld(START.date())
     real = analyze.sections
@@ -649,8 +650,9 @@ def test_cli_stays_quiet_when_the_same_block_was_already_reported(monkeypatch, t
 
 
 def test_budget_is_split_evenly_over_the_runs_left(cfg, master_key, tmp_path):
-    """每期预算 = 本月剩下的额度 ÷ 本月还剩几期（含这一期，按北京时间的月份、每 7 天一期）：11 月 5 期，最后一期不会被挤；
-    12 月 4 期，每期多分一些（以前固定 1,300 / 1,500，12 月有 1,800 次用不上）。"""
+    """每期预算 = 本月剩下的额度 ÷ 本月还剩几期（含这一期，按北京时间的月份、每 min_days_between_runs 天一期）：
+    线上两周一期，11 月 3 期（1、15、29 号）、12 月 2 期；最后一期不会被挤（以前固定 1,300 / 1,500，月底那期会不够）。
+    下面的合成数据按每周一期跑：11 月 5 期。"""
     from datetime import datetime, timezone
 
     from radar.config import load_config
@@ -658,8 +660,10 @@ def test_budget_is_split_evenly_over_the_runs_left(cfg, master_key, tmp_path):
     live = load_config()
     assert live["budget"]["split"] == "even"
     utc = lambda m, d: datetime(2026, m, d, 4, 40, tzinfo=timezone.utc)  # noqa: E731
-    assert [pipeline.runs_left(utc(11, d), live) for d in (1, 8, 15, 22, 29, 30)] == [5, 4, 3, 2, 1, 1]
-    assert pipeline.runs_left(utc(12, 6), live) == 4 and pipeline.runs_left(datetime(2026, 10, 31, 17, 0, tzinfo=timezone.utc), live) == 5
+    assert [pipeline.runs_left(utc(11, d), live) for d in (1, 8, 15, 22, 29, 30)] == [3, 2, 2, 1, 1, 1]
+    assert pipeline.runs_left(utc(12, 13), live) == 2 and pipeline.runs_left(datetime(2026, 10, 31, 17, 0, tzinfo=timezone.utc), live) == 3
+    weekly = {**live, "schedule": {**live["schedule"], "min_days_between_runs": 7}}
+    assert [pipeline.runs_left(utc(11, d), weekly) for d in (1, 8, 15, 22, 29, 30)] == [5, 4, 3, 2, 1, 1]
     cfg["budget"].update(split="even", monthly_cap=2000, max_per_run=450)
     cfg["schedule"]["min_days_between_runs"] = 7
     world = SyntheticWorld(utc(11, 1).date())
@@ -676,15 +680,18 @@ def test_budget_is_split_evenly_over_the_runs_left(cfg, master_key, tmp_path):
 
 
 def test_weekly_schedule_counts_calls_in_the_quota_month(cfg, master_key, tmp_path):
-    """每周一期：满 7 天（留 3 小时余量）才运行；调用次数按卖家精灵套餐的月份（北京时间的自然月）记——
-    北京时间 11-01 12:40 跑的这一期（美国时间还是 10-31）算 11 月；要翻上个月全市场月度名单当基准的那一期给多一点预算。"""
+    """满 min_days_between_runs 天（留 3 小时余量）才运行（线上两周一期，下面的合成数据按每周一期）；调用次数按卖家精灵套餐的月份
+    （北京时间的自然月）记——北京时间 11-01 12:40 跑的这一期（美国时间还是 10-31）算 11 月；要翻上个月全市场月度名单当基准的那一期给多一点预算。"""
     from datetime import datetime, timezone
 
     from radar.config import load_config
 
-    assert load_config()["schedule"]["min_days_between_runs"] == 7  # 线上每周一期
-    cfg["schedule"]["min_days_between_runs"] = 7
+    live = load_config()
+    assert live["schedule"]["min_days_between_runs"] == 14  # 线上两周一期（2026-10-29 起，每月 2,000 次）
     state = {"last_success": "2026-10-23T04:44:28+00:00"}
+    assert pipeline.is_due(state, live, datetime(2026, 11, 6, 2, 0, tzinfo=timezone.utc))[0]           # 13 天 21 小时
+    assert not pipeline.is_due(state, live, datetime(2026, 11, 5, 4, 40, tzinfo=timezone.utc))[0]      # 13 天
+    cfg["schedule"]["min_days_between_runs"] = 7
     assert pipeline.is_due(state, cfg, datetime(2026, 10, 30, 2, 0, tzinfo=timezone.utc))[0]          # 6 天 21 小时
     assert not pipeline.is_due(state, cfg, datetime(2026, 10, 29, 4, 40, tzinfo=timezone.utc))[0]     # 6 天
     when = datetime(2026, 11, 1, 4, 40, tzinfo=timezone.utc)

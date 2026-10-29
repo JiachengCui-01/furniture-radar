@@ -38,7 +38,7 @@ jobs:
     permissions:
       contents: write   # 把加密数据和报告推到 site 分支
       actions: write    # 保活：防止 60 天无活动后定时任务被停用
-    timeout-minutes: 240  # 每期最多约 1,500 次调用，每次约 1.5 秒，加上限流等待和主图识别约 40~60 分钟
+    timeout-minutes: 240  # 两周一期、每月 2,000 次：每期约 670~1,000 次调用，每次约 1.5 秒，加上限流等待和主图识别约 20~40 分钟
     outputs:
       published: ${{ steps.run.outputs.published }}
       saved: ${{ steps.run.outputs.saved }}

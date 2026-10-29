@@ -18,8 +18,10 @@ def _row(units, available="2024-01-01", bsr_cr=0):
 
 
 def test_steady_screen_uses_own_snapshot_from_about_28_days_ago(cfg):
-    """每周一期、稳定以后：比 28 天前自己存的那份高 ≥15%、半年内上架且没跌、近 7 / 14 天比之前高 1.3 倍，满足一个就拉；
-    新进名单的都拉。近 7 天排名改善只在基准是上个月月度名单（头三周）时用。"""
+    """稳定以后：比 28 天前自己存的那份高 ≥15%、半年内上架且没跌、近 screen_short_days 天比之前高 1.3 倍，满足一个就拉；
+    新进名单的都拉。近 7 天排名改善只在基准是上个月月度名单（头三周）时用。线上两周一期只看近 14 天（没有 7 天前的快照），
+    下面先按每周一期（7 / 14 天）测。"""
+    cfg = {**cfg, "pool": {**cfg["pool"], "screen_short_days": [7, 14]}}
     snaps = {28: {"UP": 1000, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000},
              7: {"UP": 1100, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000},
              14: {"UP": 1100, "FLAT": 1000, "YOUNG": 1000, "JUMP": 1000, "BSR": 1000}}
@@ -34,7 +36,22 @@ def test_steady_screen_uses_own_snapshot_from_about_28_days_ago(cfg):
     # 快照隔的天数和 7 不一样（例如隔了 8 天）：按实际的 8 天算
     f8 = universe.features(_state({28: {"J": 1000}, 8: {"J": 1000}}), "J", _row(1100), TODAY)
     assert round(f8["short"][7], 3) == round(((1100 - 1000 + 1000 / 30 * 8) / 8) / (1000 / 30), 3)
+    # 两周一期（只看近 14 天）：JUMP 近 14 天只有 ×1.21，不拉
+    biweekly = {**cfg, "pool": {**cfg["pool"], "screen_short_days": [14]}}
+    assert {a for a, _s, _w in universe.screen(_state(snaps), rows, TODAY, biweekly)} == {"UP", "YOUNG", "NEW"}
 
+
+
+def test_screen_fetches_items_rising_on_both_horizons_first(cfg):
+    """预算不够拉全部时的先后：新进名单最先，其余按“比 28 天前的倍数和近 14 天倍数里小的那个”从大到小——长、短两段都在涨的先拉。
+    以前按大的那个排：一个月前涨过、最近两周没涨的（OLD，×1.6 / ×1.0）排在两段都在涨的（BOTH，×1.4 / 近 14 天 ×1.9）前面。
+    回测 7 个日期：拉全市场的 15% 时抓到的增长商品 56% → 66%。"""
+    snaps = {28: {"OLD": 1000, "BOTH": 1000, "SHORT": 1000}, 14: {"OLD": 1600, "BOTH": 1000, "SHORT": 1100}}
+    rows = {"OLD": _row(1600), "BOTH": _row(1400), "SHORT": _row(1250), "NEW": _row(500)}
+    # SHORT：28 天只 +25%，近 14 天 (1250 − 1100 + 1100 / 30 × 14) / 14 ÷ (1100 / 30) ≈ 1.29
+    out = universe.screen(_state(snaps), rows, TODAY, cfg)
+    assert [a for a, _p, _w in out] == ["NEW", "BOTH", "SHORT", "OLD"]
+    assert round(dict((a, p) for a, p, _w in out)["OLD"], 2) == 0.0  # min(1.6, 1.0) − 1
 
 def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     """头一个月：没有 30 天前的快照，用结束于 21~45 天前的那个月的月度名单（按天数折成 30 天）当基准，门槛按基准的新旧放宽，

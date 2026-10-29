@@ -103,7 +103,7 @@ def bcfg_tz(cfg: dict) -> str:
 
 def runs_left(now_utc: datetime, cfg: dict) -> int:
     """本月（套餐的月份，见 bcfg_tz）还剩几期，含这一期：每 min_days_between_runs 天一期，今天之后还放得下几期。
-    例：每周一期，11-01 → 5 期（1、8、15、22、29 号），11-29 → 1 期。"""
+    例：两周一期，11-01 → 3 期（1、15、29 号），11-29 → 1 期，12-13 → 2 期。"""
     day = clock.to_tz(now_utc, bcfg_tz(cfg)).date()
     step = max(1, int(float(cfg["schedule"]["min_days_between_runs"])))
     return 1 + (clock.days_in_month(clock.month_key(day)) - day.day) // step
