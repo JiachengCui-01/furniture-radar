@@ -209,6 +209,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     master = crypto.parse_master_key(secrets.report_key)
     site = Path(site_dir)
     state = store.load(site, master)
+    discovery.migrate_scope_keys(state, cfg)
     now_utc = now or datetime.now(timezone.utc)
 
     due, why = is_due(state, cfg, now_utc)
@@ -587,7 +588,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "traits": trait,
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)
                                 else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)},
-                                retro=retro),
+                                retro=retro, growth=growth_map(items)),
         "monthly": monthly or {},
         "monthly_judged": monthly_judged or [],
         "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
@@ -685,9 +686,16 @@ def point_to_latest(cfg: dict, site: Path, report_ids: list[str]) -> None:
             _write_shell(cfg, site, old_id, shell.envelope_of(payload), latest)
 
 
+def growth_map(items: list[dict]) -> dict[str, str]:
+    """本期的增长商品 {ASIN: surge / potential / rising}（analyze.growth_kind）。"""
+    return {i["asin"]: kind for i in items if (kind := analyze.growth_kind(i))}
+
+
 def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
     return {
         "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels,
+        # 下期“与上期对比”用：本期提示了大促后数据待修订（events.bsr_lift）时，下期写明这些增长商品哪些仍成立（diff.compare）
+        "growth": growth_map(ctx["items"]), "lift": bool((ctx.get("events") or {}).get("lift")),
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
@@ -704,6 +712,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     master = crypto.parse_master_key(secrets.report_key)
     site = Path(site_dir)
     state = store.load(site, master)
+    discovery.migrate_scope_keys(state, cfg)
     if not state.get("runs"):
         log.warn("还没有任何报告，无法重新生成")
         return RunResult(skipped_reason="还没有报告")

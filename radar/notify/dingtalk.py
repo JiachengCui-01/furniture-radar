@@ -164,6 +164,10 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append(f"较上期：依旧爆火 {len(diff['still'])}、新增爆火 {len(diff['new']['surge'])}、"
                      f"新增潜力 {len(diff['new']['potential'])}、"
                      f"新增异常 {len(diff['new']['fake'])}、不再爆火 {len(diff.get('cooled', []))}")
+        rc = diff.get("recheck")
+        if rc:  # 上期提示了大促后数据待修订：那期的增长商品本期确认了几个（名单在报告“与上期对比”里）
+            lines.append(f"上期待确认的增长商品 {rc['total']} 个：本期仍是 {len(rc['held'])} 个、不再是 {len(rc['lost'])} 个"
+                         + (f"、本期没追踪 {len(rc['gone'])} 个" if rc.get("gone") else ""))
     return "\n".join(lines)
 
 

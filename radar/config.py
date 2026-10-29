@@ -73,7 +73,7 @@ DEFAULTS: dict = {
         "min_rating": 4.0,
         "few_ratings": 100,
         "few_ratings_min_rating": 4.2,
-        "short_base_days": 14, "revision_min_items": 30, "revision_min_change": 0.02,
+        "short_base_days": 14, "recovery_days": 56, "revision_min_items": 30, "revision_min_change": 0.02,
         "surge": {
             "windows": [7, 14], "base_days": 28, "bsr_ratio": 0.5, "sales_ratio": 2.0,
             "min_daily_sales": 3, "sustained_mult": 1.5, "sustained_days": 5, "steady_band": 0.15,

@@ -31,7 +31,12 @@ def clean_text(value) -> str:
 
 
 # 读的时候就过滤的商品级条件（keep_product / apply_product_filter）：改了不用重新发现，不算进监控范围的指纹
-READ_TIME_FILTERS = ("upholstered_material_regex", "upholstered_item_regex", "accessory_regex", "furniture_noun_regex")
+READ_TIME_FILTERS = ("exclude_product_regex", "upholstered_material_regex", "upholstered_item_regex", "accessory_regex",
+                     "furniture_noun_regex")
+# exclude_product_regex 以前算在指纹里：2026-10-28 补布艺抽屉的写法（bc8ec11）后指纹从 1d2b7354530a 变了，下一期会当成换了监控范围——
+# 重新发现子类目和头部商品（多花约 100 次调用）、“与上期对比”空着。它和其他商品级条件一样是读的时候过滤的，现在也不算进指纹；
+# 以前存下的旧指纹换成现在的（migrate_scope_keys）：旧指纹 → 那时的范围按现在的算法算出来的指纹，范围后来又改了的对不上，照常重新发现
+LEGACY_SCOPE_KEYS = {"1d2b7354530a": "c52dfbad76e3"}
 
 
 def scope_key(cfg: dict) -> str:
@@ -41,6 +46,16 @@ def scope_key(cfg: dict) -> str:
     scope = {k: v for k, v in cfg["scope"].items() if k not in READ_TIME_FILTERS}
     body = {"scope": scope, "discovery": {k: cfg["discovery"].get(k) for k in keys}}
     return hashlib.sha1(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+
+
+def migrate_scope_keys(state: dict, cfg: dict) -> int:
+    """存下的旧指纹（LEGACY_SCOPE_KEYS）和现在的范围是同一个时，换成现在的指纹：指纹的算法改了，监控范围没改。返回换了几个。"""
+    key, count = scope_key(cfg), 0
+    for rec in [state.get("discovery"), state.get("discovery_pending"), *(state.get("runs") or [])]:
+        if rec and rec.get("scope_key") != key and LEGACY_SCOPE_KEYS.get(rec.get("scope_key")) == key:
+            rec["scope_key"] = key
+            count += 1
+    return count
 
 
 def keep_product(item: dict | None, cfg: dict) -> bool:

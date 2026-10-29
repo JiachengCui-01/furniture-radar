@@ -42,7 +42,31 @@ def zero_increment_reason(item: dict) -> str | None:
     if item.get("dormant"):  # 上架超过半年、之前 28 天在卖不到 short_base_days 天：多是断货很久后恢复
         days = item["prev_in28"]
         return (f"老链接之前 28 天只有 {days} 天在卖" if days else "老链接之前 28 天没在卖") + "，不是新增的需求"
+    r = item.get("recovered")
+    if r:  # 现在的水平没超过对比期之前几十天里卖到过的：跌下去又涨回来（earlier_level）
+        now = "近 28 天" if r["days"] == 28 else f"近 {r['days']} 天"
+        return (f"没超过 {r['start'][5:]}~{r['end'][5:]} 的水平（那时日均 {_units(r['level'])} 件，{now}日均 {_units(r['now'])} 件），"
+                "不是新增的需求")
     return None
+
+
+def _units(value: float) -> str:
+    return f"{value:.0f}" if value >= 10 else f"{value:.1f}"
+
+
+def earlier_level(d: Daily, base_start: int, days: int, min_in: int, oos_bsr: float | None, zero_run: int = 0) -> dict | None:
+    """对比期（从 base_start 起）之前 days 天里，连续 28 天在卖日子的日均最高的那一段（那 28 天里在卖 ≥ min_in 天，大促日也算在卖；
+    日均不算大促日和断货的日子）。返回 {"end": 那 28 天最后一天的下标, "level": 日均}，没有够格的返回 None。"""
+    best = None
+    for end in range(base_start - 1, base_start - days + 26, -1):
+        if end < 27:
+            break
+        if d.in_stock_days(end, 28, oos_bsr, zero_run) < min_in:
+            continue
+        values = d.in_stock_window("sales", end, 28, oos_bsr, zero_run)
+        if values and (best is None or sum(values) / len(values) > best["level"]):
+            best = {"end": end, "level": sum(values) / len(values)}
+    return best
 
 
 def increment(item: dict) -> float:
@@ -287,6 +311,23 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     # 之后 28 天 91% 保持住，所以只改增量、不改标签
     max_new = th["surge"].get("new_listing_max_age_days")
     dormant = bool(max_new is not None and age is not None and age > max_new and prev_in is not None and prev_in < short)
+    # 没超过之前的水平：增长商品现在的水平（突然爆火用近 7/14 天日均，潜力 / 上升中用近 28 天日均）没超过对比期之前 recovery_days 天里
+    # 卖到过的（earlier_level），是跌下去又涨回来，增量也按 0（zero_increment_reason），标签不变。
+    # 回放 2025-11~2026-09 每周（往前看 56 天）：这样的占增长判定的 22%（上升中 510 / 2051、突然爆火 109 / 552、潜力 7 / 308）、正增量的 13%，
+    # 11/45 周改变钉钉的爆火前 3、28/45 周改变前 5 个开发方向、4/45 周改变第 1；之后 28 天 91% 保持住（其余增长商品 84%），所以不改标签
+    recovered = None
+    look = int(th.get("recovery_days") or 0)
+    now = None
+    if look and idx is not None:
+        if label == "surge" and not surge.get("from_zero"):
+            now, days, base_start = surge["recent_avg"], surge["window"], idx - surge["window"] - surge["base_days"] + 1
+        elif label == "potential" or (rising and label in ("watch", "hot")):
+            now, days, base_start = _avg(d, idx, 28), 28, idx - 55
+    if now:
+        e = earlier_level(d, base_start, look, short, oos, zero_run)
+        if e and e["level"] >= now - 1e-9:
+            recovered = {"start": d.day(e["end"] - 27).isoformat(), "end": d.day(e["end"]).isoformat(),
+                         "level": round(e["level"], 1), "now": round(now, 1), "days": days}
     return {
         "asin": asin,
         "title": clean_text(rec.get("title") or (disc_row or {}).get("title") or asin),
@@ -324,6 +365,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "prev_avg28": _avg(d, idx - 28, 28, oos, zero_run) if idx is not None else None,
         "prev_in28": prev_in,
         "dormant": dormant,
+        "recovered": recovered,
         "pkg": rec.get("pkg") or (disc_row or {}).get("pkg"),
         "fetched_run": rec.get("fetched_run"),
         "source": rec.get("pool_reason"),
@@ -725,6 +767,16 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                        # 追踪的商品数（月度名单补判的持续热销没有日数据，不算追踪）
                        "total": sum(1 for i in items if i.get("daily", True)),
                        "hot_monthly": sum(1 for i in hot if not i.get("daily", True))}}
+
+
+def growth_kind(item: dict) -> str | None:
+    """增长商品是哪一种：surge（突然爆火）/ potential（潜力）/ rising（上升中，不在爆火、潜力里的），不是增长商品的返回 None
+    （和 focus_items 同一个口径）。每期记在 runs 里，下期“与上期对比”用（diff.compare 的 recheck）。"""
+    if item["label"] in ("surge", "potential"):
+        return item["label"]
+    if item.get("rising") and item["label"] in ("watch", "hot"):
+        return "rising"
+    return None
 
 
 def focus_items(items: list[dict]) -> list[dict]:

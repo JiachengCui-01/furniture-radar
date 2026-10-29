@@ -339,3 +339,21 @@ def test_upholstered_seating_and_accessories_are_out_of_scope(cfg):
     assert discovery.scope_key(plain) == discovery.scope_key(cfg)
     disc = {"products": {"A": {"asin": "A", "title": out[3]}, "B": {"asin": "B", "title": keep[0]}}}
     assert set(discovery.apply_product_filter(disc, cfg)["products"]) == {"B"}
+
+
+def test_old_scope_fingerprint_is_migrated_not_treated_as_a_scope_change(cfg):
+    """exclude_product_regex 以前算在监控范围的指纹里：改了布艺抽屉的写法，下一期就当成换了范围（重新发现、与上期对比空着）。
+    现在它也是读的时候过滤的；存下的旧指纹对得上现在的范围时换成新的，范围真的改了的照常算换了范围。"""
+    import copy
+    key = discovery.scope_key(cfg)
+    assert key == "c52dfbad76e3"  # 改了监控范围（子类目、发现参数）这个值会变：同时检查 LEGACY_SCOPE_KEYS 还对不对
+    other = copy.deepcopy(cfg)
+    other["scope"]["exclude_product_regex"] = "(?i)plastic"
+    assert discovery.scope_key(other) == key  # 商品级条件不算进指纹
+    state = {"discovery": {"scope_key": "1d2b7354530a"}, "runs": [{"scope_key": "1d2b7354530a"}, {"scope_key": "abc"}]}
+    assert discovery.migrate_scope_keys(state, cfg) == 2
+    assert state["discovery"]["scope_key"] == state["runs"][0]["scope_key"] == key and state["runs"][1]["scope_key"] == "abc"
+    narrower = copy.deepcopy(cfg)
+    narrower["scope"]["max_nodes"] = 3
+    state = {"discovery": {"scope_key": "1d2b7354530a"}}
+    assert discovery.migrate_scope_keys(state, narrower) == 0 and state["discovery"]["scope_key"] == "1d2b7354530a"

@@ -553,6 +553,15 @@ def _direction_overview(rows: list[dict], cfg: dict) -> str:
             f'<div class=tbl><table><thead>{head}</thead><tbody>{"".join(body)}</tbody></table></div></details>')
 
 
+def recovery_text(th: dict) -> str:
+    """“没超过之前的水平”的条件（analyze.earlier_level），开发方向、板块排序、判定方法共用；recovery_days 为 0 时为空。"""
+    days = int(th.get("recovery_days") or 0)
+    if not days:
+        return ""
+    return (f"现在的水平（突然爆火看近 7/14 天、潜力和上升中看近 28 天的日均）没超过对比期之前 {days} 天里卖到过的"
+            f"（连续 28 天、其中在卖 ≥{th.get('short_base_days', 14)} 天的日均最高的一段：跌下去又涨回来）")
+
+
 def _directions(tr: dict, cfg: dict) -> str:
     c = cfg["thresholds"]["directions"]
     take = f"取前 {c['max']} 个" if int(c.get("max") or 0) else "全部列出"
@@ -563,7 +572,9 @@ def _directions(tr: dict, cfg: dict) -> str:
             "× 售价 × 30 的合计，之前没在卖的按 0、老品换链接之前没在卖（或在卖不到 "
             f"{cfg['thresholds'].get('short_base_days', 14)} 天）的增量按 0、老链接重新起量的增量按 0、"
             f"上架超过 {cfg['thresholds']['surge'].get('new_listing_max_age_days', 180)} 天且之前 28 天在卖不到 "
-            f"{cfg['thresholds'].get('short_base_days', 14)} 天的老链接增量也按 0（销量是卖家精灵按 BSR 估算的，大促日不算；"
+            f"{cfg['thresholds'].get('short_base_days', 14)} 天的老链接增量也按 0"
+            + (f"、{recovery_text(cfg['thresholds'])}增量也按 0" if recovery_text(cfg["thresholds"]) else "")
+            + "（销量是卖家精灵按 BSR 估算的，大促日不算；"
             "本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的）。"
             "特征按品牌计数，同一品牌的多个商品只算一次（该品牌任一增长商品的标题或主图有就算），数字 = 具备的品牌数 / 品牌数，"
             "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里的，按月销量取前 "
@@ -620,19 +631,34 @@ def _changes(diff: dict, by_asin: dict) -> str:
     names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号"}
     moved_from = diff.get("moved_from") or {}
 
-    def name(asin: str) -> str:
+    def link(asin: str) -> str:
         item = by_asin.get(asin)
         title = (item or {}).get("title", asin)
         name = display_name((item or {}).get("brand", ""), title)
-        was = f'<span class="sub">（上期{names[moved_from[asin]]}）</span>' if asin in moved_from else ""
         return f"<a href=\"https://www.amazon.com/dp/{esc(asin)}\" target=_blank rel=\"noopener noreferrer\">" \
-               f"{esc(name[:40])}</a>{was}"
+               f"{esc(name[:40])}</a>"
+
+    def name(asin: str) -> str:
+        was = f'<span class="sub">（上期{names[moved_from[asin]]}）</span>' if asin in moved_from else ""
+        return link(asin) + was
 
     def line(head: str, asins: list[str]) -> str:
         return f"<li>{head}{len(asins)} 个：" + "、".join(name(a) for a in asins[:5]) \
             + ("…" if len(asins) > 5 else "") + "</li>"
 
     parts = [line("依旧爆火 ", diff["still"])] if diff.get("still") else []
+    rc = diff.get("recheck")
+    if rc:  # 上期提示了大促后数据待修订（“本期新出现的增长请等下期确认”）：放在最前面
+        kinds = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
+        lost = list(rc["lost"].items())
+        text = (f"<li>上期提示了大促后数据待修订：上期的 {rc['total']} 个增长商品（突然爆火 / 潜力 / 上升中），"
+                f"本期仍是增长商品 {len(rc['held'])} 个，不再是 {len(lost)} 个")
+        if lost:
+            text += "：" + "、".join(f'{link(a)}<span class="sub">（上期{kinds[k]}）</span>' for a, k in lost[:10]) \
+                + ("…" if len(lost) > 10 else "")
+        if rc.get("gone"):
+            text += f"；另有 {len(rc['gone'])} 个本期没追踪"
+        parts.insert(0, text + "</li>")
     parts += [line(f"新进入「{names[label]}」", diff["new"][label])
               for label in ("surge", "potential", "fake", "hot") if diff["new"].get(label)]
     if diff.get("cooled"):
@@ -686,7 +712,9 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
     order = ("按月增量排序：增量销售额 =（近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30，和开发方向同一个口径；"
              "老品换链接（之前 28 天没在卖或在卖不到 "
              f"{th.get('short_base_days', 14)} 天）、老链接重新起量、上架超过 {s.get('new_listing_max_age_days', 180)} 天且之前 28 天在卖不到 "
-             f"{th.get('short_base_days', 14)} 天的老链接按 0（卡片上写明原因）；近 28 天不比再之前 28 天多的（跌下去又涨回来）排在后面。")
+             f"{th.get('short_base_days', 14)} 天的老链接"
+             + ("、现在的水平没超过对比期之前 " + str(th.get("recovery_days")) + " 天里卖到过的（跌下去又涨回来）" if th.get("recovery_days") else "")
+             + "按 0（卡片上写明原因）；近 28 天不比再之前 28 天多的排在后面。")
     return {
         "surge": scope + f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
                  f"日均销量 ≥{s['sales_ratio']:g} 倍{tide_surge}且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
@@ -749,7 +777,8 @@ def _method(cfg: dict) -> str:
 ≥{th['events'].get('lift_share', 0.1):.0%} 的排名同时好到自己前 {th['events']['base_days']} 天中位数的 {th['events']['jump']:g} 倍以上（平时约 4%），报告顶部和钉钉提示，判定不变。
 卖家精灵刚拉到的最近约 10 天销量像是按当天排名换算的，大约一周后才修订（排名基本不改）；大促后排名会好上一周左右，
 换算出来的销量成了“冲上去后走平”，大促日也认不出来。Prime Big Deal Days（10-06~10-08）后 10-14 那期按当时的数据判的 47 个增长里
-16 个（爆火 10 个里 6 个）修订后不成立；去掉那几天、要求大促前就在涨等按商品改判的办法回测都更差，所以只提示。</li>
+16 个（爆火 10 个里 6 个）修订后不成立；去掉那几天、要求大促前就在涨等按商品改判的办法回测都更差，所以只提示。
+下一期的“与上期对比”和钉钉写明：上期的增长商品本期仍是几个、不再是哪些。</li>
 <li><b>最近几天的数还会被改</b>：卖家精灵会回头下调最近几天的日销量（2026-10-23 那期测了 386 个商品：最近 9 天 96% 被改、中位数是原来的 82%，更早的不变）。
 每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）。{_revision_method(th)}
 测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正。</li>
@@ -809,6 +838,7 @@ def _method(cfg: dict) -> str:
 对照组不含增长商品），同一特征合并成一行；入选门槛写在该板块顶部，两种依据方向相反的哪一档都不列；“常见”只说明增长商品里多数有，不代表比对照组多。</li>
 <li><b>开发方向</b>：增长商品 ≥{th['directions']['min_items']} 个、来自 ≥{th['directions'].get('min_brands', 1)} 个品牌的子类目{f"按增量销售额取前 {th['directions']['max']} 个" if int(th['directions'].get('max') or 0) else "都列，按增量销售额从大到小"}（增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30 的合计；
 老链接重新起量的增量按 0；上架超过 {s.get('new_listing_max_age_days', 180)} 天、之前 28 天在卖不到 {th.get('short_base_days', 14)} 天的老链接增量也按 0（多是断货很久后恢复，不是新增的需求）；
+{(recovery_text(th) + "的增量也按 0（不是新增的需求，标签不变）；") if recovery_text(th) else ""}
 本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的），
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）。
@@ -829,7 +859,9 @@ Vine（亚马逊给新品安排的测评，每个商品最多 {f.get('vine_allow
 <li><b>数据可能有问题</b>（卡片上写明，不影响上榜）：增长商品的变体数比约一个月前多了三成以上的，标“变体变多”（增长里可能有新挂进来的变体的销量）；
 名单的近 30 天销量和日数据最近 30 天合计差 2 倍以上的，标“名单和日数据对不上”；最近 28 天里 ≥7 天没有日数据的，标出天数。</li>
 <li><b>与上期对比</b>：每个商品只出现一次。“依旧爆火”= 上期、本期都在突然爆火板块；“新进入「某板块」”= 本期在该板块、上期不在，
-上期在别的板块的在括号里注明；“不再爆火”= 上期爆火、本期留在追踪里但不在任何板块。</li>
+上期在别的板块的在括号里注明；“不再爆火”= 上期爆火、本期留在追踪里但不在任何板块。
+上期提示了大促后数据待修订时，最前面另起一行：上期的增长商品（突然爆火 / 潜力 / 上升中）本期仍是增长商品几个、不再是几个（列出不再是的，括号里是上期是哪种），
+这一行里的商品也可能出现在下面几类里。</li>
 <li>阈值都可以在仓库的 config.yaml 中调整。</li></ul></details>"""
 
 
@@ -841,7 +873,7 @@ def lift_text(lift: dict | None, cfg: dict) -> str:
     when = lift["start"][5:] if lift["start"] == lift["end"] else f"{lift['start'][5:]}~{lift['end'][5:]}"
     return (f"{when} 最多 {lift['peak']:.0%} 的商品排名同时好到自己前 {ev['base_days']} 天的 {ev['jump']:g} 倍以上（多是大促或圣诞后）。"
             "这几天的销量卖家精灵大约一周后才修订，修订前大促后的几天容易看成“冲上去后走平”"
-            "（Prime Big Deal Days 后那期，增长判定约三分之一修订后不成立），本期新出现的突然爆火、潜力、上升中请等下期确认")
+            "（Prime Big Deal Days 后那期，增长判定约三分之一修订后不成立），本期新出现的突然爆火、潜力、上升中请等下期确认（下期的“与上期对比”会写明哪些仍成立）")
 
 
 def _lift_alert(ctx: dict, cfg: dict) -> str:

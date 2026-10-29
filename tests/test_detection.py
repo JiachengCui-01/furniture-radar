@@ -680,6 +680,24 @@ def test_items_not_tracked_last_run_use_the_replayed_previous_label():
     assert d["moved_from"] == {"N3": "surge"} and d["retro"] == ["N1", "N2", "N3"]
 
 
+def test_after_a_lift_warning_the_next_diff_says_which_growth_items_held():
+    """上期提示了大促后数据待修订（“本期新出现的增长请等下期确认”）：本期写明上期的增长商品哪些仍是、哪些不再是。
+    以前只有“依旧爆火 / 不再爆火”：实测 10-14 那期提示后，10-20 那期上期 57 个增长商品里 20 个不再成立，“不再爆火”只看得到 5 个。"""
+    from radar.detect import diff
+    from radar.report.render import _changes
+    prev = {"id": "p", "labels": {"A": ["surge", 0], "B": ["potential", 0], "C": ["watch", 0], "D": ["hot", 0], "E": ["surge", 0]},
+            "growth": {"A": "surge", "B": "potential", "C": "rising", "E": "surge"}, "lift": True}
+    now = {"A": "watch", "B": "potential", "C": "watch", "D": "hot"}
+    d = diff.compare(prev, now, growth={"B": "potential", "D": "rising"})
+    assert d["recheck"] == {"total": 4, "held": ["B"], "lost": {"A": "surge", "C": "rising"}, "gone": ["E"]}
+    assert d["cooled"] == ["A"]  # 不再爆火照旧
+    text = _changes(d, {})
+    assert "上期提示了大促后数据待修订：上期的 4 个增长商品（突然爆火 / 潜力 / 上升中），本期仍是增长商品 1 个，不再是 2 个：" in text
+    assert "（上期上升中）" in text and "另有 1 个本期没追踪" in text
+    assert diff.compare({**prev, "lift": False}, now, growth={"B": "potential"})["recheck"] is None  # 没提示的那期不写
+    assert diff.compare({k: v for k, v in prev.items() if k != "growth"}, now)["recheck"] is None  # 旧的记录没记增长商品
+
+
 def test_section_popups_list_every_item_by_default(cfg):
     """顶部数字和小窗里的个数要一致：report.top_n 默认 0 = 全部列出（实测持续热销 31 个，小窗只列了前 15 个）。"""
     assert cfg["report"]["top_n"] == 0
@@ -804,6 +822,28 @@ def test_dormant_old_listing_adds_no_increment(cfg):
     steady = _rec([5] * 106 + [18] * 14, 4.5, available="2019-03-01")  # 之前 28 天一直在卖：照常算
     item = analyze.analyze({"asins": {"B1": steady}}, None, ["B1"], cfg, END)["items"][0]
     assert not item["dormant"] and analyze.increment(item) == (11.5 - 5) * 100 * 30 and analyze.increment_note(item) == ""
+
+
+def test_back_to_earlier_level_adds_no_increment(cfg):
+    """现在的水平没超过对比期之前 56 天里卖到过的（跌下去又涨回来）：增量按 0，标签不变（卡片、钉钉写明原因）。
+    实测：梳妆台 8 月日均 105 件、9 月 54 件、10 月 97 件，判上升中、月增量 $18 万，一个商品就把梳妆台顶到开发方向第 1。
+    回放 45 周：这样的占增长判定的 22%、正增量的 13%，之后保持得不比创新高的差，所以只改增量。"""
+    day = lambda back: (END - timedelta(days=back)).strftime("%m-%d")
+    back = _rec([20] * 56 + [8] * 28 + [14] * 28, 4.5)  # 上升中：近 28 天 14 件、之前 28 天 8 件，再往前一直是 20 件
+    item = analyze.analyze({"asins": {"B1": back}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["label"] == "watch" and item["rising"] and not item["dormant"]
+    assert item["recovered"] == {"start": (END - timedelta(days=83)).isoformat(), "end": (END - timedelta(days=56)).isoformat(),
+                                 "level": 20, "now": 14, "days": 28}
+    assert analyze.increment(item) == 0
+    assert analyze.increment_note(item) == f"按 0 算：没超过 {day(83)}~{day(56)} 的水平（那时日均 20 件，近 28 天日均 14 件），不是新增的需求"
+    new_high = _rec([12] * 56 + [8] * 28 + [14] * 28, 4.5)  # 之前最高 12 件，现在 14 件：创新高，照常算
+    item = analyze.analyze({"asins": {"B1": new_high}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["rising"] and item["recovered"] is None and analyze.increment(item) == (14 - 8) * 100 * 30
+    surge = _rec([30] * 50 + [5] * 56 + [18] * 14, 4.5)  # 突然爆火看它自己的窗口（近 14 天）
+    item = analyze.analyze({"asins": {"B1": surge}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["label"] == "surge" and item["surge"]["window"] == 14 and item["recovered"]["days"] == 14
+    assert analyze.zero_increment_reason(item).endswith("（那时日均 30 件，近 14 天日均 18 件），不是新增的需求")
+    assert analyze.zero_increment_reason({**item, "recovered": None}) is None
 
 
 def test_increment_note_says_why_it_is_zero():

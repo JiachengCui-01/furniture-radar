@@ -88,3 +88,15 @@ def test_unrevised_deal_days_warning_leads_the_message(cfg):
     assert lines[5].startswith("**⏳ 大促后数据待修订**：11-28~12-01 最多 17% 的商品排名同时好到自己前 14 天的 1.8 倍以上")
     assert "请等下期确认" in lines[5]
     assert "大促后数据待修订" not in dingtalk.build_text({**ctx, "events": {"lift": None}})
+
+
+def test_message_says_how_many_growth_items_held_after_a_lift_warning(cfg):
+    """上期提示了大促后数据待修订：本期“较上期”下面写上期的增长商品本期仍是几个、不再是几个（名单在报告里）。"""
+    counts = {"total": 0, "surge": 0, "potential": 0, "hot": 0, "fake": 0}
+    diff = {"first": False, "still": [], "new": {"surge": [], "potential": [], "fake": [], "hot": []}, "cooled": [],
+            "recheck": {"total": 57, "held": ["A"] * 31, "lost": {f"L{k}": "rising" for k in range(20)}, "gone": ["G"] * 6}}
+    ctx = {"title": "雷达", "report_id": "2026-12-13", "as_of": "2026-12-12", "traits": {}, "diff": diff,
+           "sections": {"surge": [], "potential": [], "fake": [], "counts": counts}, "cfg": cfg, "events": {}}
+    text = dingtalk.build_text(ctx)
+    assert text.endswith("上期待确认的增长商品 57 个：本期仍是 31 个、不再是 20 个、本期没追踪 6 个")
+    assert "上期待确认" not in dingtalk.build_text({**ctx, "diff": {**diff, "recheck": None}})
