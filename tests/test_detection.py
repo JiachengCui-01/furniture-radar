@@ -87,6 +87,52 @@ def test_event_days_are_detected_from_many_items_jumping_together(cfg):
     assert few["days"] == frozenset() and few["spans"] == []  # 只认卖家精灵数据，不按登记的日期硬算
 
 
+def test_bsr_lift_flags_unrevised_days_after_a_deal(cfg):
+    """大促后数据待修订：近 10 天里连续 ≥2 天、≥10% 平时在卖的商品排名好到自己前 14 天中位数的 1.8 倍以上，提示（不改判定）。
+    用 BSR：卖家精灵刚拉到的最近约 10 天销量还会被改（10-14 拉到的数据里 Prime Big Deal Days 一个大促日都认不出来），BSR 基本不改。"""
+    from radar.detect import events
+
+    ev_cfg = cfg["thresholds"]["events"]
+
+    def world(lifted_days, n_lifted=8, n=50, base=50_000):
+        out = []
+        for k in range(n):
+            bsr = [base] * 120
+            if k < n_lifted:
+                for j in lifted_days:
+                    bsr[119 - j] = 20_000  # ≤ 50,000 ÷ 1.8
+            out.append(Daily(END - timedelta(days=119), bsr, [10] * 120, [100.0] * 120))
+        return out
+
+    assert events.bsr_lift(world([1, 2, 3]), ev_cfg, END) == {"start": (END - timedelta(days=3)).isoformat(),
+                                                              "end": (END - timedelta(days=1)).isoformat(), "peak": 0.16}
+    assert events.bsr_lift(world([2]), ev_cfg, END) is None            # 只有一天
+    assert events.bsr_lift(world([1, 2], n_lifted=4), ev_cfg, END) is None  # 8%，不到 10%
+    assert events.bsr_lift(world([12, 13]), ev_cfg, END) is None       # 不在近 10 天里
+    assert events.bsr_lift(world([1, 2], base=500_000), ev_cfg, END) is None  # 平时就不怎么卖的不算
+    lift = events.bsr_lift(world([1, 2]), ev_cfg, END)
+    from radar.report.render import lift_text
+    assert lift_text(lift, cfg).startswith(f"{(END - timedelta(days=2)).isoformat()[5:]}~{(END - timedelta(days=1)).isoformat()[5:]} 最多 16% 的商品")
+    assert lift_text(None, cfg) == ""
+
+
+def test_deal_days_count_as_selling_days(cfg):
+    """“在卖几天”里大促日照样算：那几天在卖，只是不拿来比（日均照样不算）。以前按去掉大促日后的序列数，
+    每周回放一年：11 个“对比期只有 X 天在卖”、7 个停卖很久的老链接、1 个老品换链接只因为这个才不够 14 天。"""
+    sales = [5] * 120
+    for k in range(64, 73):   # 之前 28 天（第 64~91 天）里断货 9 天
+        sales[k] = 0
+    rec = _rec(sales, 4.5, available="2019-03-01")
+    d = Daily.from_record(rec["series"])
+    deal = {d.day(k) for k in range(85, 92)}  # 之前 28 天里有 7 个大促日
+    th = cfg["thresholds"]
+    masked = d.without(deal)
+    assert len(masked.in_stock_window("sales", 91, 28, th["out_of_stock_bsr"], 3)) == 12  # 日均只用这 12 天
+    assert masked.in_stock_days(91, 28, th["out_of_stock_bsr"], 3) == 19 and masked.raw is d
+    item = analyze.evaluate("B1", rec, None, {}, cfg, END, data_date=END, events=frozenset(deal))
+    assert item["prev_in28"] == 19 and not item["dormant"] and item["prev_avg28"] == 5
+
+
 def test_growth_made_of_event_days_is_not_a_surge(cfg):
     """大促 4 天销量翻 8 倍、之后回到原样：算上大促日像“仍在上涨”，去掉后没有增长 → 不算爆火，标“大促拉动”。
     大促日没冲高的商品不标；大促日也不让平稳的商品显得在回落。"""

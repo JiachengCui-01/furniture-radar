@@ -76,3 +76,15 @@ def test_revision_caveat_shows_in_the_message():
     a1 = next(line for line in text.splitlines() if "A1" in line)
     a2 = next(line for line in text.splitlines() if "A2" in line)
     assert a1.endswith("（最近几天的数待修订，校正后不算突然爆火）") and "待修订" not in a2
+
+
+def test_unrevised_deal_days_warning_leads_the_message(cfg):
+    """大促后数据待修订（events.bsr_lift）：钉钉消息最前面提示，下面的爆火 / 潜力可能有三分之一修订后不成立。"""
+    counts = {"total": 0, "surge": 0, "potential": 0, "hot": 0, "fake": 0}
+    ctx = {"title": "雷达", "report_id": "2026-12-06", "as_of": "2026-12-05", "traits": {}, "diff": {"first": True},
+           "sections": {"surge": [], "potential": [], "fake": [], "counts": counts}, "cfg": cfg,
+           "events": {"lift": {"start": "2026-11-28", "end": "2026-12-01", "peak": 0.17}}}
+    lines = dingtalk.build_text(ctx).splitlines()
+    assert lines[5].startswith("**⏳ 大促后数据待修订**：11-28~12-01 最多 17% 的商品排名同时好到自己前 14 天的 1.8 倍以上")
+    assert "请等下期确认" in lines[5]
+    assert "大促后数据待修订" not in dingtalk.build_text({**ctx, "events": {"lift": None}})

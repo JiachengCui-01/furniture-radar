@@ -47,6 +47,51 @@ def daily_shares(dailies: list[Daily], cfg: dict) -> dict[date, float]:
     return {day: hits / total for day, (total, hits) in tally.items() if total >= min_items}
 
 
+def bsr_lift(dailies: list[Daily], cfg: dict, data_date: date | None) -> dict | None:
+    """近 lift_lookback 天里排名普遍大幅提升的一段（大促、圣诞后……），没有返回 None。只用来提示“这几天的销量还没修订”，不改判定。
+    某一天：平时在卖的商品（前 base_days 天 BSR 中位数 ≤ lift_max_bsr，且这样的商品 ≥ min_items 个）里，
+    当天 BSR ≤ 自己前 base_days 天中位数 ÷ jump 的占比；占比 ≥ lift_share、连续 ≥ lift_min_days 天才算。
+    用 BSR 不用销量：卖家精灵会回头改最近约 10 天的销量（刚拉到时大促日看不出来），BSR 基本不改。"""
+    if data_date is None or not dailies:
+        return None
+    base_days, jump = int(cfg["base_days"]), float(cfg["jump"])
+    share_min, max_bsr = float(cfg.get("lift_share", 0.10)), float(cfg.get("lift_max_bsr", 300000))
+    lookback, min_days, min_items = int(cfg.get("lift_lookback", 10)), int(cfg.get("lift_min_days", 2)), int(cfg["min_items"])
+    shares: dict[date, float] = {}
+    for back in range(lookback):
+        day = data_date - timedelta(days=back)
+        total = hits = 0
+        for d in dailies:
+            i = d.index_of(day)
+            if i < base_days or i >= len(d.bsr) or d.bsr[i] is None:
+                continue
+            prior = [v for v in d.bsr[i - base_days:i] if v is not None]
+            if len(prior) < base_days * 0.7:
+                continue
+            base = statistics.median(prior)
+            if base > max_bsr:
+                continue
+            total += 1
+            hits += d.bsr[i] <= base / jump
+        if total >= min_items:
+            shares[day] = hits / total
+    runs, run = [], []
+    for back in range(lookback - 1, -1, -1):
+        day = data_date - timedelta(days=back)
+        if shares.get(day, 0.0) >= share_min - 1e-9:
+            run.append(day)
+            continue
+        if len(run) >= min_days:
+            runs.append(run)
+        run = []
+    if len(run) >= min_days:
+        runs.append(run)
+    if not runs:
+        return None
+    days = [day for r in runs for day in r]
+    return {"start": days[0].isoformat(), "end": days[-1].isoformat(), "peak": round(max(shares[day] for day in days), 3)}
+
+
 def configured_days(deal_windows: list[dict]) -> dict[date, str]:
     out: dict[date, str] = {}
     for deal in deal_windows or []:

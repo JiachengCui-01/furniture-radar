@@ -314,7 +314,7 @@ def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: flo
         "growth": None if growth is None else round(growth, 3),
         "recent_ratio": None if recent_ratio is None else round(recent_ratio, 2),
         "avg28": round(avg28, 2),
-        "base_in": len(base),  # 之前 28 天里在卖的天数
+        "base_in": d.in_stock_days(idx - 28, 28, oos_bsr, zero_run),  # 之前 28 天里在卖的天数（大促日也算）
         "ratings": ratings,
         "rating": rating,
     }

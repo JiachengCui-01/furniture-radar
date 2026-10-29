@@ -16,7 +16,7 @@ import httpx
 from .. import log
 from ..analyze import display_name, zero_increment_reason
 from ..detect.directions import headline, increment, money_text
-from ..report.render import growth_text
+from ..report.render import growth_text, lift_text
 from ..narrative import top_design_labels
 
 
@@ -108,6 +108,9 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         f"**🚀 突然爆火 {c['surge']}　🌱 潜力 {c['potential']}　🔥 持续热销 {c['hot']}　⚠️ 异常 {c['fake']}**",
         "",
     ]
+    lift = lift_text((ctx.get("events") or {}).get("lift"), ctx.get("cfg") or {})
+    if lift:  # 大促后数据待修订：放在最前面，下面的爆火 / 潜力可能有三分之一修订后不成立
+        lines += [f"**⏳ 大促后数据待修订**：{lift}。", ""]
 
     def item_line(item: dict, extra: str) -> str:
         node = item.get("node_cn") or item.get("node_name") or ""

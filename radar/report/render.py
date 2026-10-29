@@ -121,6 +121,7 @@ font:inherit;color:inherit;text-align:left;width:100%}
 .kpi span{font-size:13px;color:var(--muted)}
 @media (max-width:560px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi:last-child:nth-child(odd){grid-column:span 2}}
 .kpi-hint{margin:-6px 0 0;font-size:12px}
+.alert{border-left:3px solid var(--fake);background:rgba(201,42,42,.08);border-radius:8px;padding:8px 12px;margin:12px 0;font-size:14px}
 section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
 section>h2{font-size:18px;margin:0 0 4px;display:flex;align-items:center;gap:8px}
 section>h2 .dot{width:10px;height:10px;border-radius:50%;background:var(--c)}
@@ -744,6 +745,11 @@ def _method(cfg: dict) -> str:
 {th['events']['base_days']} 天中位数的 {th['events']['jump']:g} 倍，与它相连、比例 ≥{th['events']['edge_share']:.0%} 的日子也算）
 + config.yaml 登记的大促里、数据也印证（当天 ≥{th['events']['edge_share']:.0%} 的商品冲高）的日子。
 自己在大促日冲高过、算上大促日能达到爆火 / 潜力 / 上升中而去掉后达不到的，标“大促拉动”，不进这几个板块。</li>
+<li><b>大促后数据待修订</b>：近 {th['events'].get('lift_lookback', 10)} 天里有连续 ≥{th['events'].get('lift_min_days', 2)} 天，平时在卖的商品（前 {th['events']['base_days']} 天 BSR 中位数 ≤{th['events'].get('lift_max_bsr', 300000) / 10000:g} 万）里
+≥{th['events'].get('lift_share', 0.1):.0%} 的排名同时好到自己前 {th['events']['base_days']} 天中位数的 {th['events']['jump']:g} 倍以上（平时约 4%），报告顶部和钉钉提示，判定不变。
+卖家精灵刚拉到的最近约 10 天销量像是按当天排名换算的，大约一周后才修订（排名基本不改）；大促后排名会好上一周左右，
+换算出来的销量成了“冲上去后走平”，大促日也认不出来。Prime Big Deal Days（10-06~10-08）后 10-14 那期按当时的数据判的 47 个增长里
+16 个（爆火 10 个里 6 个）修订后不成立；去掉那几天、要求大促前就在涨等按商品改判的办法回测都更差，所以只提示。</li>
 <li><b>最近几天的数还会被改</b>：卖家精灵会回头下调最近几天的日销量（2026-10-23 那期测了 386 个商品：最近 9 天 96% 被改、中位数是原来的 82%，更早的不变）。
 每期拿上期存的日数据和这期新拉的比，测出改了几天、改成原来的几成（写在“数据说明”）。{_revision_method(th)}
 测到的商品不到 {th.get('revision_min_items', 30)} 个、或幅度不到 {th.get('revision_min_change', 0.02):.0%} 时不校正。</li>
@@ -825,6 +831,22 @@ Vine（亚马逊给新品安排的测评，每个商品最多 {f.get('vine_allow
 <li><b>与上期对比</b>：每个商品只出现一次。“依旧爆火”= 上期、本期都在突然爆火板块；“新进入「某板块」”= 本期在该板块、上期不在，
 上期在别的板块的在括号里注明；“不再爆火”= 上期爆火、本期留在追踪里但不在任何板块。</li>
 <li>阈值都可以在仓库的 config.yaml 中调整。</li></ul></details>"""
+
+
+def lift_text(lift: dict | None, cfg: dict) -> str:
+    """大促后数据待修订的提示（events.bsr_lift），没有返回空串。报告顶部和钉钉共用。"""
+    if not lift:
+        return ""
+    ev = cfg["thresholds"]["events"]
+    when = lift["start"][5:] if lift["start"] == lift["end"] else f"{lift['start'][5:]}~{lift['end'][5:]}"
+    return (f"{when} 最多 {lift['peak']:.0%} 的商品排名同时好到自己前 {ev['base_days']} 天的 {ev['jump']:g} 倍以上（多是大促或圣诞后）。"
+            "这几天的销量卖家精灵大约一周后才修订，修订前大促后的几天容易看成“冲上去后走平”"
+            "（Prime Big Deal Days 后那期，增长判定约三分之一修订后不成立），本期新出现的突然爆火、潜力、上升中请等下期确认")
+
+
+def _lift_alert(ctx: dict, cfg: dict) -> str:
+    text = lift_text((ctx.get("events") or {}).get("lift"), cfg)
+    return f'<p class="alert"><b>大促后数据待修订</b>：{esc(text)}。</p>' if text else ""
 
 
 def render(ctx: dict) -> str:
@@ -912,7 +934,7 @@ def render(ctx: dict) -> str:
 <style>{CSS}</style></head><body><div class="wrap">
 <header><div class="sub">{esc(cfg['report'].get('subtitle') or '亚马逊美国站 · 家具')}</div><h1>{esc(ctx['title'])}</h1>
 <div class="sub hist">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期 · 日数据截至 {esc(ctx['as_of'])}{history}</div></header>
-<div class="kpis">{kpi}</div><p class="sub kpi-hint">点数字查看商品清单</p>
+<div class="kpis">{kpi}</div><p class="sub kpi-hint">点数字查看商品清单</p>{_lift_alert(ctx, cfg)}
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{markdown(ctx['summary'], by_asin)}</section>
 <section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>外观与工艺依据</h2>{_traits(ctx['traits'], counts, cfg)}</section>
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>

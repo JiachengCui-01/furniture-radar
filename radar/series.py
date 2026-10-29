@@ -21,6 +21,7 @@ class Daily:
     sales: list
     price: list
     masked: frozenset = field(default_factory=frozenset)  # 去掉的日子（大促日）的下标，见 without()
+    raw: "Daily | None" = field(default=None, repr=False, compare=False)  # without() 之前的原序列（数在卖天数用）
 
     @classmethod
     def from_record(cls, series: dict | None) -> "Daily | None":
@@ -84,6 +85,12 @@ class Daily:
         return [v for i, v in enumerate(values[lo:end + 1], lo)
                 if v is not None and self.bsr[i] is not None and self.bsr[i] < oos_bsr and i not in idle]
 
+    def in_stock_days(self, end: int, length: int, oos_bsr: float | None, zero_run: int = 0) -> int:
+        """[end-length+1, end] 里在卖的天数（口径同 in_stock_window）。去掉的日子（大促日）照样算：那几天在卖，只是不拿来比；
+        以前按去掉后的序列数，大促日都算成了“没在卖”（每周回放一年：11 个“对比期只有 X 天在卖”、7 个停卖很久的老链接、
+        1 个老品换链接只因为这个才不够 14 天，多在 Prime 那周之后）。"""
+        return len((self.raw or self).in_stock_window("sales", end, length, oos_bsr, zero_run))
+
     def zero_runs(self, k: int) -> frozenset:
         """连着 ≥k 天销量是 0 的那些日子的下标。"""
         out, i, sales = set(), 0, self.sales
@@ -108,7 +115,8 @@ class Daily:
         def blank(values: list) -> list:
             return [None if i in idx else v for i, v in enumerate(values)]
 
-        return Daily(self.start, blank(self.bsr), blank(self.sales), blank(self.price), frozenset(idx) | self.masked)
+        return Daily(self.start, blank(self.bsr), blank(self.sales), blank(self.price), frozenset(idx) | self.masked,
+                     self.raw or self)
 
 
 def build_daily(items: list[dict], keep_days: int = 420) -> dict | None:
@@ -221,7 +229,7 @@ def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
         "window": window,
         "recent_avg": recent_avg,
         "base_avg": base_avg or 0.0,
-        "base_in": len(base_sales),  # 对比期里在卖的天数
+        "base_in": d.in_stock_days(base_end, base_days, oos_bsr),  # 对比期里在卖的天数（大促日也算）
         "sales_ratio": (recent_avg / base_avg) if base_avg and base_avg > 0 else None,
         "recent_bsr": recent_bsr,
         "base_bsr": base_bsr,

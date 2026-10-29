@@ -149,7 +149,7 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         if avg28 and prev28 and avg28 >= rcfg.get("min_daily_sales", 3) \
                 and avg28 / prev28 >= rcfg.get("min_ratio", 1.3):
             rising = {"ratio": round(avg28 / prev28, 2), "avg28": avg28, "window": 28,
-                      "base_in": len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run))}
+                      "base_in": d.in_stock_days(idx - 28, 28, oos, zero_run)}
     # 跑赢大盘：所在子类目整体在涨时，增长倍数先除以大盘倍数（只是随大流的不算潜力 / 上升中）
     tided = None
     if tide and tide > 1:
@@ -277,7 +277,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     obs = (rec.get("obs") or [{}])[-1]
     months = closed_months(rec.get("months") or [], as_of)
     oos, zero_run = th.get("out_of_stock_bsr"), int(th.get("out_of_stock_zero_run") or 0)
-    prev_in = len(d.in_stock_window("sales", idx - 28, 28, oos, zero_run)) if idx is not None else None  # 之前 28 天在卖的天数
+    prev_in = d.in_stock_days(idx - 28, 28, oos, zero_run) if idx is not None else None  # 之前 28 天在卖的天数（大促日也算）
     if relist and prev_in is not None:
         # 之前 28 天在卖不到 short_base_days 天：开发方向的增量按 0（之前那几天零星卖几件，现在的销量几乎都是从老链接转过来的）
         relist = {**relist, "base_short": prev_in < short}
@@ -367,6 +367,8 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     dailies = [d for d in (Daily.from_record(rec["series"]) for _, rec in recs) if d is not None]
     data_date = max((day for day in (d.as_of() for d in dailies) if day), default=None)
     ev = events_mod.detect(dailies, cfg["thresholds"]["events"], cfg.get("deal_windows") or [])
+    # 近几天排名普遍大幅提升（大促、圣诞后）：这几天的销量卖家精灵还没修订，报告和钉钉里提示（不改判定，见 events.bsr_lift）
+    ev["lift"] = events_mod.bsr_lift(dailies, cfg["thresholds"]["events"], data_date)
     th = cfg["thresholds"]
     rev = usable_revision(revision, th)
     inflation = recent_inflation(dailies, ev["days"], int(rev["window"])) if rev else None
