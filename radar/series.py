@@ -53,13 +53,18 @@ class Daily:
         return None if i is None else self.day(i)
 
     def window(self, name: str, end: int, length: int) -> list:
-        """[end-length+1, end] 区间内的非空值。"""
+        """[end-length+1, end] 区间内的非空值。end 在序列开始之前（刚开卖的商品往前取“之前 28 天”）时为空，
+        不能让负数下标从序列末尾绕回来（以前日数据不到 27 天的新品，“之前 28 天”取到的其实是近 28 天里的日子）。"""
+        if end < 0:
+            return []
         values = getattr(self, name)
         lo = max(0, end - length + 1)
         return [v for v in values[lo:end + 1] if v is not None]
 
     def raw_window(self, name: str, end: int, length: int) -> list:
-        """[end-length+1, end] 区间内的值，缺失日保留为 None（断货），去掉的日子（masked）不在里面。"""
+        """[end-length+1, end] 区间内的值，缺失日保留为 None（断货），去掉的日子（masked）不在里面。end < 0 时为空（同 window）。"""
+        if end < 0:
+            return []
         values = getattr(self, name)
         lo = max(0, end - length + 1)
         return [v for i, v in enumerate(values[lo:end + 1], lo) if i not in self.masked]
@@ -76,12 +81,16 @@ class Daily:
     def in_stock_window(self, name: str, end: int, length: int, oos_bsr: float | None, zero_run: int = 0) -> list:
         """同 window()，但跳过断货的日子：BSR 缺失或 ≥ oos_bsr（断货 / 停售 / 还没开卖，BSR 会飙到几百万）。
         对比期用它：没在卖的日子不能当“之前的水平”。oos_bsr 为空时等于 window()。
-        zero_run：连着 ≥ 这么多天销量 0 的那几天也算断货（断货头几天 BSR 还没涨到 oos_bsr；实测销量 0 的日子 27% 的 BSR 不到 100 万）。"""
+        zero_run：连着 ≥ 这么多天销量 0 的那几天也算断货（断货头几天 BSR 还没涨到 oos_bsr；实测销量 0 的日子 27% 的 BSR 不到 100 万）。
+        连着几天按去掉大促日之前的原序列数：断货中间夹着一个大促日时，以前被切成两段、都不够 zero_run 天，日均里多算了几天 0，
+        在卖天数（in_stock_days，按原序列）却没算，两边对不上。end < 0 时为空（同 window）。"""
         if not oos_bsr:
             return self.window(name, end, length)
+        if end < 0:
+            return []
         values = getattr(self, name)
         lo = max(0, end - length + 1)
-        idle = self.zero_runs(zero_run) if zero_run else frozenset()
+        idle = (self.raw or self).zero_runs(zero_run) if zero_run else frozenset()
         return [v for i, v in enumerate(values[lo:end + 1], lo)
                 if v is not None and self.bsr[i] is not None and self.bsr[i] < oos_bsr and i not in idle]
 

@@ -1,6 +1,7 @@
 """把每个追踪中的 ASIN 跑一遍全部判定，得到带标签的结果列表。纯计算，不调接口。"""
 from __future__ import annotations
 
+import math
 from datetime import date
 
 from . import clock, monthly_lists, universe
@@ -47,11 +48,18 @@ def zero_increment_reason(item: dict) -> str | None:
         now = "近 28 天" if r["days"] == 28 else f"近 {r['days']} 天"
         return (f"没超过 {r['start'][5:]}~{r['end'][5:]} 的水平（那时日均 {_units(r['level'])} 件，{now}日均 {_units(r['now'])} 件），"
                 "不是新增的需求")
+    if not item.get("price"):
+        return "没有售价"  # 增量 = 日均差 × 售价，算不出来（以前写成“近 28 天不比再之前 28 天多”）
     return None
 
 
 def _units(value: float) -> str:
     return f"{value:.0f}" if value >= 10 else f"{value:.1f}"
+
+
+def _floor2(value: float) -> str:
+    """倍数往下取两位小数：和门槛比“不到 1.3 倍”时，1.297 不能显示成 1.30。"""
+    return f"{math.floor(value * 100 + 1e-9) / 100:.2f}"
 
 
 def earlier_level(d: Daily, base_start: int, days: int, min_in: int, oos_bsr: float | None, zero_run: int = 0) -> dict | None:
@@ -160,11 +168,13 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
             and surge["sales_ratio"] / tide < need_surge - 1e-9:
         tide_lost.append(("突然爆火", surge["sales_ratio"], need_surge))
         surge = None
-    potential =(evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
-                 if idx is not None and not relist else None)
-    if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断
+    # 断货恢复：对比期多半断货、更早之前卖得和现在差不多，“涨”只是恢复供货——不算爆火，也不算潜力 / 上升中
+    potential = (evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
+                 if idx is not None and not relist and not restock else None)
+    if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断，也不留判定过程里的标签（断货恢复、形态、随大盘）
         surge = potential = None
-        new_ramp = None
+        new_ramp = restock = unshaped = None
+        tide_lost = []
     rising = None
     if idx is not None and not stale and not surge and not restock:
         rcfg = th.get("rising") or {}
@@ -194,8 +204,31 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     faded = bool(mom and mom["fading"] and (surge or potential or rising))
     if faded:
         surge = potential = rising = None
+    # 涨幅没持续到最近：潜力 / 上升中的近 7 天（不是大促日的 7 天，最多往前看 14 天）日均 ÷ 之前 28 天日均（扣大盘后）
+    # 也要达到同一个倍数，否则不算。只比 28 天时，涨幅在 28 天的前半段、最近已经回到原来水平的也达标，回落规则又只抓“正在往下掉”的、
+    # 抓不到“跌完走平”的（例：11-01 彩排的 8 抽屉斗柜，9 月下旬到 10-11 每天 20~29 件、10-12 起每天 3~5 件，之前 28 天日均 4.7 件，
+    # 28 天 ×3.0 判潜力、月增量 $7 万排第 2）。回放 2025-11~2026-09 每周：潜力 308 个判定去掉 28 个、上升中 2,051 个去掉 217 个，
+    # 去掉的之后 28 天仍在对比期 × 同一倍数以上的 44~46%（留下的 79~88%），下一周还是增长商品的 7~11%（留下的 42~45%）；
+    # 近 7 天和近 28 天差不多、只是刚好卡在门槛下面的那一半，之后也一样（41~50%），所以不另外放宽
+    stalled = None
+    if not faded and idx is not None and (potential or rising):
+        zero_run = int(th.get("out_of_stock_zero_run") or 0)
+        base = mean(d.in_stock_window("sales", idx - 28, 28, oos, zero_run))
+        last7 = mean([d.sales[k] for k in d.open_days(idx, 7, 14) if k < len(d.sales)])
+        t = tide if tide and tide > 1 else 1.0
+        lost = []
+        for name, judged, need in (("潜力", potential, th["potential"]["min_recent_ratio"]),
+                                   ("上升中", rising, (th.get("rising") or {}).get("min_ratio", 1.3))):
+            if judged and base and (last7 is None or last7 / base / t < need - 1e-9):
+                lost.append((name, need))
+        if lost:
+            names = [n for n, _ in lost]
+            potential = None if "潜力" in names else potential
+            rising = None if "上升中" in names else rising
+            stalled = {"lost": lost, "last7": last7, "base": base, "tide": t}
     return {"surge": surge, "restock": restock, "new_ramp": new_ramp, "unshaped": unshaped,
-            "potential": potential, "rising": rising, "mom": mom, "faded": faded, "revived": revived, "tided": tided}
+            "potential": potential, "rising": rising, "mom": mom, "faded": faded, "revived": revived, "tided": tided,
+            "stalled": stalled}
 
 
 def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
@@ -285,7 +318,19 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if g["tided"] and label not in ("surge", "potential") and not rising:
         t = g["tided"]
         tags.append(f"随大盘（所在子类目整体 ×{t['tide']:.2f}，" + "；".join(
-            f"{name} ×{ratio:.2f} 扣除后 ×{ratio / t['tide']:.2f}，不到 {need:g} 倍" for name, ratio, need in t["lost"]) + "）")
+            f"{name} ×{ratio:.2f} 扣除后 ×{_floor2(ratio / t['tide'])}，不到 {need:g} 倍" for name, ratio, need in t["lost"]) + "）")
+    st7 = g["stalled"]
+    if st7 and label in ("watch", "hot") and not rising:
+        need = min(n for _, n in st7["lost"])
+        names = "、".join(n for n, _ in st7["lost"])
+        if st7["last7"] is None:
+            tags.append(f"近 7 天没涨够（近 7 天没有日数据，不算{names}）")
+        else:
+            raw = st7["last7"] / st7["base"]
+            times = (f"×{raw:.2f}，扣掉大盘 ×{st7['tide']:.2f} 后 ×{_floor2(raw / st7['tide'])}" if st7["tide"] > 1
+                     else f"×{_floor2(raw)}")
+            tags.append(f"近 7 天没涨够（日均 {st7['last7']:.1f} 件，是之前 28 天日均 {st7['base']:.1f} 件的 {times}，"
+                        f"不到 {need:g} 倍，不算{names}）")
     if relist:
         tags.append(relist_text(relist))
     if hot and label != "hot":
@@ -505,10 +550,12 @@ def truncated_rec(rec: dict, upto: date) -> dict | None:
 
 
 def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, then: date, data_then: date,
-                 extra_rows: dict | None = None, events=frozenset()) -> dict[str, str]:
+                 extra_rows: dict | None = None, events=frozenset(), tides: dict | None = None) -> dict[str, str]:
     """上期没追踪的商品，按本期拉到的日数据回看上期那天（then，日数据截至 data_then）会被判成什么。
     “与上期对比”用它：追踪范围扩大后，上期没追踪的商品一上榜就算“新进入”，其实可能上期就已经是了。
-    判定规则、大促日、子类目门槛和本期一样，只是数据截到那天（那几天的日数据已经修订过，比上期当时拉到的更准）。"""
+    判定规则、大促日、子类目门槛和本期一样，只是数据截到那天（那几天的日数据已经修订过，比上期当时拉到的更准）。
+    tides：上期存下的品类大盘（run["coverage"]["tides"]），和上期追踪的商品一样扣（以前不扣：大盘涨时，上期其实不算爆火的
+    回看成爆火，本期又被大盘扣掉，就列进了“不再爆火”）；以前的记录没存的不扣。"""
     stats = node_stats(disc, cfg)
     products = {**(extra_rows or {}), **((disc or {}).get("products") or {})}
     out = {}
@@ -516,7 +563,9 @@ def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, th
         cut = truncated_rec(state["asins"].get(asin) or {}, data_then)
         if cut is None:
             continue
-        out[asin] = evaluate(asin, cut, products.get(asin), stats, cfg, then, data_date=data_then, events=events)["label"]
+        node = cut.get("node") or (products.get(asin) or {}).get("node")
+        out[asin] = evaluate(asin, cut, products.get(asin), stats, cfg, then, data_date=data_then, events=events,
+                             tide=(tides or {}).get(node))["label"]
     return out
 
 

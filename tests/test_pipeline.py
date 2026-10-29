@@ -587,7 +587,7 @@ def test_previous_run_is_replayed_for_items_not_tracked_last_time(world_run, mas
     result = analyze.analyze(state, state["discovery"], pool, cfg, today, tracking.fresh_rows(state))
     items = [i for i in result["items"] if i.get("daily", True)]
     same = analyze.retro_labels(state, state["discovery"], [i["asin"] for i in items], cfg, today, result["data_date"],
-                                tracking.fresh_rows(state), result["events"]["days"])
+                                tracking.fresh_rows(state), result["events"]["days"], result["tides"])
     assert same == {i["asin"]: i["label"] for i in items}
     rec = state["asins"][items[0]["asin"]]
     day = result["data_date"] - timedelta(days=5)

@@ -859,6 +859,8 @@ def test_increment_note_says_why_it_is_zero():
     assert analyze.increment_note({**base, "prev_avg28": 70}) == "近 28 天不比再之前 28 天多"
     assert increment_text({**base, "prev_avg28": 70}) == "月增量-$3 万，近 28 天不比再之前 28 天多"
     assert analyze.increment_note({**base, "prev_avg28": 20}) == "" and increment_text({**base, "prev_avg28": 20}) == "月增量$12 万"
+    # 没有售价：增量算不出来，以前写成“近 28 天不比再之前 28 天多”
+    assert analyze.increment_note({**base, "prev_avg28": 20, "price": None}) == "按 0 算：没有售价"
 
 
 def test_short_series_does_not_break_event_check(cfg):
@@ -1124,3 +1126,92 @@ def test_sections_rank_surge_and_potential_by_increment(cfg):
     sec = analyze.sections(items, 0)
     assert [i["asin"] for i in sec["surge"]] == ["BIG", "SMALL", "RELIST", "VSHAPE"]
     assert [i["asin"] for i in sec["potential"]] == ["WIDE", "RAMP"]
+
+
+def test_rising_and_potential_need_the_last_7_days_too(cfg):
+    """潜力 / 上升中的近 7 天（不是大促日的 7 天）日均也要 ≥ 之前 28 天的同一倍数（扣大盘后）：只比 28 天时，涨幅在前半段、
+    最近已经回到原来水平的也达标，回落规则又抓不到跌完走平的（11-01 彩排的 8 抽屉斗柜：10-11 前每天 20~29 件、之后 3~5 件，
+    之前 28 天 4.7 件，判潜力、月增量排第 2）。回放：去掉的之后 28 天仍在对比期 × 同一倍数以上的 44~46%，留下的 79~88%。"""
+    from radar.analyze import _judge_growth
+
+    def item(sales, **kw):
+        return analyze.analyze({"asins": {"B1": _rec(sales, 4.5, **kw)}}, None, ["B1"], cfg, END)["items"][0]
+
+    bump = item([10] * 56 + [20] * 14 + [10] * 14)  # 近 28 天 ×1.5，但近 7 天回到 10 件
+    assert bump["label"] == "watch" and not bump["rising"] and not bump["fading"]
+    assert "近 7 天没涨够（日均 10.0 件，是之前 28 天日均 10.0 件的 ×1.00，不到 1.3 倍，不算上升中）" in bump["tags"]
+    assert analyze.growth_kind(bump) is None
+    steady = item([10] * 56 + [13] * 14 + [14] * 14)  # 近 28 天 ×1.35、近 7 天 ×1.4：照常算
+    assert steady["rising"] and not any(t.startswith("近 7 天没涨够") for t in steady["tags"])
+    # 大盘：近 28 天 ×1.6 扣 1.2 后 ×1.33 够，近 7 天 ×1.4 扣后 ×1.16 不够
+    sales = [10] * 56 + [18] * 14 + [14] * 14
+    d = make(sales)
+    th, idx = cfg["thresholds"], len(sales) - 1
+    assert _judge_growth(d, idx, d.as_of(), {}, {}, th, False, tide=1.2)["stalled"]["lost"] == [("上升中", 1.3)]
+    rec = {**_rec(sales, 4.5), "node": "N"}
+    tided = analyze.evaluate("B1", rec, None, {}, cfg, END, tide=1.2)
+    assert "近 7 天没涨够（日均 14.0 件，是之前 28 天日均 10.0 件的 ×1.40，扣掉大盘 ×1.20 后 ×1.16，不到 1.3 倍，不算上升中）" in tided["tags"]
+    # 潜力：新品近 28 天 ×2.0，近 7 天回到对比期的 4 件；潜力和上升中都不算
+    young = dict(available=(END - timedelta(days=100)).isoformat(), ratings=50)
+    gone = item([3] * 64 + [4] * 28 + [12] * 14 + [4] * 14, **young)
+    assert gone["label"] == "watch" and not gone["potential"] and not gone["rising"]
+    assert "近 7 天没涨够（日均 4.0 件，是之前 28 天日均 4.0 件的 ×1.00，不到 1.2 倍，不算潜力、上升中）" in gone["tags"]
+    assert item([3] * 64 + [4] * 28 + [8] * 14 + [9] * 14, **young)["label"] == "potential"
+
+
+def test_short_series_has_no_previous_28_days(cfg):
+    """日数据从开卖那天才有：不到 27 天的新品，“之前 28 天”在序列开始之前，应当是空的。以前负数下标从序列末尾绕回来，
+    取到的其实是近 28 天里的日子（11-01 彩排：3 个老品换链接月增量本该按 0、却算了 $3,386~$4 万，一个新品 $10 万算成 $3 万）。"""
+    d = make([5] * 8 + [24] * 12)
+    idx = len(d) - 1
+    assert d.window("sales", idx - 28, 28) == [] and d.raw_window("sales", idx - 28, 28) == []
+    assert d.in_stock_window("sales", idx - 28, 28, 1_000_000, 3) == [] and d.in_stock_days(idx - 28, 28, 1_000_000) == 0
+    item = analyze.analyze({"asins": {"B1": _rec([5] * 8 + [24] * 12, 4.5, available=(END - timedelta(days=19)).isoformat(),
+                                                  ratings=5)}}, None, ["B1"], cfg, END)["items"][0]
+    assert item["prev_avg28"] is None and item["prev_in28"] == 0 and not item["rising"]
+    old = analyze.analyze({"asins": {"B1": _rec([20] * 27, 4.5, available="2019-01-01")}}, None, ["B1"], cfg, END)["items"][0]
+    assert old["prev_in28"] == 0 and old["dormant"]  # 老链接：之前 28 天没在卖，增量按 0
+
+
+def test_stock_out_zero_run_is_counted_across_a_deal_day(cfg):
+    """连着 ≥3 天销量 0 的断货日不算进对比期：中间夹着一个大促日时，以前按去掉大促日后的序列数，被切成两段 2 天，
+    日均里多算了 4 天 0（10 件 → 8.5 件），在卖天数（按原序列）却没算，两边对不上。"""
+    sales = [10] * 80 + [0] * 5 + [10] * 35
+    d = make(sales)
+    deal = {d.day(82)}
+    masked = d.without(deal)
+    end = 90
+    values = masked.in_stock_window("sales", end, 28, 1_000_000, 3)
+    assert len(values) == masked.in_stock_days(end, 28, 1_000_000, 3) == 23 and sum(values) / len(values) == 10
+
+
+def test_restock_is_not_potential_either(cfg):
+    """断货恢复（对比期多半断货、更早卖得和现在差不多）不算爆火、上升中，也不算潜力（以前新品会被判成潜力，同时标着“断货恢复”）。"""
+    rec = _rec([10] * 78 + [0] * 14 + [20] * 28, 4.5, available=(END - timedelta(days=100)).isoformat(), ratings=40)
+    item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
+    assert "断货恢复" in item["tags"] and item["label"] == "watch" and not item["potential"] and not item["rising"]
+
+
+def test_stale_item_carries_no_judgment_tags(cfg):
+    """数据陈旧的不判爆火 / 潜力 / 上升中，判定过程里的标签（随大盘、断货恢复、形态）也不留。"""
+    rec = {**_rec([5] * 110 + [18] * 10, 4.5), "node": "N"}
+    item = analyze.evaluate("B1", rec, None, {}, cfg, END, data_date=END + timedelta(days=5), tide=1.5)
+    assert item["stale"] and item["tags"] == ["数据陈旧"]
+
+
+def test_tide_tag_does_not_round_up_to_the_threshold(cfg):
+    """扣大盘后的倍数往下取：×1.5 ÷ 1.156 = 1.2976，以前显示“扣除后 ×1.30，不到 1.3 倍”。"""
+    rec = {**_rec([10] * 92 + [15] * 28, 4.5), "node": "N"}
+    item = analyze.evaluate("B1", rec, None, {}, cfg, END, tide=1.156)
+    assert not item["rising"] and "随大盘（所在子类目整体 ×1.16，上升中 ×1.50 扣除后 ×1.29，不到 1.3 倍）" in item["tags"]
+
+
+def test_lookback_label_uses_the_previous_runs_tide(cfg):
+    """上期没追踪的商品回看上期那天时，按上期存下的品类大盘扣（和上期追踪的商品一样）。以前不扣：子类目 ×1.5 时，
+    ×2.8 的商品回看成爆火、本期扣掉大盘不算，就被列进“不再爆火”。没存大盘的旧记录照旧不扣。"""
+    rec = {**_rec([5] * 113 + [14] * 14, 4.5), "node": "N"}
+    rec["series"]["start"] = (END + timedelta(days=7) - timedelta(days=126)).isoformat()
+    state = {"asins": {"A": rec}}
+    assert analyze.retro_labels(state, None, ["A"], cfg, END, END) == {"A": "surge"}
+    assert analyze.retro_labels(state, None, ["A"], cfg, END, END, tides={"N": 1.5}) == {"A": "watch"}
+

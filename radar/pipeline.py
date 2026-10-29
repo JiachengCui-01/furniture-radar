@@ -622,7 +622,8 @@ def previous_view(state: dict, disc: dict | None, items: list[dict], prev_run: d
         return {}
     data_then = data_date - timedelta(days=(today - prev_day).days)
     return analyze.retro_labels(state, disc, asins, cfg, prev_day, data_then, extra_rows,
-                                (result.get("events") or {}).get("days") or frozenset())
+                                (result.get("events") or {}).get("days") or frozenset(),
+                                (prev_run.get("coverage") or {}).get("tides"))
 
 
 def _write_shell(cfg: dict, site: Path, report_id: str, envelope: dict, latest_id: str) -> None:
@@ -699,8 +700,9 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
+        # tides：下一期回看这期没追踪的商品时，按这期的品类大盘扣（previous_view）
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
-                                                         "universe", "universe_pages", "universe_failed", "young")},
+                                                         "universe", "universe_pages", "universe_failed", "young", "tides")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }
