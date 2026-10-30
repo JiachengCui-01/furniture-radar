@@ -146,6 +146,19 @@ def test_pool_watchlist_has_its_own_quota(cfg):
     assert pool[3:5] == ["A0", "A1"]
 
 
+def test_pool_watchlist_only_looks_at_the_previous_run(cfg):
+    """往期上榜只看上 1 期（pool.watch_runs）：“与上期对比”只要上一期上过榜的。以前 3 期是每 3 天一期时定的（9 天），
+    两周一期就成了 6 周；只在上 2、3 期上过榜的本期还是增长商品的只有 17%，却占掉约三分之一的日数据名额。
+    回测（每两周回放，拉全市场 12%）：抓到的增长商品 33% → 40%。"""
+    products = _opportunities(4)
+    state = {"asins": {a: {"node": "N0", "title": "Desk"} for a in ("OLD", "PREV")},
+             "runs": [{"labels": {"OLD": ["surge", 0]}}, {"labels": {"PREV": ["potential", 0]}}]}
+    cfg["pool"].update(per_node_top=0, per_node_top_revenue=0, core_max=0, similar_max=0, opportunity_every_run=0, max_size=20)
+    pool, reasons = tracking.select_pool({"products": products}, state, cfg, date(2026, 10, 1), limit=8)
+    assert [a for a in pool if reasons[a] == "watch"] == ["PREV"]
+    assert tracking.watchlist(state, 2) == ["PREV", "OLD"]
+
+
 def test_find_risers_uses_recent_30_days_and_find_similar_parses(cfg):
     cfg["discovery"].update(risers_per_root=50, risers_new_per_root=50)  # 默认关闭（全市场名单已经包括），这里测它本身
     calls = []

@@ -12,11 +12,17 @@
         （N±2 天里最接近的一份；掉出窗口的那几天按那份的日均估）。
 只给可能达标的商品拉日数据（screen）：稳定以后 = g ≥ screen_growth、半年内上架且没跌、任一短期倍数 ≥ screen_short 之一；
 基准是上个月的月度名单时（头三周）再加上名单的近 7 天 BSR 改善 ≥ screen_bsr_cr%。新进名单（没有基准）的都拉。
-预算不够拉全部时的先后（优先级）：新进名单最先，其余按“比基准的倍数（1 + g）和短期倍数里小的那个”从大到小——长、短两段都在涨的先拉。
+预算不够拉全部时的先后（优先级）：按“比基准的倍数（1 + g）和短期倍数里小的那个”从大到小——长、短两段都在涨的先拉。
 以前按大的那个排：只是近两周冲了一下、或者一个月前涨过现在不涨的，也排在前面。回测（10-23 全覆盖试跑门槛以上 1,981 个商品，
-2026-05-08 ~ 10-23 每 4 周一个日期共 7 个，两周一期的快照由日数据加出来）：只拉全市场的 10% / 15% / 20% 时，
-抓到的增长商品 38% / 56% / 73% → 42% / 66% / 78%（按月增量 44% / 60% / 75% → 48% / 72% / 81%），7 个日期每个都更多；
-只按短期倍数排 59%、两个倍数相乘 61%、按估算的月增量排 43%（拉 15% 时）。
+2026-05-08 ~ 10-23 每 4 周一个日期共 7 个，两周一期的快照由日数据加出来）：只拉全市场的 15% 时抓到的增长商品 56% → 66%，
+7 个日期每个都更多；只按短期倍数排 59%、两个倍数相乘 61%、按估算的月增量排 43%。
+新进名单没有基准：名单自带的近 7 天排名改善 ≥ screen_bsr_cr% 的最先（11-01 彩排新进名单 327 个里 53 个，其中 60% 是增长商品、14 个突然爆火，其余新进名单 20%）；
+其余的基准那时还不够门槛，比基准的倍数至少是“现在的量 ÷ 门槛”（件数、销售额两个门槛里大的那个），按它（和短期倍数里小的那个）和其余的一起排。
+以前新进名单一律排最前、彼此不分先后，按子类目顺序取：11-01 彩排新进名单 327 个、初筛名额 256 个，名额全给了新进名单，5 个子类目一个都没拉到；
+按线上的密度（名额约为彩排的 1/3）27 个子类目里 20 个没拉到。同样的名额（往期上榜、头部都按改后的）：抓到的增长商品 40 → 71 个（按月增量 29% → 58%），
+突然爆火 13 → 26、潜力 11 → 15、上升中 16 → 30（只按“至少涨了多少”、不看排名改善时爆火只有 17 个）。
+稳定以后（快照里只有那天够门槛的商品，每期新进名单约占全市场 7%~14%；排名改善按日数据的 BSR 算）：拉全市场 10% / 15% / 20% 时
+33% / 55% / 74% → 44% / 64% / 75%（按月增量 30% / 56% / 78% → 52% / 73% / 82%）。上面 66% 那次回测给每个商品都加出了快照，没有新进名单，所以偏高。
 回测（2026-10-23 全覆盖试跑：门槛以上 2,051 个商品、195 个增长商品，自己存的快照按“最近 9 天会被改成 0.82”模拟，按每周一期）：
 稳定以后（28 天前的快照 + 7 / 14 天）不漏、拉 42%（和每 3 天一期的 30 天 + 6 / 12 天一样）；头一个月：
 9 月名单 32 / 39 / 46 天前 + 门槛 15% / 10% / 10% + 排名改善，不漏、拉 52% / 57% / 59%，预算只够拉 900 个时按优先级拉，召回 98~99.5%；
@@ -279,6 +285,7 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
     growth, short = float(pcfg["screen_growth"]), float(pcfg["screen_short"])
     young_days, bsr_cr = int(pcfg["opportunity_max_age_days"]), float(pcfg["screen_bsr_cr"])
     base_days, short_days = int(pcfg.get("screen_base_days", 28)), tuple(pcfg.get("screen_short_days") or (7, 14))
+    min_units, min_revenue = float(pcfg["opportunity_min_units"]), float(pcfg.get("opportunity_min_revenue") or 0)
     out = []
     for asin, row in rows.items():
         f = features(state, asin, row, today, base_days, short_days)
@@ -286,7 +293,14 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
         young = age is not None and age <= young_days
         shorts = list(f["short"].values())
         if f["g"] is None:
-            out.append((asin, 10.0, "新进名单（没有基准）"))
+            # 新进名单：名单自带的近 7 天排名改善够多的最先（改善多的在前）；其余的基准那时还不够门槛，
+            # 所以至少涨了“现在的量 ÷ 门槛”倍（件数、销售额两个门槛里大的那个），按它和其余的一起排
+            if (row.get("bsr_cr") or 0) >= bsr_cr - 1e-9:
+                out.append((asin, 10.0 + float(row["bsr_cr"]) / 100, f"新进名单（没有基准），近 7 天排名改善 {row['bsr_cr']:.0f}%"))
+                continue
+            floor = max(f["u"] / min_units if min_units else 0.0,
+                        float(row.get("revenue") or 0) / min_revenue if min_revenue else 0.0)
+            out.append((asin, min([floor] + shorts) - 1, "新进名单（没有基准）"))
             continue
         steady = f["base"] == "own" and STEADY[0] <= f["age"] <= STEADY[1]
         need = growth if steady else _ladder(pcfg, f["age"])

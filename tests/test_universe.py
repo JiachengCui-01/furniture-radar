@@ -43,15 +43,38 @@ def test_steady_screen_uses_own_snapshot_from_about_28_days_ago(cfg):
 
 
 def test_screen_fetches_items_rising_on_both_horizons_first(cfg):
-    """预算不够拉全部时的先后：新进名单最先，其余按“比 28 天前的倍数和近 14 天倍数里小的那个”从大到小——长、短两段都在涨的先拉。
+    """预算不够拉全部时的先后：按“比 28 天前的倍数和近 14 天倍数里小的那个”从大到小——长、短两段都在涨的先拉。
     以前按大的那个排：一个月前涨过、最近两周没涨的（OLD，×1.6 / ×1.0）排在两段都在涨的（BOTH，×1.4 / 近 14 天 ×1.9）前面。
     回测 7 个日期：拉全市场的 15% 时抓到的增长商品 56% → 66%。"""
     snaps = {28: {"OLD": 1000, "BOTH": 1000, "SHORT": 1000}, 14: {"OLD": 1600, "BOTH": 1000, "SHORT": 1100}}
     rows = {"OLD": _row(1600), "BOTH": _row(1400), "SHORT": _row(1250), "NEW": _row(500)}
-    # SHORT：28 天只 +25%，近 14 天 (1250 − 1100 + 1100 / 30 × 14) / 14 ÷ (1100 / 30) ≈ 1.29
+    # SHORT：28 天只 +25%，近 14 天 (1250 − 1100 + 1100 / 30 × 14) / 14 ÷ (1100 / 30) ≈ 1.29；NEW 至少 500 / 300 = ×1.67
     out = universe.screen(_state(snaps), rows, TODAY, cfg)
     assert [a for a, _p, _w in out] == ["NEW", "BOTH", "SHORT", "OLD"]
     assert round(dict((a, p) for a, p, _w in out)["OLD"], 2) == 0.0  # min(1.6, 1.0) − 1
+
+
+def test_new_entries_are_ranked_by_how_much_they_must_have_grown(cfg):
+    """新进名单（没有基准）：名单自带的近 7 天排名改善 ≥ screen_bsr_cr% 的最先（改善多的在前）；其余的基准那时还不够门槛，
+    至少涨了“现在的量 ÷ 门槛”倍（件数、销售额里大的那个），和其余的一起排，不再一律排最前。以前它们优先级都一样、按子类目顺序取：
+    11-01 彩排新进名单 327 个、名额 256 个，名额全给了新进名单，排在后面的子类目一个都没拉到（按线上的密度 27 个里 20 个）。"""
+    snaps = {28: {"UP": 1000}, 14: {"UP": 1500}}
+    rows = {"N1": {**_row(310), "node": "A"}, "N2": {**_row(320), "node": "A"},          # 刚过门槛：至少 ×1.03 / ×1.07
+            "UP": {**_row(1800), "node": "B"},                                              # ×1.8，近 14 天 ×1.43
+            "BIG": {**_row(900), "node": "B"},                                              # 至少 ×3
+            "PRICY": {**_row(100), "revenue": 100000, "node": "B"},                         # 件数不够，销售额 ×2.5
+            "SPIKE": {**_row(900), "node": "B"},                                            # 至少 ×3，但近 14 天只 ×1.1
+            "RANK": {**_row(310, bsr_cr=40), "node": "C"}, "RANK2": {**_row(310, bsr_cr=25), "node": "C"},  # 排名改善够多
+            "OLDRANK": {**_row(1000, bsr_cr=60), "node": "C"}}                              # 有基准的：排名改善不影响先后
+    state = _state({28: {**snaps[28], "OLDRANK": 1000}, 14: {**snaps[14], "SPIKE": 850}})
+    out = universe.screen(state, rows, TODAY, cfg)
+    pri = {a: round(p, 2) for a, p, _w in out}
+    assert [a for a, _p, _w in out] == ["RANK", "RANK2", "BIG", "PRICY", "UP", "SPIKE", "N2", "N1"]  # OLDRANK 没涨，不拉
+    assert pri["BIG"] == 2.0 and pri["PRICY"] == 1.5 and pri["N1"] == 0.03
+    assert pri["SPIKE"] == round(((900 - 850 + 850 / 30 * 14) / 14) / (850 / 30) - 1, 2)  # 取短期倍数（小的那个）
+    assert all(w.startswith("新进名单") for a, _p, w in out if a != "UP")
+    assert "近 7 天排名改善 40%" in dict((a, w) for a, _p, w in out)["RANK"]
+
 
 def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     """头一个月：没有 30 天前的快照，用结束于 21~45 天前的那个月的月度名单（按天数折成 30 天）当基准，门槛按基准的新旧放宽，
