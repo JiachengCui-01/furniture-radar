@@ -381,6 +381,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "node": node,
         "node_name": rec.get("node_name") or (disc_row or {}).get("node_name") or "",
         "node_cn": rec.get("node_cn") or (disc_row or {}).get("node_cn") or "",
+        "parent": rec.get("parent") or (disc_row or {}).get("parent"),  # 开发方向的“同子类目头部”按父体排除增长商品自己
         "price": (_last(full.price) if full else None) or rec.get("price"),
         "bsr": _last(full.bsr) if full else None,
         "rating": rating,

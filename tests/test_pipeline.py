@@ -511,6 +511,47 @@ def test_unsettled_node_is_refetched_until_updated(cfg, master_key, tmp_path):
     assert "月度名单卖家精灵还没更新完" not in page
 
 
+def test_new_month_is_checked_after_last_months_list_is_refetched(cfg, master_key, tmp_path):
+    """换了月份那期：上个月的名单还记着“没更新完”（存的是再上个月的数），这个月的名单也没更新完（给的是上个月的真数）。
+    以前先查当期、后重拉上个月：当期拿去和存着的旧数比，不一样，就漏标了，那期报告也不写（两周一期时晚两周才发现）。
+    现在先重拉上个月，再查当期。"""
+    from radar import monthly_lists
+
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    world = SyntheticWorld(START.date())
+    tv = "1055398:1063306:1063318:1063310:3733691"
+    stale: set[str] = set()  # 卖家精灵还没更新完的月份（电视柜）：给的是再上个月的数
+
+    def transport(tool, arguments):
+        req = arguments.get("request") or arguments
+        if tool == "product_research" and req.get("nodeIdPath") == tv and req.get("month") in stale:
+            y, m = int(req["month"][:4]), int(req["month"][4:]) - 1
+            req = {**req, "month": f"{y - (m == 0)}{(m or 12):02d}"}
+            arguments = {**arguments, "request": req} if "request" in arguments else req
+        return world(tool, arguments)
+
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    site, master = tmp_path / "site", crypto.parse_master_key(master_key)
+    pipeline.run(cfg, secrets, site, transport=transport, now=START)  # 10-05：9 月名单
+    stale = {"202610"}  # 11-05、11-19：10 月电视柜一直没更新完
+    day = START
+    for days in (31, 14):
+        world.advance(days)
+        day += timedelta(days=days)
+        pipeline.run(cfg, secrets, site, transport=transport, now=day)
+        assert store.load(site, master)["monthly_lists"]["unsettled"] == {"2026-10": [tv]}
+    stale = {"202611"}  # 12-03：10 月更新完了，11 月电视柜又没更新完（给的是 10 月的真数）
+    world.advance(14)
+    day += timedelta(days=14)
+    out = pipeline.run(cfg, secrets, site, transport=transport, now=day)
+    state = store.load(site, master)
+    assert out.published and state["discovery"]["period"] == "202611"
+    assert state["monthly_lists"]["unsettled"] == {"2026-11": [tv]}
+    assert not monthly_lists.not_updated(state, cfg, "2026-10", tv) and monthly_lists.not_updated(state, cfg, "2026-11", tv)
+    page = _decrypt_page((site / "reports" / f"{out.report_id}.html").read_text(encoding="utf-8"), master)
+    assert "11 月 电视柜" in page
+
+
 class _AccountLimit:
     """卖家精灵账户额度用完：这些工具（或第 after 次以后的全部调用）返回“接口访问次数已达上限”。"""
 
@@ -547,6 +588,35 @@ def test_account_limit_skips_the_run_or_only_the_extras(cfg, master_key, tmp_pat
     out = pipeline.run(cfg, secrets, tmp_path / "b", now=START,
                        transport=_AccountLimit(world, tools=("asin_detail", "review", "asin_sales_trend")))
     assert out.published and (tmp_path / "b" / "reports" / f"{out.report_id}.html").exists()
+
+
+def test_rerender_waits_after_a_run_that_stopped_with_newer_data(cfg, master_key, tmp_path):
+    """中途停了的那次（额度用完 / 连不上 / 出错）已经存下了比上一期报告新的数据（部分日数据、全市场名单……）：
+    这时按上一期的日期重新生成，品类大盘算不出、没刷新的商品都成了“数据陈旧”（模拟：爆火 3 → 0、上升中 15 → 0、
+    49 个里 46 个数据陈旧），还会改掉上一期的运行记录。所以不重新生成，报告和记录都不动；第一次调用就被挡住（什么都没存）的照样可以；
+    下一期正常出了报告就又可以了。"""
+    cfg["budget"].update(per_run=400, bootstrap_run=400)
+    secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
+    world = SyntheticWorld(START.date())
+    site, master = tmp_path / "site", crypto.parse_master_key(master_key)
+    first = pipeline.run(cfg, secrets, site, transport=world, now=START)
+    world.advance(3)
+    with pytest.raises(pipeline.RunAborted):  # 第一次调用就被挡住：什么都没存
+        pipeline.run(cfg, secrets, site, transport=_AccountLimit(world, after=0), now=START + timedelta(days=3))
+    assert "unpublished" not in store.load(site, master)
+    assert pipeline.rerender(cfg, secrets, site).published
+    with pytest.raises(pipeline.RunAborted):  # 拉了一部分才用完
+        pipeline.run(cfg, secrets, site, transport=_AccountLimit(world, after=20), now=START + timedelta(days=3))
+    state = store.load(site, master)
+    assert state["unpublished"] == {"date": "2026-10-07", "kind": "quota"}
+    report = (site / "reports" / f"{first.report_id}.html").read_text(encoding="utf-8")
+    out = pipeline.rerender(cfg, secrets, site)
+    assert not out.published and "中途停了" in out.skipped_reason
+    assert (site / "reports" / f"{first.report_id}.html").read_text(encoding="utf-8") == report
+    assert store.load(site, master)["runs"] == state["runs"]
+    out = pipeline.run(cfg, secrets, site, transport=world, now=START + timedelta(days=4))
+    assert out.published and "unpublished" not in store.load(site, master)
+    assert pipeline.rerender(cfg, secrets, site).published
 
 
 def test_reseal_changes_ciphertext_but_not_content(cfg, master_key, tmp_path):

@@ -382,7 +382,7 @@ def _ev(src: str, growth: str, share: float, other: str, base: float | None) -> 
             f'{_meter(share, base)}<span class="r">{esc(other)}</span></div>')
 
 
-def _material_box(m: dict) -> str:
+def _material_box(m: dict, lookups: int) -> str:
     rows = [r for r in m.get("rows") or [] if r["count"] or r["reference"]]
     if not rows:
         return ""
@@ -394,7 +394,7 @@ def _material_box(m: dict) -> str:
     src = ""
     if "amazon_focus" in m:
         src = (f'<p class="hint">用亚马逊 Material 属性的：增长商品 {m["amazon_focus"]}/{nf}、对照 {m["amazon_reference"]}/{nr}，'
-               f'其余看标题 / 主图（每期最多查 40 个，查过的永久缓存）</p>')
+               f'其余看标题 / 主图（每期最多查 {lookups} 个，查过的永久缓存）</p>')
     return f'<div class="dbox"><h4>主材质</h4>{src}{feats}</div>'
 
 
@@ -577,7 +577,7 @@ def _directions(tr: dict, cfg: dict) -> str:
             + "（销量是卖家精灵按 BSR 估算的，大促日不算；"
             "本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的）。"
             "特征按品牌计数，同一品牌的多个商品只算一次（该品牌任一增长商品的标题或主图有就算），数字 = 具备的品牌数 / 品牌数，"
-            "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里的，按月销量取前 "
+            "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里（同一父体的也不算）的，按月销量取前 "
             f"{c.get('head_max', 30)} 个；有主图识别的 ≥{c.get('head_min', 10)} 个时两边都看标题 + 主图，头部只算识别过的，"
             f"否则两边都只看标题；头部不足 {c.get('head_min', 10)} 个时不对比）。"
             f"绿框 = 比头部多：≥2 个品牌有，占比比头部高 {c.get('head_min_gap', 0.2) * 100:.0f} 个百分点以上、"
@@ -616,7 +616,7 @@ def _traits(tr: dict, counts: dict, cfg: dict) -> str:
              '颜色以主图识别为准：标题里的颜色常是把可选变体都列出来（Walnut/Black/White），不代表商品本身；没有主图识别时才看标题。']
     head = (f'<p class="hint">{sample}</p><div class="legend">{"".join(legend)}</div>'
             f'<details class="rules"><summary>入选规则</summary><ul>{"".join(f"<li>{esc(r)}</li>" for r in rules)}</ul></details>')
-    boxes = [_material_box(mats)]
+    boxes = [_material_box(mats, int(cfg["budget"].get("material_lookups", 0)))]
     for dim, rows in (tr.get("appearance") or {}).items():
         boxes.append(_feature_box(dim, rows, vision))
     body = "".join(b for b in boxes if b)
@@ -802,7 +802,7 @@ def _method(cfg: dict) -> str:
 近 {' / '.join(map(str, cfg['pool'].get('screen_short_days') or (7, 14)))} 天比那几天前那份的日均高
 {cfg['pool']['screen_short']:g} 倍以上，满足一个就拉日数据按上面的规则判；新进名单的都拉。头一个月还没有约 {cfg['pool'].get('screen_base_days', 28)} 天前的快照，
 用上个月的月度名单当基准、门槛按基准的新旧定，再加上近 7 天排名改善 ≥{cfg['pool']['screen_bsr_cr']:g}%。
-每期调用有上限（卖家精灵套餐按月给次数），初筛出来的多于预算时，按“比基准的倍数和近 14 天倍数里小的那个”从大到小拉（长、短两段都在涨的先拉）；新进名单没有基准，名单的近 7 天排名改善 ≥{cfg['pool']['screen_bsr_cr']:g}% 的最先，其余的基准那时还不够门槛，按至少涨了“现在的量 ÷ 门槛”倍和其余的一起排。
+每期调用有上限（卖家精灵套餐按月给次数），初筛出来的多于预算时，按“比基准的倍数和近 14 天倍数里小的那个”从大到小拉（长、短两段都在涨的先拉）；新进名单没有基准，名单的近 7 天排名改善 ≥{cfg['pool']['screen_bsr_cr']:g}% 的最先，其余的基准那时还不够门槛，按至少涨了“现在的量 ÷ 门槛”倍和其余的一起排（能当基准的名单都没把这个子类目翻全时不按这一条，只按近 14 天倍数排）。
 回测（全覆盖试跑门槛以上的商品）：不限预算时初筛不漏增长商品，要拉日数据的约四成（头一个月五到六成）；预算只够拉全市场的 10% / 15% / 20% 时抓到约 44% / 64% / 75% 的增长商品（按月增量 52% / 73% / 82%）。
 突然爆火、潜力、上升中都只在这些量够的商品里找。</li>
 <li><b>板块归属</b>：每个商品只归入一个板块，优先级：评分不达标 &gt; 异常信号 &gt; 突然爆火 &gt; 潜力 &gt; 持续热销；都不属于的为“观察”。
@@ -852,7 +852,7 @@ def _method(cfg: dict) -> str:
 本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的），
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）。
-本期要点和钉钉只写前 {th['directions'].get('summary_max', 5)} 个；全部子类目有没有画像、没有的写了原因，在“开发方向依据”的一览表里。每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
+本期要点和钉钉只写有画像的子类目里增量最大的 {th['directions'].get('summary_max', 5)} 个（增量排得进这几个、却画不出画像的子类目另写一条，写明原因）；全部子类目有没有画像、没有的写了原因，在“开发方向依据”的一览表里。每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
 <li><b>异常信号</b>：留评率 ≥ 子类目中位数的 {f['review_rate_mult']} 倍、新品评论/销量比过高、
 两期之间评论增速远超销量（和之前 {f.get('review_base_days', 45)} 天里记到的最高评论数比：卖家精灵的评论数会来回跳，跌下去又涨回来的不算新增）、评分短期跳升、
 近 30 天的短时脉冲（1~3 天冲到基线 {f['pulse_mult']} 倍后迅速回落）、评论集中在少数几天、非验证购买占比高，各记 1~2 分；

@@ -92,11 +92,26 @@ def summary_limit(cfg: dict) -> int:
 
 
 def name_the_cut(text: str, total: int, shown: int) -> str:
-    """“开发方向”小节只写了前几个时，标题写明是增量最大的几个、全部的在哪里（不然看着像只有这几个子类目）。"""
+    """“开发方向”小节只写了前几个时，标题写明是有画像的子类目里增量最大的几个、全部的在哪里（不然看着像只有这几个子类目）。
+    画不出画像的子类目不算（增量更大的另起一条写出来，见 note_skipped）。"""
     if total <= shown:
         return text
-    head = f"### 开发方向（增量最大的 {shown} 个，全部 {total} 个见下方“开发方向依据”）"
+    head = f"### 开发方向（有画像的子类目里增量最大的 {shown} 个，全部 {total} 个见下方“开发方向依据”）"
     return re.sub(r"(?m)^###\s*开发方向(?:（[^）\n]*）)?[ \t]*$", lambda _m: head, text, count=1)
+
+
+def note_skipped(text: str, line: str) -> str:
+    """在“开发方向”小节末尾加一条（directions.skipped_text：增量排得进前几个、但没有画像的子类目）。"""
+    if not line:
+        return text
+    lines = text.splitlines()
+    start = next((i for i, row in enumerate(lines) if re.match(r"^###\s*开发方向", row)), None)
+    if start is None:
+        return text
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("#")), len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return "\n".join(lines[:end] + [f"- {line}"] + lines[end:])
 
 
 def _evidence(f: dict, tr: dict) -> str:
@@ -307,8 +322,11 @@ def guard_risks(text: str, facts: dict) -> str:
 def summary(ctx: dict, cfg: dict, api_key: str) -> tuple[str, str]:
     """返回 (markdown 文本, 来源 'llm'|'template')。大模型写的“风险提醒”会再按 guard_risks 核对一遍。"""
     facts = build_facts(ctx)
-    total, shown = len(ctx["traits"].get("directions") or []), len(facts["开发方向"])
+    dirs = ctx["traits"].get("directions") or []
+    total, shown = len(dirs), len(facts["开发方向"])
+    skipped = directions.skipped_text(directions.skipped_big(ctx["traits"].get("direction_overview") or [], dirs[:shown]),
+                                      shown)
     text = llm_summary(facts, cfg, api_key)
     if text:
-        return name_the_cut(guard_risks(text, facts), total, shown), "llm"
-    return name_the_cut(template_summary(facts), total, shown), "template"
+        return note_skipped(name_the_cut(guard_risks(text, facts), total, shown), skipped), "llm"
+    return note_skipped(name_the_cut(template_summary(facts), total, shown), skipped), "template"

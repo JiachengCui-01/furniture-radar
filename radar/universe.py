@@ -12,6 +12,8 @@
         （N±2 天里最接近的一份；掉出窗口的那几天按那份的日均估）。
 只给可能达标的商品拉日数据（screen）：稳定以后 = g ≥ screen_growth、半年内上架且没跌、任一短期倍数 ≥ screen_short 之一；
 基准是上个月的月度名单时（头三周）再加上名单的近 7 天 BSR 改善 ≥ screen_bsr_cr%。新进名单（没有基准）的都拉。
+能当基准的每一份名单都没把某个子类目翻全（查询失败，每份快照和月度基准都记下 failed）时，那里找不到基准的商品可能只是没翻到，
+不当“以前不够门槛”（见下面新进名单的先后、base_gaps）。
 预算不够拉全部时的先后（优先级）：按“比基准的倍数（1 + g）和短期倍数里小的那个”从大到小——长、短两段都在涨的先拉。
 以前按大的那个排：只是近两周冲了一下、或者一个月前涨过现在不涨的，也排在前面。回测（10-23 全覆盖试跑门槛以上 1,981 个商品，
 2026-05-08 ~ 10-23 每 4 周一个日期共 7 个，两周一期的快照由日数据加出来）：只拉全市场的 15% 时抓到的增长商品 56% → 66%，
@@ -25,7 +27,7 @@
 33% / 55% / 74% → 44% / 64% / 75%（按月增量 30% / 56% / 78% → 52% / 73% / 82%）。上面 66% 那次回测给每个商品都加出了快照，没有新进名单，所以偏高。
 回测（2026-10-23 全覆盖试跑：门槛以上 2,051 个商品、195 个增长商品，自己存的快照按“最近 9 天会被改成 0.82”模拟，按每周一期）：
 稳定以后（28 天前的快照 + 7 / 14 天）不漏、拉 42%（和每 3 天一期的 30 天 + 6 / 12 天一样）；头一个月：
-9 月名单 32 / 39 / 46 天前 + 门槛 15% / 10% / 10% + 排名改善，不漏、拉 52% / 57% / 59%，预算只够拉 900 个时按优先级拉，召回 98~99.5%；
+9 月名单 32 / 39 / 46 天前 + 门槛 15% / 10% / 10% + 排名改善，不漏、拉 52% / 57% / 59%（预算只够拉一部分时的召回见上面，那次“拉 900 个召回 98~99.5%”是在试跑的一半商品上算的，按全市场不成立）；
 自己 21 天前的快照 + 门槛 10%，不漏、拉 45%。
 
 快照和基准按父体记（没有父体的按 ASIN，family_key）：名单按父体一行，但每次给出来的“代表子体”常常不一样——
@@ -90,7 +92,8 @@ def _keys(row: dict | None, asin: str) -> tuple[str, ...]:
 def _page_all(vendor: Vendor, cfg: dict, node: dict, order: str, limits: dict, period: str | None,
               failed: list[str] | None = None) -> list[dict]:
     """一个查询翻到底。某一页查询失败（被拒 / 连不上）时重试一次，还不行就停在这里，子类目记进 failed：
-    这一期这个子类目的名单不全（没翻到的商品这期不初筛，下期快照里没它们的基准就当新进名单拉日数据）。"""
+    这一期这个子类目的名单不全（没翻到的商品这期不初筛；这份快照里记下 failed，以后拿它当基准时，
+    这个子类目里找不到基准的商品不当“以前不够门槛”，见 base_gaps）。"""
     rows, seen = [], set()
     for page in range(1, 60):
         for attempt in range(2):
@@ -210,11 +213,12 @@ def baseline_period(state: dict, today: date) -> str | None:
     return None
 
 
-def record_baseline(state: dict, period: str, rows: dict[str, dict]) -> None:
+def record_baseline(state: dict, period: str, rows: dict[str, dict], failed: list[str] | None = None) -> None:
     y, m = int(period[:4]), int(period[4:])
     end = date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
     _uni(state)["baseline"] = {"period": period, "end": end.isoformat(), "days": end.day,
-                               "units": {family_key(r, a): r.get("units") or 0 for a, r in rows.items()}}
+                               "units": {family_key(r, a): r.get("units") or 0 for a, r in rows.items()},
+                               "failed": list(failed or [])}
 
 
 def record(state: dict, rows: dict[str, dict], today: date, pages: int, failed: list[str] | None = None) -> None:
@@ -223,7 +227,8 @@ def record(state: dict, rows: dict[str, dict], today: date, pages: int, failed: 
     snaps = [s for s in uni["snaps"] if s["date"] != today.isoformat()
              and (today - clock.parse_day(s["date"])).days <= SNAP_KEEP_DAYS]
     snaps.append({"date": today.isoformat(), "units": {family_key(r, a): r.get("units") or 0 for a, r in rows.items()},
-                  "vars": {family_key(r, a): r["variations"] for a, r in rows.items() if r.get("variations")}})
+                  "vars": {family_key(r, a): r["variations"] for a, r in rows.items() if r.get("variations")},
+                  "failed": list(failed or [])})
     uni.update(date=today.isoformat(), pages=pages, rows=rows, snaps=snaps, failed=list(failed or []))
 
 
@@ -286,6 +291,20 @@ def features(state: dict, asin: str, row: dict, today: date, base_days: int = 28
     return out
 
 
+def base_gaps(state: dict, today: date) -> set[str]:
+    """能当基准的每一份名单（FALLBACK 天前自己存的快照、上个月的月度名单）都没翻全的子类目。这些子类目里找不到基准的商品
+    可能只是没翻到，不能当“以前不够门槛”（screen 不按“至少涨了现在的量 ÷ 门槛倍”往前排：一个子类目第 1 页没查到时，
+    它月销 3,000 件的老大卖家会按“至少涨了 9 倍”排到几乎所有真在涨的商品前面）。一份能当基准的都没有时返回空集（没得比）。"""
+    uni = _uni(state)
+    sources = [set(s.get("failed") or []) for s in uni["snaps"]
+               if clock.parse_day(s.get("date")) and FALLBACK[0] <= (today - clock.parse_day(s["date"])).days <= FALLBACK[1]]
+    base = uni.get("baseline") or {}
+    end = clock.parse_day(base.get("end"))
+    if end and base.get("units") and FALLBACK[0] <= (today - end).days <= FALLBACK[1]:
+        sources.append(set(base.get("failed") or []))
+    return set.intersection(*sources) if sources else set()
+
+
 def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[tuple[str, float, str]]:
     """可能达标、要拉日数据的商品：[(asin, 优先级, 依据)]，优先级从高到低（预算不够时先拉前面的）。规则和先后见模块说明。"""
     pcfg = cfg["pool"]
@@ -293,6 +312,7 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
     young_days, bsr_cr = int(pcfg["opportunity_max_age_days"]), float(pcfg["screen_bsr_cr"])
     base_days, short_days = int(pcfg.get("screen_base_days", 28)), tuple(pcfg.get("screen_short_days") or (7, 14))
     min_units, min_revenue = float(pcfg["opportunity_min_units"]), float(pcfg.get("opportunity_min_revenue") or 0)
+    gaps = base_gaps(state, today)
     out = []
     for asin, row in rows.items():
         f = features(state, asin, row, today, base_days, short_days)
@@ -304,6 +324,9 @@ def screen(state: dict, rows: dict[str, dict], today: date, cfg: dict) -> list[t
             # 所以至少涨了“现在的量 ÷ 门槛”倍（件数、销售额两个门槛里大的那个），按它和其余的一起排
             if (row.get("bsr_cr") or 0) >= bsr_cr - 1e-9:
                 out.append((asin, 10.0 + float(row["bsr_cr"]) / 100, f"新进名单（没有基准），近 7 天排名改善 {row['bsr_cr']:.0f}%"))
+                continue
+            if row.get("node") in gaps:  # 基准那份这个子类目没翻全：涨没涨不知道，只按短期倍数排，没有的最后拉
+                out.append((asin, (min(shorts) - 1) if shorts else -1.0, "新进名单（基准那份这个子类目没翻全）"))
                 continue
             floor = max(f["u"] / min_units if min_units else 0.0,
                         float(row.get("revenue") or 0) / min_revenue if min_revenue else 0.0)
@@ -364,10 +387,11 @@ def run(vendor: Vendor, cfg: dict, state: dict, nodes: list[dict], today: date) 
     start = vendor.billable_calls
     period = baseline_period(state, today)
     if period:
-        rows = fetch(vendor, cfg, nodes, period)
-        record_baseline(state, period, rows)  # 有子类目没翻全时，没基准的商品当新进名单（都拉日数据），不会漏
+        base_failed: list[str] = []
+        rows = fetch(vendor, cfg, nodes, period, failed=base_failed)
+        record_baseline(state, period, rows, base_failed)  # 没翻全的子类目记下来：那里找不到基准的商品不当“以前不够门槛”（base_gaps）
         log.info(f"全市场名单：头一个月还没有 30 天前的快照，拉了 {period[:4]}-{period[4:]} 的月度名单当基准（{len(rows)} 个商品，"
-                 f"{vendor.billable_calls - start} 次调用）")
+                 f"{vendor.billable_calls - start} 次调用" + (f"；{len(base_failed)} 个子类目查询失败、没翻全" if base_failed else "") + "）")
     mid = vendor.billable_calls
     failed: list[str] = []
     rows = fetch(vendor, cfg, nodes, failed=failed)

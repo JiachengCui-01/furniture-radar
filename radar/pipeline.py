@@ -41,17 +41,26 @@ class RunAborted(RuntimeError):
 
 
 def _abort(site: Path, master: bytes, state: dict, month: str, calls_before: int, calls: int, today, reason: str,
-           kind: str) -> RunAborted:
+           kind: str, data: bool = False) -> RunAborted:
     """记下调用次数和“被挡住”的原因（state["blocked"]），存盘，返回要抛出的 RunAborted。
-    同一个原因上次已经提醒过、还不到 REMIND_DAYS 天的，标 repeat（命令行不再让工作流失败，免得每天一条一样的告警）。"""
+    同一个原因上次已经提醒过、还不到 REMIND_DAYS 天的，标 repeat（命令行不再让工作流失败，免得每天一条一样的告警）。
+    data：这一期中止前真的拿到过数据（_fetched）——存下的状态里有了比上一期报告新的日数据、全市场名单……，
+    记进 state["unpublished"]，下一期出了报告才清掉；这期间不能重新生成上一期报告（见 rerender）。"""
     state["calls"][month] = calls_before + calls
     prev = state.get("blocked") or {}
     last = clock.parse_day(prev.get("alerted_on"))
     repeat = bool(kind != "crash" and prev.get("kind") == kind and last and (today - last).days < REMIND_DAYS)
     state["blocked"] = {"kind": kind, "since": prev.get("since") if prev.get("kind") == kind else today.isoformat(),
                         "alerted_on": prev.get("alerted_on") if repeat else today.isoformat(), "reason": reason[:300]}
+    if data:
+        state["unpublished"] = {"date": today.isoformat(), "kind": kind}
     store.save(site, master, state)
     return RunAborted(reason, calls, kind, repeat)
+
+
+def _fetched(vendor: Vendor) -> bool:
+    """这一期有没有真正拿到过数据（不算被拒、连不上的调用）。账户额度用完时第一次调用就被拒，什么都没存，不算。"""
+    return any(c.get("status") in ("ok", "empty", "cached") for c in vendor.calls)
 
 
 def crash_reason(exc: BaseException) -> str:
@@ -250,13 +259,16 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         # 1. 发现（月度基线）+ 全市场名单（每期翻一遍，机会候选从这里初筛）+ 近 30 天榜单 / 上期爆款的相似款（默认关闭：全市场名单已经包括）
         disc = ensure_discovery(vendor, cfg, state, today)
         monthly_lists.record_discovery(state, disc)  # 月度发现的头部名单也是持续热销补判的当月名单
+        if disc and disc.get("nodes"):
+            # 已经换了月份、当时还没更新完的往月名单先重拉，再查当期的：当期的要和上个月比，上个月还是没更新完的旧数时
+            # 当期没更新完（= 上个月的真数）比出来不一样，就漏标了（两周一期时晚两周才发现、那期报告也不写明）
+            monthly_lists.resettle(vendor, cfg, state, disc)
         stale = monthly_lists.check_discovery(state, cfg, disc)  # 卖家精灵还没更新完的子类目：下期重拉
         if stale:
             names = {n["path"]: n.get("name_cn") or n.get("name") or n["path"] for n in disc["nodes"]}
             log.warn(f"月度名单：{len(stale)} 个子类目的 {disc['period']} 名单卖家精灵还没更新完（一半以上商品的月销量和上个月一模一样）："
                      + "、".join(names.get(p, p) for p in stale) + "，下期重拉")
         if disc and disc.get("nodes"):
-            monthly_lists.resettle(vendor, cfg, state, disc)  # 已经换了月份、当时还没更新完的往月名单
             try:
                 universe.run(vendor, cfg, state, disc["nodes"], today)
             except BudgetExhausted:
@@ -309,11 +321,12 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
             log.info(f"日数据修订：上期最后 {revision['window']} 天，{revision['changed']:.0%} 的商品被改过，中位数 ×{revision['median']}")
     except (QuotaExhausted, McpUnavailable) as exc:
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
-                     f"{type(exc).__name__}: {exc}", "quota" if isinstance(exc, QuotaExhausted) else "outage") from exc
+                     f"{type(exc).__name__}: {exc}", "quota" if isinstance(exc, QuotaExhausted) else "outage",
+                     data=_fetched(vendor)) from exc
     except Exception as exc:  # noqa: BLE001 — 程序出错：同样存下已拉到的数据和调用次数（见下面 _publish 那段）
         log.detail(traceback.format_exc())
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
-                     crash_reason(exc), "crash") from exc
+                     crash_reason(exc), "crash", data=_fetched(vendor)) from exc
     # 空报告保护：该拉的日数据只拉到很少（一个个都连不上、预算给得太少……）时不出这一期，免得发一份看起来正常、其实是旧数据的报告。
     # 回测：以往 8 期每期都刷新了计划里 ≥98% 的商品
     # 按这一期一共拉到的算（中止后接着跑时，上次已经拉过的也算），否则接着跑的那次“没有要拉的”会被当成数据太少
@@ -321,7 +334,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     refreshed += already
     if refreshed < max(1, share * (len(plan) + already)):
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
-                     f"日数据只刷新了 {refreshed}/{len(plan) + already} 个（要 ≥{share:.0%}），数据不够，不出这一期", "thin")
+                     f"日数据只刷新了 {refreshed}/{len(plan) + already} 个（要 ≥{share:.0%}），数据不够，不出这一期", "thin", data=_fetched(vendor))
 
     # 拉完数据以后（补充查询、判定、核查、报告、存状态）出错：已拉到的数据和花掉的调用次数照样存下来（工作流照样保存），
     # 下次运行接着用、不重拉日数据，本月调用数也不少记。以前只有“中止”才保存，别的报错整期白跑：调用次数不记账，
@@ -339,7 +352,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         _discard_unpublished(cfg, site, progress.get("report_id"), keep["reports"])
         log.detail(traceback.format_exc())
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
-                     crash_reason(exc), "crash") from exc
+                     crash_reason(exc), "crash", data=_fetched(vendor)) from exc
     if notify:
         out.notified = send_last(cfg, secrets, site)
     return out
@@ -434,6 +447,7 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     state["run_seq"] = run_seq
     state["last_success"] = now_utc.isoformat(timespec="seconds")
     state.pop("blocked", None)
+    state.pop("unpublished", None)  # 中止前存下的新数据这期已经用上、出了报告
     drop_seasonal(state)
     state["calls"][month] = used_this_month + vendor.billable_calls
     # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
@@ -721,6 +735,15 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     if not state.get("runs"):
         log.warn("还没有任何报告，无法重新生成")
         return RunResult(skipped_reason="还没有报告")
+    pending = state.get("unpublished")
+    if pending:
+        # 中止的那次已经存下了更新的数据（部分商品的日数据、全市场名单、近 30 天名单……，上一期的名单已被覆盖），
+        # 按上一期的日期重新判会对不上：品类大盘算不出、月度名单补判没有当期销量、没刷新的商品都成了“数据陈旧”，
+        # 还会改掉上一期的运行记录（下一期的必看、与上期对比都读它）。模拟：爆火 3 → 0、上升中 15 → 0、49 个里 46 个数据陈旧
+        why = (f"{pending.get('date')} 那次运行中途停了，已经存下了比上一期报告新的数据，现在重新生成会把上一期报告改坏；"
+               "等下一期正常出了报告再重新生成")
+        log.warn(f"没有重新生成：{why}")
+        return RunResult(skipped_reason=why)
     last = state["runs"][-1]
     disc = discovery.apply_product_filter(state.get("discovery"), cfg)
     today = clock.parse_day(last.get("date")) or clock.now_in(cfg["vendor_timezone"]).date()

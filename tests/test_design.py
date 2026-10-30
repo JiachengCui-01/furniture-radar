@@ -143,14 +143,14 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     assert '<article class="card"' not in body and '<article class="card"' in plain
     assert "外观与工艺依据" in body and "增长商品" in body and "本期要点" in body
     assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
-    assert "Material 属性" in plain
+    assert "Material 属性" in plain and f"每期最多查 {cfg['budget']['material_lookups']} 个" in plain
     assert body.index("<h3>开发建议</h3>") < body.index("<h3>开发方向")  # 两节都要有，不是互相替换
     assert "<h3>开发方向依据</h3>" in body and 'class="dbox dir"' in body
     # 够格的子类目全部有画像；本期要点只写前 summary_max 个，标题写明；一览表把每个子类目都列出来
     n_dirs = body.count('class="dbox dir"')
     top = cfg["thresholds"]["directions"]["summary_max"]
     if n_dirs > top:
-        assert f"<h3>开发方向（增量最大的 {top} 个，全部 {n_dirs} 个见下方“开发方向依据”）</h3>" in body
+        assert f"<h3>开发方向（有画像的子类目里增量最大的 {top} 个，全部 {n_dirs} 个见下方“开发方向依据”）</h3>" in body
     assert f"个子类目一览：{n_dirs} 个有画像（见下方）" in body and body.count("<td>有（见下方）</td>") == n_dirs
     for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
         assert gone not in plain, gone  # 同一个概念只有一种叫法
@@ -364,15 +364,46 @@ def test_all_qualifying_subcategories_get_a_profile_and_the_rest_say_why(cfg):
     assert len(few) == 3 and rows["子类3"]["status"] == "增量排在前 3 个之后"
 
     text = narrative.name_the_cut("### 开发建议\n- x\n### 开发方向\n- 开发子类0\n### 风险提醒\n- y", 7, 5)
-    assert "### 开发方向（增量最大的 5 个，全部 7 个见下方“开发方向依据”）\n- 开发子类0" in text
+    assert "### 开发方向（有画像的子类目里增量最大的 5 个，全部 7 个见下方“开发方向依据”）\n- 开发子类0" in text
     assert narrative.name_the_cut("### 开发方向\n- a", 5, 5) == "### 开发方向\n- a"
     ctx = {"title": "雷达", "report_id": "2026-11-01", "as_of": "2026-10-31", "cfg": cfg, "diff": {"first": True},
            "traits": {"directions": out},
            "sections": {"surge": [], "potential": [], "fake": [], "counts": {"total": 1, "surge": 0, "potential": 0,
                                                                               "hot": 0, "fake": 0}}}
     lines = dingtalk.build_text(ctx).splitlines()
-    k = lines.index("**🛠 开发方向**（增量最大的 5 个，共 7 个见报告）")
+    k = lines.index("**🛠 开发方向**（有画像的子类目里增量最大的 5 个，共 7 个见报告）")
     assert [line.split("：")[0] for line in lines[k + 1:] if line.startswith("- 子类")] == [f"- 子类{i}" for i in range(5)]
+    assert not any("没有画像" in line for line in lines)  # 没给一览表时不写
+
+    # 增量排得进前 5、却画不出画像的子类目也写出来（以前小标题写“增量最大的 5 个”却悄悄跳过：11-06 彩排里增量第一的床架没出现）
+    overview = directions.overview(items, focus, out, disc, cfg)
+    skipped = directions.skipped_big(overview, out[:5])
+    assert [r["node"] for r in skipped] == ["一家", "单品"]  # 增量都比第 5 个大；“没增长”“空的”没有增长商品，不算
+    line = directions.skipped_text(skipped, 5)
+    assert line == ("增量排得进前 5 个、但没有画像的子类目："
+                    f"一家（月增量约 {directions.money_text(table['一家']['increment'])}，增长商品只来自 1 个品牌）；"
+                    f"单品（月增量约 {directions.money_text(table['单品']['increment'])}，增长商品不到 2 个）")
+    ctx["traits"]["direction_overview"] = overview
+    lines = dingtalk.build_text(ctx).splitlines()
+    k = lines.index("**🛠 开发方向**（有画像的子类目里增量最大的 5 个，共 7 个见报告）")
+    assert lines[k + 6] == f"- {line}"
+    text = narrative.note_skipped("### 开发方向（…）\n- 开发子类0\n- 开发子类1\n\n### 风险提醒\n- y", line)
+    assert text == f"### 开发方向（…）\n- 开发子类0\n- 开发子类1\n- {line}\n\n### 风险提醒\n- y"
+    assert directions.skipped_big(overview, []) == []
+
+
+def test_heads_exclude_growth_items_whole_family(cfg):
+    """同子类目头部商品不算增长商品自己的父体：增长商品多是从全市场名单进来的（月度名单里没有它这个 ASIN），
+    月度名单给的常是同一父体的另一个代表子体。以前只在月度名单里找增长商品的父体，兄弟子体被算成了头部
+    （11-06 彩排 175 个增长商品里 16 个这样），“比头部多”的特征被冲淡。"""
+    from radar.detect import directions
+
+    grow = {**_dir_item("G1", "书架", "Fluted Bookshelf", "B1"), "parent": "P1"}
+    sib = {**_head_row("S1", "书架", "Fluted Bookshelf", 5000), "parent": "P1"}   # 同一父体的另一个子体
+    under = {**_head_row("U1", "书架", "Bookshelf", 4000), "parent": "G1"}        # 挂在增长商品这个 ASIN 下面的
+    other = _head_row("H1", "书架", "Bookshelf", 3000)
+    disc = {"products": {r["asin"]: r for r in (sib, under, other)}}
+    assert [r["asin"] for r in directions.heads("书架", disc, [grow], cfg)] == ["H1"]
 
 
 def test_directions_compare_with_heads_of_the_same_subcategory(cfg):

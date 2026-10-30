@@ -92,12 +92,15 @@ def ranked(focus: list[dict], cfg: dict) -> list[tuple[str, list[dict]]]:
 
 
 def heads(node: str, disc: dict | None, focus: list[dict], cfg: dict) -> list[dict]:
-    """同子类目头部商品：月度名单里这个子类目、不在增长商品里（同一父体也不算）的，按月销量取前 head_max 个。"""
+    """同子类目头部商品：月度名单里这个子类目、不在增长商品里（同一父体也不算）的，按月销量取前 head_max 个。
+    父体看增长商品自己的（item["parent"]，日数据 / 全市场名单带来的）和月度名单里的：增长商品多是从全市场名单进来的，
+    月度名单给的常是同一父体的另一个代表子体（以前只查月度名单，11-06 彩排 175 个增长商品里 16 个的兄弟子体被算成了头部）。"""
     c = cfg["thresholds"]["directions"]
     taken = {i["asin"] for i in focus}
-    parents = {p for p in (((disc or {}).get("products") or {}).get(a, {}).get("parent") for a in taken) if p}
-    rows = [r for r in ((disc or {}).get("products") or {}).values()
-            if node_of(r) == node and r["asin"] not in taken and not (r.get("parent") and r["parent"] in parents)]
+    products = (disc or {}).get("products") or {}
+    family = taken | {p for p in [i.get("parent") for i in focus] + [products.get(a, {}).get("parent") for a in taken] if p}
+    rows = [r for r in products.values()
+            if node_of(r) == node and r["asin"] not in family and not (r.get("parent") and r["parent"] in family)]
     rows.sort(key=lambda r: -(r.get("units") or 0))
     return rows[: int(c.get("head_max", 30))]
 
@@ -248,6 +251,24 @@ def overview(items: list[dict], focus: list[dict], shown: list[dict], disc: dict
                      "tide": tide, "shown": status is None, "status": status})
     rows.sort(key=lambda r: (-r["increment"], -r["n_brands"], -r["n"], -r["n_surge"], -r["n_tracked"]))
     return rows
+
+
+def skipped_big(overview_rows: list[dict], shown: list[dict]) -> list[dict]:
+    """增量排得进 shown（本期要点、钉钉里写的那几个开发方向）、却没有画像的子类目（overview 的行）：有增长商品，
+    但不到 min_items 个、只来自 1 个品牌，或没有共同的主材质或特征。小标题以前写“增量最大的 5 个”，这些被悄悄跳过
+    （11-06 彩排：增量第一的床架 $58 万、18 个品牌、8 个突然爆火，钉钉和本期要点里都没出现）。"""
+    if not shown:
+        return []
+    cutoff = min(d["sales"]["increment"] for d in shown)
+    return [r for r in overview_rows if not r["shown"] and r["n"] and r["increment"] > cutoff]
+
+
+def skipped_text(rows: list[dict], n_shown: int, k: int = 3) -> str:
+    """“增量排得进前 N 个、但没有画像的子类目：床架（月增量约 $58 万，没有共同的主材质或特征）”，最多 k 个。"""
+    if not rows:
+        return ""
+    return (f"增量排得进前 {n_shown} 个、但没有画像的子类目："
+            + "；".join(f"{r['node']}（月增量约 {money_text(r['increment'])}，{r['status']}）" for r in rows[:k]))
 
 
 def price_text(price: dict | None) -> str:

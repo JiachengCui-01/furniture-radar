@@ -49,7 +49,10 @@ def cmd_run(args, cfg, secrets) -> int:
 
 
 def cmd_rerender(args, cfg, secrets) -> int:
-    _github_output(args, pipeline.rerender(cfg, secrets, args.site_dir))
+    result = pipeline.rerender(cfg, secrets, args.site_dir)
+    if result.skipped_reason and os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning::没有重新生成：{result.skipped_reason}", flush=True)  # 显示在 Actions 运行页上（不发钉钉告警）
+    _github_output(args, result)
     return 0
 
 

@@ -76,6 +76,29 @@ def test_new_entries_are_ranked_by_how_much_they_must_have_grown(cfg):
     assert "近 7 天排名改善 40%" in dict((a, w) for a, _p, w in out)["RANK"]
 
 
+def test_a_node_missing_from_the_base_does_not_push_its_big_sellers_first(cfg):
+    """基准那份（上个月的月度名单 / 约 30 天前的快照）有子类目没翻全（第 1 页就查失败）：那里找不到基准的商品可能只是没翻到，
+    不能按“以前不够门槛、至少涨了现在的量 ÷ 门槛倍”往前排——以前 A 子类目月销 3,000 件的老大卖家按“至少 ×10”排到最前，
+    挤掉真在涨的。改后只按短期倍数排（没有短期倍数的最后拉）；B 子类目翻全了，新进名单照旧按“至少涨了多少”排。"""
+    base = {"period": "202610", "end": "2026-10-31", "days": 31, "units": {"UP": 1000}, "failed": ["A"]}
+    state = _state({3: {}}, base)
+    rows = {"BIG": {**_row(3000), "node": "A"}, "UP": {**_row(1500), "node": "B"}, "NEW": {**_row(450), "node": "B"}}
+    assert universe.base_gaps(state, TODAY) == {"A"}
+    out = universe.screen(state, rows, TODAY, cfg)
+    assert [a for a, _p, _w in out] == ["UP", "NEW", "BIG"]  # UP ×1.55（1000 件 / 31 天 × 30）、NEW 至少 ×1.5
+    why = {a: w for a, _p, w in out}
+    assert "没翻全" in why["BIG"] and dict((a, p) for a, p, _w in out)["BIG"] == -1.0
+    # 另一份能当基准的翻全了 A：A 里找不到基准的就是新进名单
+    both = _state({30: {"X": 1}}, base)
+    assert universe.base_gaps(both, TODAY) == set()
+    assert [a for a, _p, _w in universe.screen(both, rows, TODAY, cfg)][0] == "BIG"
+    # 快照自己记下没翻全的子类目
+    st = {"universe": {"snaps": []}}
+    universe.record(st, {"Q": {"units": 400, "node": "A"}}, TODAY, 3, ["A"])
+    assert st["universe"]["snaps"][-1]["failed"] == ["A"]
+    assert universe.base_gaps(st, TODAY + timedelta(days=30)) == {"A"}
+
+
 def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     """头一个月：没有 30 天前的快照，用结束于 21~52 天前的那个月的月度名单（按天数折成 30 天）当基准，门槛按基准的新旧放宽，
     再加上近 7 天排名改善；结束不到 21 天的月份比不出 30 天的增长，不用。"""
