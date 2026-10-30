@@ -37,7 +37,7 @@ DEFAULTS: dict = {
         "merge_variations": True,
         "newcomer_max_nodes": 12,
         "newcomers_per_node": 30,
-        "newcomer_min_revenue": 20000, "settle_days": 20,
+        "newcomer_min_revenue": 20000, "settle_min_items": 5, "settle_same_share": 0.5,
         "risers_per_root": 0,
         "risers_new_per_root": 0,
         "risers_min_units": 300,

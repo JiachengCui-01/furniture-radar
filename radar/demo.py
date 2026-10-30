@@ -200,6 +200,8 @@ class SyntheticWorld:
                 idx += 1
         self.by_asin = {p.asin: p for p in self.products}
         self.calls: list[str] = []
+        # 卖家精灵月初还没更新完的子类目（测试用）：这些子类目的已结束月份名单返回的是再上个月的数
+        self.unsettled_nodes: set[str] = set()
 
     @property
     def data_end(self) -> date:
@@ -284,6 +286,9 @@ class SyntheticWorld:
             return self._ok(self._page(rows))
         if tool == "product_research":
             node, period = req["nodeIdPath"], req.get("month")
+            if period and node in self.unsettled_nodes:
+                first = self._month_bounds(period)[0] - timedelta(days=1)
+                period = f"{first.year}{first.month:02d}"  # 还没更新完：给的是上个月的数
             end = self._month_bounds(period)[1] if period else self.data_end
             members = [p for p in self.products
                        if (p.node == node or p.node.startswith(node + ":")) and p.available <= end]

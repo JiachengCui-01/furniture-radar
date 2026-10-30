@@ -223,6 +223,21 @@ def _failed(reply) -> bool:
     return not reply.ok and reply.status != "empty"
 
 
+def _query(vendor: Vendor, cfg: dict, node: dict, period: str, kind: str):
+    """一个子类目某个已结束月份的一份名单：top = 按销售额取前 top_per_node 个，units = 按月销量取前 top_per_node 个，
+    new = 按上架时间倒序、月销售额 ≥ newcomer_min_revenue 的前 newcomers_per_node 个（新品）。"""
+    dcfg = cfg["discovery"]
+    if kind == "new":
+        args = {"size": dcfg["newcomers_per_node"], "minRevenue": dcfg["newcomer_min_revenue"],
+                "order": {"field": "available_date", "desc": True}}
+    else:
+        args = {"size": dcfg["top_per_node"], "page": 1,
+                "order": {"field": dcfg["order_field"] if kind == "top" else "total_units", "desc": True}}
+    return vendor.call("product_research", request(
+        marketplace=cfg["marketplace"], nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
+        variation=_variation(cfg), **args), purpose={"top": "头部商品", "units": "按件数的头部", "new": "新品"}[kind])
+
+
 def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = None) -> dict | None:
     """返回发现结果；该月份数据还没发布时返回 None。预算不够时返回 complete=False 的部分结果。"""
     mp = cfg["marketplace"]
@@ -264,10 +279,7 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
         for node in disc["nodes"]:
             if node["path"] in disc["done_top"]:
                 continue
-            reply = vendor.call("product_research", request(
-                marketplace=mp, nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
-                size=disc_cfg["top_per_node"], page=1, variation=_variation(cfg),
-                order={"field": disc_cfg["order_field"], "desc": True}), purpose="头部商品")
+            reply = _query(vendor, cfg, node, period, "top")
             if _failed(reply):
                 failed.append(node["path"])  # 不记“已查”：下期接着查这个子类目
                 continue
@@ -283,10 +295,7 @@ def discover(vendor: Vendor, cfg: dict, period: str, previous: dict | None = Non
         for node in newcomer_nodes:
             if node["path"] in disc["done_new"]:
                 continue
-            reply = vendor.call("product_research", request(
-                marketplace=mp, nodeIdPath=node["path"], nodeIdPathEqual="false", month=period,
-                size=disc_cfg["newcomers_per_node"], minRevenue=disc_cfg["newcomer_min_revenue"],
-                variation=_variation(cfg), order={"field": "available_date", "desc": True}), purpose="新品")
+            reply = _query(vendor, cfg, node, period, "new")
             if _failed(reply):
                 failed.append(node["path"])
                 continue
@@ -315,10 +324,7 @@ def fill_units(vendor: Vendor, cfg: dict, disc: dict, failed: list[str] | None =
     for node in disc["nodes"]:
         if node["path"] in done:
             continue
-        reply = vendor.call("product_research", request(
-            marketplace=cfg["marketplace"], nodeIdPath=node["path"], nodeIdPathEqual="false", month=disc["period"],
-            size=cfg["discovery"]["top_per_node"], page=1, variation=_variation(cfg),
-            order={"field": "total_units", "desc": True}), purpose="按件数的头部")
+        reply = _query(vendor, cfg, node, disc["period"], "units")
         if _failed(reply):
             if failed is not None:
                 failed.append(node["path"])
@@ -329,6 +335,33 @@ def fill_units(vendor: Vendor, cfg: dict, disc: dict, failed: list[str] | None =
                 _add(disc["products"], item)
         done.append(node["path"])
     return vendor.billable_calls - start
+
+
+def refetch_nodes(vendor: Vendor, cfg: dict, disc: dict, paths: list[str]) -> list[str]:
+    """卖家精灵还没更新完的子类目（monthly_lists.not_updated）重拉：销售额前 N、月销量前 N，月度发现时查过新品的也重拉新品；
+    几份都拉到了才换掉这个子类目原来的商品，没拉到的下期再拉。预算用完时抛 BudgetExhausted（已换好的保留）。返回换好的子类目。"""
+    done: list[str] = []
+    wanted = set(paths)
+    for node in [n for n in disc["nodes"] if n["path"] in wanted]:
+        kinds = ["top", "units"] + (["new"] if node["path"] in (disc.get("done_new") or []) else [])
+        fresh: dict[str, dict] = {}
+        for kind in kinds:
+            reply = _query(vendor, cfg, node, disc["period"], kind)
+            if _failed(reply):
+                break
+            for rank, row in enumerate(reply.rows, start=1):
+                item = normalize_product(row, node, kind, rank)
+                if keep_product(item, cfg):
+                    _add(fresh, item)
+        else:
+            products = {a: p for a, p in disc["products"].items() if p["node"] != node["path"]}
+            for item in fresh.values():
+                _add(products, item)
+            disc["products"] = products
+            if node["path"] not in disc.setdefault("done_units", []):
+                disc["done_units"].append(node["path"])
+            done.append(node["path"])
+    return done
 
 
 def owning_node(path: str, nodes: list[dict]) -> dict | None:

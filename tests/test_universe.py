@@ -77,11 +77,12 @@ def test_new_entries_are_ranked_by_how_much_they_must_have_grown(cfg):
 
 
 def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
-    """头一个月：没有 30 天前的快照，用结束于 21~45 天前的那个月的月度名单（按天数折成 30 天）当基准，门槛按基准的新旧放宽，
+    """头一个月：没有 30 天前的快照，用结束于 21~52 天前的那个月的月度名单（按天数折成 30 天）当基准，门槛按基准的新旧放宽，
     再加上近 7 天排名改善；结束不到 21 天的月份比不出 30 天的增长，不用。"""
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 10, 26)) == "202609"
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 5)) == "202609"   # 10 月才结束 5 天
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 16)) == "202609"  # 每周一期第三周：9 月名单 47 天
+    assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 20)) == "202609"  # 10 月才结束 20 天、9 月名单 51 天
     assert universe.baseline_period({"universe": {"snaps": []}}, date(2026, 11, 25)) == "202610"
     assert universe.baseline_period(_state({24: {"A": 1}}), TODAY) is None                        # 有 21 天以上的快照了
     base = {"period": "202610", "end": "2026-10-31", "days": 31, "units": {"A": 310, "B": 310, "C": 310}}
@@ -91,6 +92,35 @@ def test_first_month_uses_last_months_list_and_looser_thresholds(cfg):
     assert f["base"] == "month" and f["age"] == 31 and round(f["g"], 2) == 0.1  # 310 件 / 31 天 × 30 = 300
     picked = {a for a, _s, _w in universe.screen(state, rows, TODAY, cfg)}
     assert picked == {"C"}  # A 只 +10%（基准 31 天前要 15%）；B 跌了；C 近 7 天排名改善 25%
+
+
+def test_second_biweekly_run_still_has_a_base_and_a_tide(cfg):
+    """两周一期、第一期在月初几天（上次成功 10-23 → 第一期 11-05、第二期 11-19）：第二期自己存的快照只有 14 天前那份，
+    10 月名单才结束 19 天，第一期拉的 9 月名单已是 50 天前。上限 47 天时第二期一个基准都没有（全部当新进名单、品类大盘算不出来），
+    上限 52 天时照样用 9 月名单。第一期不管在几号，第一、二期都有基准。"""
+    first, second = date(2026, 11, 5), date(2026, 11, 19)
+    state = {"universe": {"snaps": []}}
+    assert universe.baseline_period(state, first) == "202609"
+    rows = {f"A{i}": {"units": 330 + 30 * i, "available": "2024-01-01", "node": "N:A"} for i in range(10)}
+    universe.record_baseline(state, "202609", {a: {"units": 300} for a in rows})
+    universe.record(state, {a: {"units": 330} for a in rows}, first, 1)
+    assert universe.baseline_period(state, second) is None  # 9 月名单还能用，不用再拉
+    f = universe.features(state, "A9", rows["A9"], second, 28, (14,))
+    assert f["base"] == "month" and f["age"] == 50 and round(f["g"], 2) == 1.0 and 14 in f["short"]
+    out = universe.screen(state, rows, second, cfg)
+    assert out and not any(w.startswith("新进名单") for _a, _p, w in out)
+    state["universe"].update(date=second.isoformat(), rows=rows)
+    assert universe.node_tide(state, second, cfg)["N:A"] > 1
+    for start in [date(2026, 1, 1) + timedelta(days=i) for i in range(365)]:
+        s = {"universe": {"snaps": []}}
+        period = universe.baseline_period(s, start)
+        assert period, start
+        universe.record_baseline(s, period, {"A": {"units": 600}})
+        universe.record(s, {"A": {"units": 900}}, start, 1)
+        nxt = start + timedelta(days=14)
+        if universe.baseline_period(s, nxt):
+            universe.record_baseline(s, universe.baseline_period(s, nxt), {"A": {"units": 600}})
+        assert universe.features(s, "A", {"units": 1000}, nxt, 28, (14,))["g"] is not None, start
 
 
 def test_snapshots_match_by_parent_when_the_representative_child_changes(cfg):

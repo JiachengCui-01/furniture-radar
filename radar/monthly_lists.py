@@ -15,10 +15,19 @@
   按件数的往月名单：每个子类目按月销量取前 50（便宜、走量的头部进不了销售额前 50）。当月的由月度发现带上（discovery.fill_units），
            往月的一次性补（约 145 次，在拉日数据之前，每期最多 budget.monthly_list_calls 次）。
 
+  名单更新完没有：卖家精灵上个月的名单月初还没更新完，而且是整个子类目没更新——这个子类目的商品月销量和再上个月一模一样。
+           实测 10-09 拉的 9 月名单：衣帽架 49/49、Chest File Cabinets 12/12、Pantries 46/48 个商品和 8 月一模一样，其余 26 个子类目
+           最多 14%（已更新完的名单相邻两个月 0.7%~1.5%）；10-22 重拉后销量变了一成以上的 43 个商品里 42 个在这 3 个子类目。
+           所以每次拿到名单都逐个子类目查（not_updated），没更新完的记进 unsettled，之后每期只重拉这几个子类目，直到更新完：
+           还是当期月份的，重拉月度发现里这几个子类目（discovery.refetch_nodes）；已经换了月份的，重拉那个月的两份名单（resettle）。
+           以前是“月份结束后不到 20 天拉的，过了 20 天整份重拉一次”（约 75 次调用）：两周一期时 11-05 拉的 10 月名单，
+           下一期 11-19 才第 19 天、再下一期已经是 12 月，整个 11 月都用没更新完的名单。
+
 state["monthly_lists"] = {
     "months":  {"2026-09": {子类目 nodeIdPath: {asin: [月销量, 月销售额, 价格, 父体]}}},
     "units_months": {同上，按月销量取前 50},
     "rolling": {"date": "2026-10-20", "rows": {asin: 近 30 天名单的一行（discovery.normalize_product）}, "nodes": [查了的子类目]},
+    "unsettled": {"2026-10": [卖家精灵还没更新完的子类目 nodeIdPath]},
 }
 判定（哪些商品、按什么条件）在 analyze.monthly_hot_items。
 """
@@ -90,6 +99,99 @@ def complete(state: dict, nodes: list[dict], period: str, n: int, kind: str = "t
     """最近 n 个月每个子类目的名单都齐了。"""
     months = _store(state, kind)
     return all(node["path"] in (months.get(key) or {}) for key in month_keys(period, n) for node in nodes)
+
+
+def list_units(state: dict, key: str, node: str) -> dict[str, float]:
+    """某个月、某个子类目两份名单（销售额前 50、月销量前 50）里的 {父体（没有父体的按 ASIN）: 月销量}。"""
+    out: dict[str, float] = {}
+    for kind in KINDS:
+        for asin, row in ((_store(state, kind).get(key) or {}).get(node) or {}).items():
+            out[row[3] or asin] = row[0]
+    return out
+
+
+def not_updated(state: dict, cfg: dict, key: str, node: str) -> bool:
+    """这个子类目 key 那个月的名单卖家精灵还没更新完：两个月都有销量的商品 ≥ discovery.settle_min_items 个，
+    其中 ≥ discovery.settle_same_share 的月销量和上个月一模一样（见模块说明）。上个月的名单没有时判断不了，当作更新完了。"""
+    dcfg = cfg["discovery"]
+    prev = list_units(state, month_keys(key.replace("-", ""), 2)[1], node)
+    pairs = [(u, prev[f]) for f, u in list_units(state, key, node).items() if u and prev.get(f)]
+    if len(pairs) < int(dcfg.get("settle_min_items", 5)):
+        return False
+    return sum(1 for u, v in pairs if u == v) >= float(dcfg.get("settle_same_share", 0.5)) * len(pairs)
+
+
+def unsettled(state: dict) -> dict[str, list[str]]:
+    """{月份 "2026-10": [还没更新完的子类目]}。"""
+    return _lists(state).setdefault("unsettled", {})
+
+
+def check_discovery(state: dict, cfg: dict, disc: dict | None) -> list[str]:
+    """月度发现的名单记进来以后（record_discovery），逐个子类目查当期那个月的名单更新完没有，记进 unsettled，返回没更新完的。"""
+    period = str((disc or {}).get("period") or "")
+    if len(period) != 6 or not (disc or {}).get("products"):
+        return []
+    key = f"{period[:4]}-{period[4:]}"
+    flagged = [n["path"] for n in disc.get("nodes") or [] if not_updated(state, cfg, key, n["path"])]
+    flags = unsettled(state)
+    if flagged:
+        flags[key] = flagged
+    else:
+        flags.pop(key, None)
+    return flagged
+
+
+def resettle(vendor: Vendor, cfg: dict, state: dict, disc: dict) -> int:
+    """已经换了月份、当时还没更新完的往月名单：只重拉这几个子类目那个月的两份名单（销售额前 50、月销量前 50，每个子类目 2 次），
+    再查一次更新完没有，还没更新完的下期再拉。不在近 hot.list_months 个月里、或已经不在监控范围的子类目不再管。返回调用次数。"""
+    flags = unsettled(state)
+    period = str(disc["period"])
+    current = f"{period[:4]}-{period[4:]}"
+    keep = set(month_keys(period, int(cfg["thresholds"]["hot"].get("list_months", 6))))
+    nodes = {n["path"]: n for n in disc["nodes"]}
+    start = vendor.billable_calls
+    for key in sorted(flags):
+        if key == current:
+            continue  # 当期月份的由 ensure_discovery 重拉（discovery.refetch_nodes）
+        paths = [p for p in flags[key] if p in nodes] if key in keep else []
+        still: list[str] = []
+        for i, path in enumerate(paths):
+            got: dict[str, dict] = {}
+            try:
+                for kind in KINDS:
+                    order = cfg["discovery"]["order_field"] if kind == "top" else "total_units"
+                    reply = vendor.call("product_research", request(
+                        marketplace=cfg["marketplace"], nodeIdPath=path, nodeIdPathEqual="false",
+                        month=key.replace("-", ""), size=PAGE_SIZE, page=1,
+                        variation="Y" if cfg["discovery"].get("merge_variations", True) else None,
+                        order={"field": order, "desc": True}), purpose=f"重拉没更新完的{KINDS[kind][1]}")
+                    if not reply.ok and reply.status != "empty":
+                        break
+                    got[kind] = {}
+                    for rank, row in enumerate(reply.rows, start=1):
+                        item = normalize_product(row, nodes[path], kind, rank)
+                        if keep_product(item, cfg):
+                            got[kind][item["asin"]] = _compact(item)
+            except BudgetExhausted:
+                still += paths[i:]
+                break
+            if len(got) < len(KINDS):
+                still.append(path)  # 没拉全：下期再拉
+                continue
+            for kind, rows in got.items():
+                _store(state, kind).setdefault(key, {})[path] = rows
+            if not_updated(state, cfg, key, path):
+                still.append(path)
+        if still:
+            flags[key] = still
+        else:
+            flags.pop(key, None)
+    calls = vendor.billable_calls - start
+    if calls:
+        log.info(f"往月名单：重拉了上次还没更新完的子类目（{calls} 次调用）"
+                 + (f"，还有 {sum(len(v) for k, v in flags.items() if k != current)} 个没更新完，下期再拉"
+                    if any(k != current for k in flags) else "，都已更新完"))
+    return calls
 
 
 def backfill(vendor: Vendor, cfg: dict, state: dict, disc: dict, limit: int, kind: str = "top") -> int:

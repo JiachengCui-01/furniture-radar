@@ -439,32 +439,76 @@ def test_recent_sales_for_monthly_hot_come_from_the_same_run_even_when_the_pool_
     assert monthly_lists.complete(state, disc["nodes"], disc["period"], 6, "units")
 
 
-def test_early_monthly_list_is_fetched_again_once_settled(cfg, master_key, tmp_path):
-    """卖家精灵的上月名单月初还没更新完（实测 10-09 拉的 9 月名单约两成商品还是 8 月的数）：
-    月份结束后不到 20 天拉的，过了 20 天重拉一次，只重拉一次；已经到下个月就直接拉新月份。"""
-    from datetime import date
+def test_unsettled_list_is_found_by_node(cfg):
+    """卖家精灵月初还没更新完时是整个子类目没更新：这个子类目的商品月销量和上个月一模一样。两个月都有销量的商品 ≥5 个、
+    其中 ≥50% 一模一样的算没更新完；偶尔一两个一样（已更新完的名单 0.7%~1.5%）、能比的不到 5 个、没有上个月的名单都不算。"""
+    from radar import monthly_lists
 
-    cur = {"complete": True, "period": "202609", "fetched_at": "2026-10-09T02:12:25+00:00"}
-    assert not pipeline.needs_refresh(cur, cfg, date(2026, 10, 15))
-    assert pipeline.needs_refresh(cur, cfg, date(2026, 10, 22))
-    assert not pipeline.needs_refresh({**cur, "settled": True}, cfg, date(2026, 10, 22))
-    assert not pipeline.needs_refresh({**cur, "fetched_at": "2026-10-21T00:00:00+00:00"}, cfg, date(2026, 10, 25))
-    assert not pipeline.needs_refresh(cur, cfg, date(2026, 11, 3))
+    def lists(sep: dict, octo: dict) -> dict:
+        return {"monthly_lists": {"months": {"2026-09": {"N": {a: [u, u * 100, 100, None] for a, u in sep.items()}},
+                                             "2026-10": {"N": {a: [u, u * 100, 100, None] for a, u in octo.items()}}}}}
+
+    sep = {f"A{i}": 100 + i for i in range(10)}
+    assert monthly_lists.not_updated(lists(sep, dict(sep)), cfg, "2026-10", "N")
+    half = {a: u + (k % 2) for k, (a, u) in enumerate(sep.items())}  # 一半一样
+    assert monthly_lists.not_updated(lists(sep, half), cfg, "2026-10", "N")
+    two = {a: u + (k >= 2) for k, (a, u) in enumerate(sep.items())}  # 10 个里 2 个一样
+    assert not monthly_lists.not_updated(lists(sep, two), cfg, "2026-10", "N")
+    few = {a: sep[a] for a in list(sep)[:4]}
+    assert not monthly_lists.not_updated(lists(few, few), cfg, "2026-10", "N")  # 能比的只有 4 个
+    zero = {a: 0 for a in sep}
+    assert not monthly_lists.not_updated(lists(zero, zero), cfg, "2026-10", "N")  # 都是 0 件不算一样
+    state = lists(sep, dict(sep))
+    state["monthly_lists"]["months"].pop("2026-09")
+    assert not monthly_lists.not_updated(state, cfg, "2026-10", "N")  # 没有上个月的名单：判断不了
+
+
+def test_unsettled_node_is_refetched_until_updated(cfg, master_key, tmp_path):
+    """月度名单拿到后逐个子类目查：没更新完的子类目之后每期只重拉它（不等满 20 天、不整份重拉），直到更新完；
+    已经换了月份还没更新完的，重拉那个月的两份往月名单。报告“数据说明”写明哪些子类目用的是没更新完的名单。"""
+    from radar import monthly_lists
 
     cfg["budget"].update(per_run=400, bootstrap_run=400)
     world = SyntheticWorld(START.date())
+    sent: list[dict] = []
+
+    def transport(tool, arguments):
+        sent.append({"tool": tool, **(arguments.get("request") or arguments)})
+        return world(tool, arguments)
+
     secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")
-    site = tmp_path / "site"
-    pipeline.run(cfg, secrets, site, transport=world, now=START)
-    first = store.load(site, crypto.parse_master_key(master_key))["discovery"]
-    world.advance(16)
-    pipeline.run(cfg, secrets, site, transport=world, now=START + timedelta(days=16))  # 10-21：9 月结束 21 天
-    state = store.load(site, crypto.parse_master_key(master_key))
-    assert first["fetched_on"] == "2026-10-04" and not first.get("settled")
-    assert state["discovery"]["settled"] and state["discovery"]["fetched_on"] == "2026-10-20"
-    assert state["discovery"]["period"] == first["period"] == "202609"
-    sep = state["monthly_lists"]["months"]["2026-09"]
-    assert {n["path"] for n in state["discovery"]["nodes"]} <= set(sep)
+    site, master = tmp_path / "site", crypto.parse_master_key(master_key)
+    pipeline.run(cfg, secrets, site, transport=transport, now=START)  # 10-05：9 月名单
+    tv = "1055398:1063306:1063318:1063310:3733691"
+    world.unsettled_nodes = {tv}
+    day = START
+    for days in (31, 14):  # 11-05：拿到 10 月名单，电视柜没更新完；11-19：还没更新完，只重拉电视柜
+        world.advance(days)
+        day += timedelta(days=days)
+        sent.clear()
+        out = pipeline.run(cfg, secrets, site, transport=transport, now=day)
+        state = store.load(site, master)
+        assert out.published and state["discovery"]["period"] == "202610"
+        assert state["monthly_lists"]["unsettled"] == {"2026-10": [tv]}
+    october = [c for c in sent if c["tool"] == "product_research" and c.get("month") == "202610"]
+    assert october and {c["nodeIdPath"] for c in october} == {tv}  # 第二次只重拉了电视柜
+    assert pipeline.needs_discovery(state, cfg, day.date())
+    page = _decrypt_page((site / "reports" / f"{out.report_id}.html").read_text(encoding="utf-8"), master)
+    assert "月度名单卖家精灵还没更新完" in page and "10 月 电视柜" in page
+
+    world.unsettled_nodes = set()  # 卖家精灵更新完了，但已经是 12 月：重拉那个月的两份往月名单
+    world.advance(14)
+    day += timedelta(days=14)
+    sent.clear()
+    out = pipeline.run(cfg, secrets, site, transport=transport, now=day)
+    state = store.load(site, master)
+    assert out.published and state["discovery"]["period"] == "202611"
+    assert not state["monthly_lists"].get("unsettled")
+    redo = [c for c in sent if c["tool"] == "product_research" and c.get("month") == "202610"]
+    assert {c["nodeIdPath"] for c in redo} == {tv} and len(redo) == 2
+    assert not monthly_lists.not_updated(state, cfg, "2026-10", tv)
+    page = _decrypt_page((site / "reports" / f"{out.report_id}.html").read_text(encoding="utf-8"), master)
+    assert "月度名单卖家精灵还没更新完" not in page
 
 
 class _AccountLimit:

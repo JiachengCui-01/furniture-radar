@@ -763,12 +763,12 @@ def _method(cfg: dict) -> str:
     s, f, m = th["surge"], th["fake"], th["momentum"]
     span = float((th.get("tide") or {}).get("span_days", 28) or 0)
     tide_span = (f"；每个商品的倍数换算成 {span:g} 天的跨度（倍数 ^ ({span:g} ÷ 基准有几天)），和上升中 / 潜力的“近 28 天 vs 再之前 28 天”一致："
-                 "头一个月的基准是上个月的月度名单（结束于 21~47 天前的那个月；两周一期时第二期是 46 天前），中间有一期没跑成时用 35 天前的快照" if span else "")
+                 "头一个月的基准是上个月的月度名单（结束于 21~52 天前的那个月；两周一期从 11-05 开始时第二期是 50 天前），中间有一期没跑成时用 42 天前的快照" if span else "")
     watch_runs = int(cfg["pool"]["watch_runs"])
     watch_text = "上一期" if watch_runs == 1 else f"近 {watch_runs} 期"
     return f"""<details><summary>判定方法与数据口径</summary><ul class="hint">
-<li><b>数据</b>：卖家精灵的月度头部名单（product_research，已结束月份；月份结束后不到 {cfg['discovery'].get('settle_days', 20)} 天拉的过了这么多天重拉一次，
-卖家精灵月初还没更新完；持续热销补判还用近 {th['hot'].get('list_months', 6)} 个月每个月的名单）、
+<li><b>数据</b>：卖家精灵的月度头部名单（product_research，已结束月份；卖家精灵月初还没更新完，而且是整个子类目没更新：
+拿到名单后逐个子类目查，两个月都有销量的商品（≥{cfg['discovery'].get('settle_min_items', 5)} 个）里 ≥{float(cfg['discovery'].get('settle_same_share', 0.5)):.0%} 的月销量和上个月一模一样的算没更新完，之后每期只重拉这几个子类目、直到更新完；持续热销补判还用近 {th['hot'].get('list_months', 6)} 个月每个月的名单）、
 近 30 天名单（不传月份，截至当天：全市场名单；持续热销补判还查全市场名单覆盖不到头部的小子类目的近 30 天名单）、
 每个追踪商品约 400 天的日销量 / BSR / 价格（asin_prediction）。日销量是卖家精灵按 BSR 估算的，所以以 BSR 中位数为主信号。
 所有判定都基于每个商品截至最近一天的日数据；比本期最新的一天晚超过 {th['stale_days']} 天的标“数据陈旧”，不做爆火 / 潜力 / 上升中判断。</li>
@@ -952,6 +952,12 @@ def render(ctx: dict) -> str:
             units = (f"；按件数的往月名单已齐 {mon['units_months']}/{mon['need']} 个月，齐了以后便宜、走量的头部也补判"
                      if mon.get("units_months") is not None and mon["units_months"] < mon["need"] else "")
             facts.append(f"持续热销里 {counts.get('hot_monthly', 0)} 个来自月度名单补判（不在追踪池的头部商品判了 {mon['judged']} 个{deal}）{part}{units}")
+    stale = cov.get("unsettled") or {}
+    if stale:
+        names = {n["path"]: n.get("name_cn") or n.get("name") or n["path"] for n in ctx.get("nodes") or []}
+        share = float(cfg["discovery"].get("settle_same_share", 0.5))
+        facts.append(f"月度名单卖家精灵还没更新完（这个子类目 ≥{share:.0%} 的商品月销量和上个月一模一样），这期用的是没更新完的数、下期重拉："
+                     + "；".join(f"{int(k[5:])} 月 " + "、".join(names.get(p, p) for p in v) for k, v in sorted(stale.items())))
     spans = (ctx.get("events") or {}).get("spans") or []
     if spans:
         facts.append("大促日（不参与比较）：" + "、".join(events.span_text(sp) for sp in spans))

@@ -2,7 +2,7 @@ name: 家具爆品雷达
 
 on:
   schedule:
-    # 每天 UTC 00:17（北京时间 08:17）检查一次；距上次成功运行满 7 天（config.yaml 可改）才真正拉数据
+    # 每天 UTC 00:17（北京时间 08:17）检查一次；距上次成功运行满 14 天（config.yaml 的 schedule.min_days_between_runs）才真正拉数据
     - cron: "17 0 * * *"
   workflow_dispatch:
     inputs:
@@ -12,7 +12,7 @@ on:
         options: [run, rerender]
         default: run
       force:
-        description: "忽略 3 天间隔，立即运行"
+        description: "忽略运行间隔（两周一期），立即运行"
         type: boolean
         default: true
       notify:

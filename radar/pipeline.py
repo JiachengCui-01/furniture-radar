@@ -6,7 +6,7 @@ import os
 import re
 import traceback
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -103,34 +103,29 @@ def bcfg_tz(cfg: dict) -> str:
 
 def runs_left(now_utc: datetime, cfg: dict) -> int:
     """本月（套餐的月份，见 bcfg_tz）还剩几期，含这一期：每 min_days_between_runs 天一期，今天之后还放得下几期。
-    例：两周一期，11-01 → 3 期（1、15、29 号），11-29 → 1 期，12-13 → 2 期。"""
+    例：两周一期，11-06 → 2 期（6、20 号），11-20 → 1 期，1-01 → 3 期（1、15、29 号）。"""
     day = clock.to_tz(now_utc, bcfg_tz(cfg)).date()
     step = max(1, int(float(cfg["schedule"]["min_days_between_runs"])))
     return 1 + (clock.days_in_month(clock.month_key(day)) - day.day) // step
 
 
 def needs_discovery(state: dict, cfg: dict, today) -> bool:
-    """本期要不要重新发现（首期、换了监控范围、新的月份数据、月初拉的名单该重拉了）：要的话给更多预算。"""
+    """本期要不要重新发现（首期、换了监控范围、新的月份数据、有子类目的名单卖家精灵还没更新完）：要的话给更多预算。"""
     current = state.get("discovery")
     return (not state.get("asins") or not current or not current.get("complete")
             or current.get("scope_key") != discovery.scope_key(cfg)
             or current.get("period", "") < clock.closed_period(today)
-            or needs_refresh(current, cfg, today))
+            or bool(unsettled_nodes(state, current)))
 
 
-def needs_refresh(current: dict | None, cfg: dict, today) -> bool:
-    """月度名单是月份结束后不到 discovery.settle_days 天拉的、现在已经过了这么多天：重新拉一次。
-    卖家精灵的上月名单在月初还没更新完：实测 10-09 拉的 9 月名单里，衣帽架 31 个商品的 9 月销量还是 8 月的数，
-    10-22 再拉全部更新了、和日数据接口一致（9 月名单整体约两成商品 8、9 月销量一模一样，其他相邻月份只有零销量的这样）。"""
-    settle = int(cfg["discovery"].get("settle_days") or 0)
-    if not settle or not current or not current.get("complete") or current.get("settled"):
-        return False
-    period = str(current.get("period") or "")
-    fetched = clock.parse_day(current.get("fetched_on") or current.get("fetched_at"))  # 拉名单那天（美国时间）
-    if len(period) != 6 or period != clock.closed_period(today) or fetched is None:
-        return False
-    end = date(int(period[:4]), int(period[4:]), clock.days_in_month(f"{period[:4]}-{period[4:]}"))
-    return (fetched - end).days < settle <= (today - end).days
+def unsettled_nodes(state: dict, current: dict | None) -> list[str]:
+    """当期月度名单里卖家精灵还没更新完的子类目（上次拿到名单时 monthly_lists.check_discovery 查出来的），这期重拉。
+    以前是“月份结束后不到 20 天拉的，过了 20 天整份重拉一次”：两周一期时 11-05 拉的 10 月名单，下一期 11-19 才第 19 天，
+    再下一期已经是 12 月，整个 11 月都用没更新完的名单；没更新完的只是几个子类目，整份重拉（约 75 次）大多白拉。"""
+    period = str((current or {}).get("period") or "")
+    if len(period) != 6 or not (current or {}).get("complete"):
+        return []
+    return list(((state.get("monthly_lists") or {}).get("unsettled") or {}).get(f"{period[:4]}-{period[4:]}") or [])
 
 
 def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | None:
@@ -143,14 +138,14 @@ def ensure_discovery(vendor: Vendor, cfg: dict, state: dict, today) -> dict | No
         state["risers"] = None
     if pending and pending.get("scope_key") != key:
         state["discovery_pending"] = pending = None
-    if needs_refresh(current, cfg, today):
-        log.info(f"发现：{current['period']} 的名单是月初拉的（卖家精灵那时还没更新完），重新拉一次")
-        result = discovery.discover(vendor, cfg, current["period"], None)
-        if result and result["complete"]:
-            result["settled"], result["fetched_on"] = True, today.isoformat()
-            state["discovery"] = current = result
-        else:
-            log.warn("发现：重新拉名单时预算不够，先用原来的，下期再拉")
+    stale = unsettled_nodes(state, current) if current and current.get("period", "") >= target else []
+    if stale:
+        try:
+            done = discovery.refetch_nodes(vendor, cfg, current, stale)
+            current["refetched_on"] = today.isoformat()
+            log.info(f"发现：{current['period']} 的名单上次有 {len(stale)} 个子类目卖家精灵还没更新完，重拉了 {len(done)} 个")
+        except BudgetExhausted:
+            log.warn("发现：重拉没更新完的子类目时预算不够，先用原来的，下期再拉")
     if current and current.get("complete") and current["period"] >= target:
         if len(current.get("done_units") or []) < len(current.get("nodes") or []):
             try:  # 以前发现的名单还没有“按件数的头部”（持续热销门槛按件数排名用）：补上，每个子类目 1 次
@@ -255,7 +250,13 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         # 1. 发现（月度基线）+ 全市场名单（每期翻一遍，机会候选从这里初筛）+ 近 30 天榜单 / 上期爆款的相似款（默认关闭：全市场名单已经包括）
         disc = ensure_discovery(vendor, cfg, state, today)
         monthly_lists.record_discovery(state, disc)  # 月度发现的头部名单也是持续热销补判的当月名单
+        stale = monthly_lists.check_discovery(state, cfg, disc)  # 卖家精灵还没更新完的子类目：下期重拉
+        if stale:
+            names = {n["path"]: n.get("name_cn") or n.get("name") or n["path"] for n in disc["nodes"]}
+            log.warn(f"月度名单：{len(stale)} 个子类目的 {disc['period']} 名单卖家精灵还没更新完（一半以上商品的月销量和上个月一模一样）："
+                     + "、".join(names.get(p, p) for p in stale) + "，下期重拉")
         if disc and disc.get("nodes"):
+            monthly_lists.resettle(vendor, cfg, state, disc)  # 已经换了月份、当时还没更新完的往月名单
             try:
                 universe.run(vendor, cfg, state, disc["nodes"], today)
             except BudgetExhausted:
@@ -404,7 +405,8 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
                 "universe": len(uni.get("rows") or {}) if screened is not None else None,
                 "universe_pages": uni.get("pages") if screened is not None else None,
                 "universe_failed": len(uni.get("failed") or []) if screened is not None else None,
-                "tides": result.get("tides") or {}, "revision_check": result.get("revision_check")}
+                "tides": result.get("tides") or {}, "revision_check": result.get("revision_check"),
+                "unsettled": {k: list(v) for k, v in ((state.get("monthly_lists") or {}).get("unsettled") or {}).items() if v}}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
@@ -702,7 +704,8 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         # tides：下一期回看这期没追踪的商品时，按这期的品类大盘扣（previous_view）
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
-                                                         "universe", "universe_pages", "universe_failed", "young", "tides")},
+                                                         "universe", "universe_pages", "universe_failed", "young", "tides",
+                                                         "unsettled")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }
