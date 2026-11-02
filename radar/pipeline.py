@@ -390,7 +390,8 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     checked = 0
     if jobs and vendor.budget.remaining > 0:
         try:
-            checked = verify.run_checks(vendor, jobs, state, cfg, today)
+            checked = verify.run_checks(vendor, jobs, state, cfg, today,
+                                        as_ofs={i["asin"]: clock.parse_day(i.get("as_of")) or today for i in result["items"]})
         except (QuotaExhausted, McpUnavailable) as exc:
             log.warn(f"核查：{exc}，本期跳过")
         log.info(f"核查 {checked} 个可疑商品")

@@ -262,6 +262,11 @@ def plan_fetch(pool: list[str], state: dict, run_seq: int, cfg: dict, limit: int
 
 
 def remember_meta(rec: dict, row: dict | None) -> None:
+    # 元数据覆盖之前，把旧身份留在旧观测中；首次读取旧版状态也能保住上一期父体。
+    if rec.get("obs"):
+        for key in ("parent", "variations"):
+            if rec.get(key) is not None:
+                rec["obs"][-1].setdefault(key, rec[key])
     if not row:
         return
     for key in ("title", "brand", "image", "node", "node_name", "node_cn", "parent", "variations",
@@ -283,6 +288,9 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
 
     data = reply.data
     detail = data.get("asinDetail") or {}
+    for key in ("parent", "variations"):
+        if detail.get(key) is not None:
+            rec[key] = detail[key]
     series = build_daily(data.get("dailyItemList") or [])
     old = rec.get("series")
     rec["revision"] = {"run": run_seq, "pairs": revision_pairs(old, series)} if old and series else None
@@ -318,10 +326,15 @@ def fetch_one(vendor: Vendor, asin: str, state: dict, cfg: dict, run_seq: int,
     as_of = daily.as_of() if daily else None
     as_of_text = as_of.isoformat() if as_of else None
     ratings, rating = detail.get("ratings"), detail.get("rating")
-    if ratings is not None or rating is not None:
+    if as_of_text and (ratings is not None or rating is not None):
         obs = rec.setdefault("obs", [])
         entry = {"date": as_of_text, "run": run_seq, "ratings": ratings, "rating": rating}
-        if not obs or obs[-1].get("date") != as_of_text or obs[-1].get("ratings") != ratings:
+        entry.update({key: rec[key] for key in ("parent", "variations") if rec.get(key) is not None})
+        if obs and obs[-1].get("date") == as_of_text:
+            for key in ("rating", "ratings"):
+                if entry[key] is None:
+                    entry[key] = obs[-1].get(key)
+        if not obs or any(obs[-1].get(key) != entry.get(key) for key in ("date", "ratings", "rating", "parent", "variations")):
             obs.append(entry)
         del obs[:-24]
     return True

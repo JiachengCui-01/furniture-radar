@@ -25,16 +25,17 @@
 """
 from __future__ import annotations
 
+import math
 import random
 from datetime import date, timedelta
 from functools import lru_cache
 
-from .. import clock
+from .. import clock, evidence
 from ..series import Daily, find_pulses, sum_sales_between
 
 
 def previous_obs(rec: dict, as_of: date) -> dict | None:
-    for entry in reversed(rec.get("obs") or []):
+    for entry in reversed(evidence.observations(rec, as_of)):
         day = clock.parse_day(entry.get("date"))
         if day and day < as_of and entry.get("ratings") is not None:
             return entry
@@ -57,28 +58,47 @@ def ratings_jump(rec: dict, as_of: date) -> float | None:
     obs = rec.get("obs") or []
     if not obs:
         return None
-    current = obs[-1].get("ratings")
+    current = evidence.latest_observation(rec, as_of).get("ratings")
     prev = previous_obs(rec, as_of)
     if current is None or prev is None or not prev.get("ratings"):
         return None
     return (current - prev["ratings"]) / prev["ratings"]
 
 
-def merge_detected(rec: dict, disc_row: dict | None) -> bool:
-    """asin_detail 核查结果与之前记录相比，父体或变体数发生了变化。"""
-    check = (rec.get("checks") or {}).get("detail")
-    if not check:
-        return False
-    before_parent = (disc_row or {}).get("parent") or rec.get("parent")
-    before_vars = (disc_row or {}).get("variations") or rec.get("variations")
-    parent_changed = bool(check.get("parent") and before_parent and check["parent"] != before_parent)
-    vars_changed = bool(check.get("variations") and before_vars and
-                        abs(check["variations"] - before_vars) >= max(2, 0.3 * before_vars))
-    return parent_changed or vars_changed
+def merge_detected(rec: dict, disc_row: dict | None, as_of: date | None = None, *,
+                   today: date | None = None, base: dict | None = None) -> bool:
+    """先与评论对比期的父体快照比较；旧记录再用有效详情核查与当时元数据比较。"""
+    when = today or as_of
+    check = evidence.usable_check(rec, "detail", when)
+    after = evidence.current_family(rec, when)
+    before = base or (previous_obs(rec, as_of) if as_of else None) or {}
+    if check:
+        base_day = clock.parse_day(before.get("date"))
+        checked_day = clock.parse_day(check.get("as_of") or check.get("checked"))
+        fallback = check if base_day and checked_day and base_day >= checked_day else {
+            key: check.get("before_" + key) or (disc_row or {}).get(key) or rec.get(key)
+            for key in ("parent", "variations")}
+        before = {key: before.get(key) or fallback.get(key) for key in ("parent", "variations")}
+    return evidence.family_changed(before, after)
+
+
+def cumulative_sales(rec: dict, d: Daily, available: date, as_of: date) -> float | None:
+    """上架至判定日的累计销量：月度覆盖须完整；缺月时可用完整日数据补足。"""
+    months = {m[0]: m[1] for m in rec.get("months") or [] if len(m) > 1}
+    first, last = clock.period_of(available), clock.period_of(as_of)
+    values = []
+    while first <= last:
+        value = months.get(first[:4] + "-" + first[4:])
+        if value is None or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            return sum_sales_between(d, available - timedelta(days=1), as_of)
+        values.append(value)
+        first = clock.step_period(first, 1)
+    return float(sum(values))
 
 
 def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
-          node_median_rate: float | None, cfg: dict, event_days=(), *, relisted: bool = False) -> dict:
+          node_median_rate: float | None, cfg: dict, event_days=(), *, relisted: bool = False,
+          today: date | None = None) -> dict:
     """d 是完整的日数据（不去掉大促日）；event_days：大促日（events.detect），落在大促日的脉冲不计分；
     relisted：老品换链接，留评率和新品评论/销量比不使用继承评论计分；其他独立证据照常判断。"""
     signals: list[dict] = []
@@ -87,8 +107,14 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     def add(code: str, points: int, text: str) -> None:
         signals.append({"code": code, "points": points, "text": text})
 
+    when = today or as_of
+    if when is not None:
+        rec = evidence.at(rec, when, data_date=as_of)
+    else:
+        rec = {**rec, "checks": {}}  # 没有判定日期，不能证明核查仍有效。
     check = (rec.get("checks") or {}).get("review")
-    total = ((rec.get("obs") or [{}])[-1]).get("ratings")
+    current_obs = evidence.latest_observation(rec, as_of or when)
+    total = (disc_row or {}).get("ratings") if d is None else current_obs.get("ratings")
     if total is None:
         total = (disc_row or {}).get("ratings")
     # Vine：亚马逊给新品安排的测评（每个商品最多 vine_allowance 条，都在上架头几个月）。抽查过评论的按抽到的 Vine 比例算；
@@ -137,7 +163,6 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         _check_signals(rec, cfg, signals, tags)
         return _finish(signals, tags, cfg)
     as_of_idx = d.index_of(as_of)
-    current_obs = (rec.get("obs") or [{}])[-1]
     ratings = current_obs.get("ratings")
 
     # 2. 新品评论/销量比
@@ -145,11 +170,12 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     age = clock.days_between(available, as_of)
     if (age is not None and 0 <= age <= cfg["new_listing_days"] and ratings and ratings >= 20
             and not relisted):
-        launch = clock.month_key(available)
-        units = sum((m[1] or 0) for m in rec.get("months") or [] if m[0] >= launch)
+        units = cumulative_sales(rec, d, available, as_of)
         own = max(0, ratings - vine)
-        raw_flag |= bool(units > 0 and ratings / units >= cfg["new_listing_review_ratio"])
-        if units > 0 and own / units >= cfg["new_listing_review_ratio"]:
+        raw_flag |= bool(units is not None and units > 0 and ratings / units >= cfg["new_listing_review_ratio"])
+        if units is None:
+            tags.append("累计销量数据不足，新品评论比暂不计分")
+        if units is not None and units > 0 and own / units >= cfg["new_listing_review_ratio"]:
             ratio = own / units
             # 抽查评论能看到的近 60 天里，评论应该至少有（上架天数里平摊到 60 天的）一半；远少于这个数的，评论是继承来的
             if inherited(check, ratings * min(1.0, 60 / max(age, 1))):
@@ -169,11 +195,11 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     #    累计前 vine_allowance 条里新增的那部分当作可能是 Vine（抽查过的按抽到的 Vine 比例扣）；
     #    和留评率、新品评论/销量比是同一个证据（评论相对销量太多），它们已经计分时这一项只计 1 分
     prev = previous_obs(rec, as_of)
-    merged = merge_detected(rec, disc_row)
+    base = review_base(rec, as_of, int(cfg.get("review_base_days", 45))) or prev
+    merged = merge_detected(rec, disc_row, as_of, today=when, base=base)
     if merged:
         tags.append("变体合并")
     if prev and ratings is not None:
-        base = review_base(rec, as_of, int(cfg.get("review_base_days", 45))) or prev
         base_day = clock.parse_day(base["date"])
         raw_delta = ratings - base["ratings"]
         delta_units = sum_sales_between(d, base_day, as_of) if base_day else None
@@ -186,12 +212,15 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
             run_vine = 0
         delta_ratings = raw_delta - run_vine
         bar = max(cfg["run_review_ratio"], cfg["review_rate_mult"] * (node_median_rate or 0) / 100)
-        raw_flag |= bool(not merged and raw_delta >= cfg["min_new_reviews"] and (not delta_units or raw_delta / delta_units >= bar))
-        if delta_ratings >= cfg["min_new_reviews"] and not merged:
+        raw_flag |= bool(not merged and raw_delta >= cfg["min_new_reviews"] and delta_units is not None
+                         and (delta_units == 0 or raw_delta / delta_units >= bar))
+        if delta_ratings >= cfg["min_new_reviews"] and not merged and delta_units is None:
+            tags.append("销量区间不完整，评论增速暂不计分")
+        if delta_ratings >= cfg["min_new_reviews"] and not merged and delta_units is not None:
             once = any(sig["code"] in ("review_rate", "new_listing_reviews") for sig in signals)
             vine_note = f"，已扣掉 {run_vine} 条可能的 Vine 评论" if run_vine else ""
             once_note = "；和留评率 / 新品评论比是同一个证据，这一项只计 1 分" if once else ""
-            if not delta_units:
+            if delta_units == 0:
                 add("reviews_without_sales", 1 if once else 2,
                     f"{base['date']} 以来评论 +{int(delta_ratings)} 条，同期几乎没有销量{vine_note}{once_note}")
             elif delta_ratings / delta_units >= bar:
@@ -238,10 +267,11 @@ def _check_signals(rec: dict, cfg: dict, signals: list[dict], tags: list[str]) -
                         "text": f"近 {burst['span']} 天抽到的 {check['n']} 条评论里 {burst['top3']} 条集中在 3 天"
                                 f"（{', '.join(check.get('burst_days', [])[:3])}），"
                                 f"随机分布时 3 天最多约 {burst['usual']} 条"})
-    if check.get("unverified_share", 0) >= cfg["unverified_share"]:
+    unverified = check.get("unverified_share")
+    if unverified is not None and check.get("verified_n", check["n"]) >= 10 and unverified >= cfg["unverified_share"]:
         signals.append({"code": "unverified", "points": 1,
                         "text": f"抽查评论中非验证购买占 {check['unverified_share']:.0%}"})
-    if check.get("vine_share", 0) >= 0.3:
+    if check.get("vine_share") is not None and check["vine_share"] >= 0.3:
         tags.append("Vine 评论多")
 
 

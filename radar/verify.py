@@ -9,18 +9,23 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 
-from . import analyze, clock, log, materials, narrative
+from . import analyze, clock, evidence, log, materials, narrative
 from .detect import directions
 from .detect.fakehot import ratings_jump
 from .vendor import BudgetExhausted, Vendor
 
-RECHECK_DAYS = 14
+RECHECK_DAYS = evidence.RECHECK_DAYS
 
 
-def _truthy(value) -> bool:
+def _truthy(value) -> bool | None:
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in ("true", "1", "yes", "y")
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y"):
+        return True
+    if text in ("false", "0", "no", "n"):
+        return False
+    return None
 
 
 REVIEW_WINDOW = 60
@@ -42,6 +47,8 @@ def summarize_reviews(rows: list[dict], as_of: date, total: int | None = None) -
     top = per_day.most_common(3)
     truncated = total > len(rows) if total is not None else len(rows) >= REVIEW_PAGE
     span = max(7, (as_of - min(day for day, _ in recent)).days + 1) if truncated else REVIEW_WINDOW
+    verified = [value for _, r in recent if (value := _truthy(r.get("verified"))) is not None]
+    vine = [value for _, r in recent if (value := _truthy(r.get("vine"))) is not None]
     return {
         "n": n,
         "top3": sum(c for _, c in top),
@@ -49,15 +56,16 @@ def summarize_reviews(rows: list[dict], as_of: date, total: int | None = None) -
         "total": total,
         "burst_share": round(sum(c for _, c in top) / n, 3),
         "burst_days": [d.isoformat() for d, _ in top],
-        "unverified_share": round(sum(1 for _, r in recent if not _truthy(r.get("verified"))) / n, 3),
-        "vine_share": round(sum(1 for _, r in recent if _truthy(r.get("vine"))) / n, 3),
+        "verified_n": len(verified),
+        "vine_n": len(vine),
+        "unverified_share": round(sum(v is False for v in verified) / len(verified), 3) if len(verified) >= 10 else None,
+        "vine_share": round(sum(vine) / n, 3) if len(vine) == n else None,
         "five_star_share": round(sum(1 for _, r in recent if str(r.get("star")).strip() == "5") / n, 3),
     }
 
 
 def _fresh(check: dict | None, today: date) -> bool:
-    day = clock.parse_day((check or {}).get("checked"))
-    return bool(day and (today - day).days < RECHECK_DAYS)
+    return evidence.fresh(check, today)
 
 
 def named(items: list[dict], cfg: dict, spare: int = 2) -> set[str]:
@@ -90,7 +98,7 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
         jump = ratings_jump(rec, as_of) if as_of else None
         if jump is not None and jump >= fcfg["merge_jump"] and not _fresh(checks.get("detail"), today):
             jobs.append((1000 + jump, sales, item["asin"], "detail", False))
-        if _fresh(checks.get("review"), today):
+        if evidence.usable_check(rec, "review", today):
             continue
         # 评论核查的先后（名额不够时先查前面的）：① 可疑的（异常分 ≥ 疑似线 − 1，且是爆火 / 潜力 / 异常 / 持续热销）；
         # ② 报告点名的（named：本期要点、钉钉里的爆火 / 潜力，前几个开发方向的参考商品候选）——团队照着去看的先查；
@@ -121,21 +129,27 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
     return [(asin, kind) for _, _, asin, kind, _ in kept]
 
 
-def run_checks(vendor: Vendor, jobs: list[tuple[str, str]], state: dict, cfg: dict, today: date) -> int:
+def run_checks(vendor: Vendor, jobs: list[tuple[str, str]], state: dict, cfg: dict, today: date, *,
+               as_ofs: dict[str, date] | None = None) -> int:
     done = 0
     for asin, kind in jobs:
         rec = state["asins"].setdefault(asin, {"asin": asin})
         checks = rec.setdefault("checks", {})
         try:
             if kind == "review":
-                as_of = clock.parse_day(((rec.get("obs") or [{}])[-1]).get("date")) or today
+                as_of = (as_ofs or {}).get(asin) or today
                 start = datetime.combine(as_of - timedelta(days=60), time.min, tzinfo=timezone.utc)
+                end = datetime.combine(as_of, time.max, tzinfo=timezone.utc)
                 reply = vendor.call("review", vendor.args(
                     "review", nested=False, marketplace=cfg["marketplace"], asin=asin, size=50, page=1,
-                    startTimestamp=int(start.timestamp() * 1000)), purpose="评论核查")
+                    startTimestamp=int(start.timestamp() * 1000), endTimestamp=int(end.timestamp() * 1000)), purpose="评论核查")
                 if reply.ok:
                     total = reply.data.get("total") if isinstance(reply.data, dict) else None
-                    checks["review"] = {**summarize_reviews(reply.rows, as_of, total), "checked": today.isoformat()}
+                    summary = summarize_reviews(reply.rows, as_of, total)
+                    if not summary["n"] and (reply.rows or total != 0):
+                        continue  # 不能把窗口外返回值被全部过滤，当作完成了有效抽查。
+                    checks["review"] = {**summary, "total": total, "as_of": as_of.isoformat(),
+                                        "checked": today.isoformat(), **evidence.current_family(rec, today)}
                     done += 1
             else:
                 reply = vendor.call("asin_detail", vendor.args("asin_detail", nested=False,
@@ -146,10 +160,13 @@ def run_checks(vendor: Vendor, jobs: list[tuple[str, str]], state: dict, cfg: di
                     if not rec.get("amazon_material"):
                         materials.remember(rec, data, today)
                     checks["detail"] = {
+                        **{"before_" + key: (evidence.latest_observation(rec, today - timedelta(days=1)).get(key)
+                                             or rec.get(key)) for key in ("parent", "variations")},
                         "parent": data.get("parent"),
                         "variations": data.get("variations"),
                         "ratings": data.get("ratings"),
                         "checked": today.isoformat(),
+                        "as_of": today.isoformat(),
                     }
                     done += 1
         except BudgetExhausted:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from datetime import date
 
-from . import clock, monthly_lists, universe
+from . import clock, evidence, monthly_lists, universe
 from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
@@ -261,6 +261,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     th = cfg["thresholds"]
     full = Daily.from_record(rec.get("series"))
     as_of = full.as_of() if full else None
+    rec = evidence.at(rec, today, data_date=as_of)
     idx = full.index_of(as_of) if full and as_of else None
     node = rec.get("node") or (disc_row or {}).get("node")
     st = stats.get(node, {})
@@ -283,7 +284,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     potential, rising, mom, faded = g["potential"], g["rising"], g["mom"], g["faded"]
     hot = evaluate_hot(rec.get("months") or [], d, as_of, st.get("threshold"), th["hot"])
     fake = fakehot.score(rec, full, as_of, disc_row, st.get("median_rate"), th["fake"], events,
-                         relisted=bool(relist))
+                         relisted=bool(relist), today=today)
 
     low = low_rating(rating, n_ratings, th)
     if low:  # 评分不达标：不进任何榜单，由排在后面的商品依次补位
@@ -566,7 +567,7 @@ def data_tags(item: dict, rec: dict, now_row: dict | None, month_row: dict | Non
         item["tags"].append(f"最近 28 天有 {gaps} 天没有日数据（断货或数据缺失，判断可能不准）")
 
 
-def truncated_rec(rec: dict, upto: date) -> dict | None:
+def truncated_rec(rec: dict, upto: date, *, judged_on: date | None = None) -> dict | None:
     """这个商品“截至 upto 那天”的样子：日数据、评论观测、月销量都只留到那天（月销量留到那天所在的月份）。
     那天之前没有日数据的返回 None。"""
     d = Daily.from_record(rec.get("series"))
@@ -581,7 +582,11 @@ def truncated_rec(rec: dict, upto: date) -> dict | None:
         return None
     month = clock.month_key(upto)
     obs = [o for o in rec.get("obs") or [] if (clock.parse_day(o.get("date")) or upto) <= upto]
-    return {**rec, "series": series, "obs": obs, "months": [m for m in rec.get("months") or [] if str(m[0]) <= month]}
+    cut = {**rec, "series": series, "obs": obs,
+           "months": [m for m in rec.get("months") or [] if str(m[0]) <= month]}
+    last = evidence.latest_observation(cut, upto)
+    return evidence.at({**cut, **{key: last[key] for key in ("parent", "variations") if last.get(key) is not None}},
+                       judged_on or upto, data_date=upto)
 
 
 def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, then: date, data_then: date,
@@ -595,7 +600,7 @@ def retro_labels(state: dict, disc: dict | None, asins: list[str], cfg: dict, th
     products = {**(extra_rows or {}), **((disc or {}).get("products") or {})}
     out = {}
     for asin in asins:
-        cut = truncated_rec(state["asins"].get(asin) or {}, data_then)
+        cut = truncated_rec(state["asins"].get(asin) or {}, data_then, judged_on=then)
         if cut is None:
             continue
         node = cut.get("node") or (products.get(asin) or {}).get("node")
@@ -815,7 +820,8 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
         if not hot:
             continue
         rec = dict(state["asins"].get(p["asin"]) or {})
-        fake = fakehot.score(rec, None, None, p, stats[p["node"]].get("median_rate"), th["fake"])
+        fake = fakehot.score(rec, None, None, p, stats[p["node"]].get("median_rate"), th["fake"],
+                             today=today or data_date)
         # 异常分够疑似线的列进异常信号（和追踪商品一样，符合持续热销条件的标“长期头部”），不再悄悄从持续热销里去掉
         label = "fake" if fake["level"] else "hot"
         title = clean_text(r.get("title") or p.get("title") or p["asin"])

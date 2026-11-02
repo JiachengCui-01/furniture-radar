@@ -317,11 +317,12 @@ def find_pulses(d: Daily, as_of_idx: int, lookback: int, mult: float, min_sales:
 
 
 def sum_sales_between(d: Daily, after: date, upto: date) -> float | None:
-    """(after, upto] 区间内的销量合计。"""
+    """(after, upto] 完整区间销量；缺失或超出历史范围返回未知，明确零销量返回 0。"""
     lo = d.index_of(after) + 1
     hi = d.index_of(upto)
-    if hi < 0 or lo > hi:
+    if lo < 0 or hi >= len(d.sales) or hi < 0 or lo > hi:
         return None
-    lo = max(lo, 0)
-    values = [v for v in d.sales[lo:hi + 1] if v is not None]
-    return float(sum(values)) if values else None
+    values = d.sales[lo:hi + 1]
+    if any(v is None or not math.isfinite(v) or v < 0 for v in values):
+        return None
+    return float(sum(values))
