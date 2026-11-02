@@ -16,7 +16,7 @@ from collections import Counter
 import httpx
 
 from . import log
-from .detect.design import DESIGN_DIMENSIONS, LEXICON, VISION_FUNCTIONS, brand_key
+from .detect.design import DESIGN_DIMENSIONS, LEXICON, VISION_FUNCTIONS, known_brand_key
 
 
 def _vocab() -> str:
@@ -202,7 +202,8 @@ def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim:
                 continue
             share = n / len(f_tagged)
             ref_share = cr.get(label, 0) / len(r_tagged) if r_tagged else None
-            brands = len({brand_key(item) for item, v in f_tagged if label in set(v["tags"].get(dim, []))})
+            brands = len({key for item, v in f_tagged if label in set(v["tags"].get(dim, []))
+                          and (key := known_brand_key(item)) is not None})
             rows.append({"label": label, "focus": n, "focus_share": round(share, 3), "brands": brands,
                          "reference": cr.get(label, 0),
                          "reference_share": None if ref_share is None else round(ref_share, 3),

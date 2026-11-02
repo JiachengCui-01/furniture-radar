@@ -261,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", default="运行")
     p.add_argument("--published", action="store_true", help="报告已经生成（之后的步骤出错）")
     p.add_argument("--saved", action="store_true", help="没出报告，但中止前拉到的数据已保存")
-    p.add_argument("--reason", default="", help="中止的原因：quota / outage / thin")
+    p.add_argument("--reason", default="", help="中止的原因：quota / outage / thin / stale / crash")
     p.add_argument("--run-url", default="")
     p.set_defaults(func=cmd_alert)
 

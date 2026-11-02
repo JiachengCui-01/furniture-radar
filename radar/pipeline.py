@@ -19,6 +19,7 @@ from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
 from .report import shell
+from .series import Daily
 from .mcp_client import McpUnavailable
 from .vendor import Budget, BudgetExhausted, QuotaExhausted, Transport, Vendor, mcp_transport
 
@@ -32,7 +33,7 @@ REMIND_DAYS = 7  # 一直被同一个原因挡住时，隔这么多天再提醒�
 class RunAborted(RuntimeError):
     """核心数据没拉完就中止（账户额度用完 / 卖家精灵一直连不上 / 拉到的日数据太少），或拉完以后程序出错：不出报告，
     但已拉到的数据和调用次数已经存进 site。
-    kind：quota / outage / thin / crash；repeat：同一个原因上次已经提醒过、还不到 REMIND_DAYS 天（这次不必再发钉钉告警；
+    kind：quota / outage / thin / stale / crash；repeat：同一个原因上次已经提醒过、还不到 REMIND_DAYS 天（这次不必再发钉钉告警；
     程序出错每次都提醒，每次重跑都要花调用）。"""
 
     def __init__(self, reason: str, calls: int, kind: str = "outage", repeat: bool = False):
@@ -335,6 +336,16 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     if refreshed < max(1, share * (len(plan) + already)):
         raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
                      f"日数据只刷新了 {refreshed}/{len(plan) + already} 个（要 ≥{share:.0%}），数据不够，不出这一期", "thin", data=_fetched(vendor))
+
+    dailies = [d for asin in pool if (d := Daily.from_record((state["asins"].get(asin) or {}).get("series"))) is not None]
+    latest = analyze.latest_data_date(dailies)
+    if latest is None or (today - latest).days > cfg["thresholds"]["stale_days"]:
+        for asin in pool:
+            if state["asins"].get(asin):
+                state["asins"][asin]["stale_fetch"] = True  # 下次重拉，不能当成“本期已拉过”继续复用
+        why = f"日数据最新只到 {latest.isoformat()}，距本期 {today.isoformat()} 已 {(today - latest).days} 天" if latest else "日数据没有可用日期"
+        raise _abort(site, master, state, month, used_this_month, vendor.billable_calls, today,
+                     f"{why}，数据未更新，不出这一期", "stale", data=_fetched(vendor))
 
     # 拉完数据以后（补充查询、判定、核查、报告、存状态）出错：已拉到的数据和花掉的调用次数照样存下来（工作流照样保存），
     # 下次运行接着用、不重拉日数据，本月调用数也不少记。以前只有“中止”才保存，别的报错整期白跑：调用次数不记账，

@@ -13,6 +13,41 @@ from radar.demo import SyntheticWorld
 START = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
 
 
+def test_stale_batch_blocks_publication_then_refetches_and_recovers(cfg, master_key, tmp_path):
+    cfg["budget"].update(stable_refresh_every=1, per_run=400, bootstrap_run=400)
+    cfg["pool"].update(TRACK_ALL)
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key)
+    first = pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
+    master = crypto.parse_master_key(master_key)
+    before = store.load(tmp_path, master)
+    with pytest.raises(pipeline.RunAborted) as stopped:
+        pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=14))
+    assert stopped.value.kind == "stale"
+    stale = store.load(tmp_path, master)
+    assert stale["reports"] == before["reports"] == [first.report_id]
+    assert stale["last_success"] == before["last_success"] and stale["run_seq"] == before["run_seq"]
+    assert sum(stale["calls"].values()) > sum(before["calls"].values())
+    assert any(rec.get("stale_fetch") for rec in stale["asins"].values())
+    assert stale["unpublished"]["kind"] == "stale"
+    calls = len(world.calls)
+    retried = []
+
+    def recovering_transport(tool, arguments):
+        if tool == "asin_prediction":
+            retried.append((arguments.get("request") or arguments)["asin"])
+        return world(tool, arguments)
+
+    world.advance(15)
+    recovered = pipeline.run(cfg, secrets, tmp_path, transport=recovering_transport, now=START + timedelta(days=15))
+    after = store.load(tmp_path, master)
+    assert recovered.published and after["run_seq"] == before["run_seq"] + 1
+    assert "asin_prediction" in world.calls[calls:]
+    assert "unpublished" not in after
+    assert retried and all(not after["asins"][asin].get("stale_fetch") for asin in retried)
+    assert any(stale["asins"].get(asin, {}).get("stale_fetch") for asin in retried)
+
+
 @pytest.fixture
 def world_run(cfg, master_key, tmp_path):
     cfg["budget"].update(stable_refresh_every=1, per_run=400, bootstrap_run=400)
@@ -724,7 +759,7 @@ def test_previous_run_is_replayed_for_items_not_tracked_last_time(world_run, mas
 def test_a_crash_after_fetching_saves_the_data_and_the_next_run_reuses_it(cfg, master_key, tmp_path, monkeypatch, capsys):
     """拉完数据以后程序出错（判定、写报告……）：不出报告，但已拉到的日数据和花掉的调用次数照样存下来；
     这期写了一半的报告删掉、往期的期数和报告列表不变；告警每次都发（不按 7 天去重）；
-    日志里只有出错的类型和位置，没有异常信息（可能含 ASIN）。第二天接着用已拉到的日数据，不整期重拉。"""
+    日志里只有出错的类型和位置，没有异常信息（可能含 ASIN）。第二天修复后接着用仍在时效内的日数据，不整期重拉。"""
     from radar import analyze
 
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
@@ -751,7 +786,7 @@ def test_a_crash_after_fetching_saves_the_data_and_the_next_run_reuses_it(cfg, m
     assert fetched > 50
     monkeypatch.setattr(analyze, "sections", real)
     before = sum(1 for c in world.calls if c == "asin_prediction")
-    out = pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=2))
+    out = pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=1))
     assert out.published
     again = sum(1 for c in world.calls if c == "asin_prediction") - before
     assert again < fetched / 2  # 只补拉上次没拉到的（和往期上榜的），不是整期重拉

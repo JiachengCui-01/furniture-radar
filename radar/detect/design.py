@@ -162,9 +162,14 @@ def main_material(title: str) -> str:
     return "未注明"
 
 
+def known_brand_key(row: dict) -> str | None:
+    """独立品牌证据只使用已知品牌；缺失不通过 ASIN 补成一个新品牌。"""
+    return (row.get("brand") or "").strip().lower() or None
+
+
 def brand_key(row: dict) -> str:
-    """同一品牌的多条链接算一个品牌；没有品牌的商品各算一个。"""
-    return (row.get("brand") or "").strip().lower() or f"asin:{row.get('asin') or id(row)}"
+    """需要保留未知品牌商品的分组键；独立品牌支持数必须用 known_brand_key。"""
+    return known_brand_key(row) or f"asin:{row.get('asin') or id(row)}"
 
 
 def extract(title: str) -> dict[str, set[str]]:
@@ -183,7 +188,8 @@ def shares(baseline: list[dict], focus: list[dict]) -> dict[str, dict[str, dict]
     for dim in LEXICON:
         cf = Counter(label for f in feats_f for label in f[dim])
         cb = Counter(label for f in feats_b for label in f[dim])
-        brands = {label: len({brand_key(r) for r, f in zip(focus, feats_f) if label in f[dim]}) for label in cf}
+        brands = {label: len({key for r, f in zip(focus, feats_f)
+                             if label in f[dim] and (key := known_brand_key(r)) is not None}) for label in cf}
         out[dim] = {label: {"label": label, "count": n, "share": round(n / nf, 3), "brands": brands[label],
                             "baseline_share": round(cb.get(label, 0) / nb, 3)} for label, n in cf.items()}
     return out

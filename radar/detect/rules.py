@@ -178,31 +178,24 @@ def _restock(d: Daily, as_of_idx: int, best: dict, cfg: dict, oos_bsr: float | N
     return {"zero_days": zero_days, "earlier_avg": round(earlier_avg, 1)}
 
 
-def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = None) -> dict | None:
-    """d 已去掉大促日（analyze.evaluate 里做）。对比期里断货的日子（BSR ≥ oos_bsr）不算进之前的水平。"""
-    best = None
-    for window in cfg["windows"]:
-        m = surge_metrics(d, window, cfg["base_days"], as_of_idx, oos_bsr)
-        if not m:
-            continue
-        if m["base_avg"] is None:
-            continue  # 没有基准证据不能认作从零爆发；新品仍在观察中提示起量
-        from_zero = m["base_avg"] < 0.5
-        volume_ok = m["recent_avg"] >= cfg["min_daily_sales"]
-        bsr_ok = m["bsr_ratio"] is not None and m["bsr_ratio"] <= cfg["bsr_ratio"]
-        if from_zero:
-            bsr_ok = bsr_ok or m["base_bsr"] is None
-            sales_ok = volume_ok
-        else:
-            sales_ok = m["sales_ratio"] is not None and m["sales_ratio"] >= cfg["sales_ratio"]
-        if not (volume_ok and bsr_ok and sales_ok):
-            continue
-        ratio = m["sales_ratio"] if m["sales_ratio"] is not None else 5.0
-        strength = min(ratio, 10.0) * math.log1p(m["recent_avg"])
-        if best is None or strength > best["strength"]:
-            best = {**m, "strength": round(strength, 3), "from_zero": from_zero}
-    if best is None:
+def _surge_window(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None, window: int) -> dict | None:
+    """单个窗口独立计算量、排名、断货及形态，不提前丢弃另一个窗口。"""
+    m = surge_metrics(d, window, cfg["base_days"], as_of_idx, oos_bsr)
+    if not m or m["base_avg"] is None:
         return None
+    from_zero = m["base_avg"] < 0.5
+    volume_ok = m["recent_avg"] >= cfg["min_daily_sales"]
+    bsr_ok = m["bsr_ratio"] is not None and m["bsr_ratio"] <= cfg["bsr_ratio"]
+    if from_zero:
+        bsr_ok = bsr_ok or m["base_bsr"] is None
+        sales_ok = volume_ok
+    else:
+        sales_ok = m["sales_ratio"] is not None and m["sales_ratio"] >= cfg["sales_ratio"]
+    if not (volume_ok and bsr_ok and sales_ok):
+        return None
+    ratio = m["sales_ratio"] if m["sales_ratio"] is not None else 5.0
+    strength = min(ratio, 10.0) * math.log1p(m["recent_avg"])
+    best = {**m, "strength": round(strength, 3), "from_zero": from_zero}
 
     restock = _restock(d, as_of_idx, best, cfg, oos_bsr)
     if restock:
@@ -239,6 +232,20 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
         "base_days": cfg["base_days"],
         "price_driven": price_driven,
     }
+
+
+def surge_candidates(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = None) -> list[dict]:
+    """所有量和排名达标的窗口，按强度排序；后续业务条件须逐窗口筛选。"""
+    candidates = [result for window in cfg["windows"]
+                  if (result := _surge_window(d, as_of_idx, cfg, oos_bsr, window)) is not None]
+    return sorted(candidates, key=lambda result: -result["strength"])
+
+
+def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = None) -> dict | None:
+    """选形态达标的最强窗口；均不达标时保留最强窗口的诊断依据。大盘等业务条件在 analyze 逐窗口判断。"""
+    candidates = surge_candidates(d, as_of_idx, cfg, oos_bsr)
+    return next((result for result in candidates if result["kind"] and not result["restock"]),
+                candidates[0] if candidates else None)
 
 
 def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_threshold: float | None,

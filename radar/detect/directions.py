@@ -44,7 +44,7 @@ from collections import Counter
 from .. import shipping, vision
 from ..analyze import display_name, increment, monthly_sales  # 增量、月销售额的口径见上面（突然爆火、潜力两个板块也按增量排）
 from . import design
-from .design import brand_key
+from .design import brand_key, known_brand_key
 
 DIMENSIONS = ("风格", "造型", "工艺", "颜色", "功能卖点")
 VAGUE_MATERIALS = ("未注明", "木质（未注明）", "其他")
@@ -74,7 +74,7 @@ def _median(values: list[float]) -> float:
 
 
 def _n_brands(rows: list[dict]) -> int:
-    return len({brand_key(i) for i in rows if (i.get("brand") or "").strip()})
+    return len({key for i in rows if (key := known_brand_key(i)) is not None})
 
 
 def _feature_rates(rows: list[dict], state: dict, use_vision: bool) -> tuple[dict, dict]:
@@ -84,8 +84,8 @@ def _feature_rates(rows: list[dict], state: dict, use_vision: bool) -> tuple[dic
     """
     groups: dict[str, list[dict]] = {}
     for item in rows:
-        if (item.get("brand") or "").strip():
-            groups.setdefault(brand_key(item), []).append(_features(item, state, use_vision))
+        if (key := known_brand_key(item)) is not None:
+            groups.setdefault(key, []).append(_features(item, state, use_vision))
     counts, shares = {}, {}
     for dim in DIMENSIONS:
         support, weighted = Counter(), Counter()
@@ -131,7 +131,7 @@ def ref_candidates(rows: list[dict], n: int = 2) -> list[dict]:
     refs: list[dict] = []
     for item in rows:
         if len(refs) < n and not (item.get("fake") or {}).get("score") \
-                and (item.get("brand") or "").strip() \
+                and known_brand_key(item) is not None \
                 and brand_key(item) not in {brand_key(r) for r in refs}:
             refs.append(item)
     return refs
@@ -176,9 +176,9 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
         # 每个品牌：它的增长商品里任何一个有就算这个品牌有
         by_brand: dict[str, dict[str, set[str]]] = {}
         for item in rows:
-            if not (item.get("brand") or "").strip():
+            if (key := known_brand_key(item)) is None:
                 continue
-            have = by_brand.setdefault(brand_key(item), {dim: set() for dim in (*DIMENSIONS, "主材质")})
+            have = by_brand.setdefault(key, {dim: set() for dim in (*DIMENSIONS, "主材质")})
             for dim, labels in _features(item, state, use_vision).items():
                 have[dim] |= labels
             have["主材质"].add(item.get("material") or "未注明")

@@ -9,8 +9,8 @@ from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
-from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
-                           momentum, rating_floor, relist_ramp, relist_text, relisted)
+from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, low_rating,
+                           momentum, rating_floor, relist_ramp, relist_text, relisted, surge_candidates)
 from .series import Daily, baseline_average, closed_months, mean, median
 
 def display_name(brand: str, title: str) -> str:
@@ -134,6 +134,10 @@ def _last(values: list):
     return None
 
 
+def latest_data_date(dailies: list[Daily]) -> date | None:
+    return max((day for d in dailies if (day := d.as_of()) is not None), default=None)
+
+
 def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dict, st: dict, th: dict,
                   stale: bool, relist: dict | None = None, age: int | None = None, tide: float | None = None) -> dict:
     """突然爆火（及断货恢复 / 新品起量 / 形态不稳）、潜力、上升中、回落：都在同一份日数据上判断。
@@ -145,33 +149,47 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
           回测（2025-11~2026-09 每周回放，1,778 次突然爆火）去掉 14%，去掉的之后 28 天 78% 保持住、留下的 88%，12 月 60% / 77%。
           从零起量的（新品爆发 / 老链接重新起量）没有对比期的倍数，不扣。"""
     oos = th.get("out_of_stock_bsr")
-    surge = evaluate_surge(d, idx, th["surge"], oos) if idx is not None else None
-    restock = None
-    if surge and surge.get("restock"):
-        restock, surge = surge, None
-    if surge and surge.get("from_zero") and relist:
-        surge = None  # “从零起量”只是新子体开始卖，销量是从老链接转过来的
+    candidates = surge_candidates(d, idx, th["surge"], oos) if idx is not None else []
     max_new = th["surge"].get("new_listing_max_age_days")
-    revived = bool(surge and surge.get("from_zero") and max_new is not None and (age is None or age > max_new))
-    new_ramp = None
-    if surge and surge.get("from_zero") and not surge.get("pulse"):
-        sc = th["surge"]
-        node_daily = (st.get("threshold") or 0) / 30
-        need = max(sc["new_listing_min_daily"], sc["new_listing_node_share"] * node_daily)
-        if surge["recent_avg"] < need:
-            new_ramp, surge = surge, None
-    if surge and revived and surge.get("kind"):
-        surge = {**surge, "kind": "老链接重新起量"}
-    unshaped = None
-    if surge and not surge["kind"]:  # 不符合任何一种爆火形态
-        unshaped, surge = surge, None
-    # 跑赢大盘（突然爆火）：先判，扣掉以后不算爆火的，接着看够不够上升中
+    sc = th["surge"]
+    need_new = max(sc["new_listing_min_daily"], sc["new_listing_node_share"] * (st.get("threshold") or 0) / 30)
     tide_lost = []
     need_surge = th["surge"]["sales_ratio"]
-    if surge and tide and tide > 1 and not surge.get("from_zero") and surge.get("sales_ratio") is not None \
-            and surge["sales_ratio"] / tide < need_surge - 1e-9:
-        tide_lost.append(("突然爆火", surge["sales_ratio"], need_surge))
-        surge = None
+    surge = restock = new_ramp = unshaped = None
+    diagnostic = None
+    for candidate in candidates:
+        reason = None
+        if candidate.get("restock"):
+            reason = "restock"
+        elif candidate.get("from_zero") and relist:
+            reason = "relist"
+        elif not candidate.get("kind"):
+            reason = "unshaped"
+        elif candidate.get("from_zero") and candidate["recent_avg"] < need_new:
+            reason = "new_ramp"
+        elif tide and tide > 1 and not candidate.get("from_zero") \
+                and candidate["sales_ratio"] / tide < need_surge - 1e-9:
+            reason = "tide"
+        if reason:
+            if diagnostic is None:
+                diagnostic = (reason, candidate)
+            continue
+        surge = candidate
+        if candidate.get("from_zero") and max_new is not None and (age is None or age > max_new):
+            surge = {**candidate, "kind": "老链接重新起量"}
+        break
+    # 任一窗口走完所有条件即可；都不成立时才展示最强窗口的失败依据。
+    if surge is None and diagnostic is not None:
+        reason, candidate = diagnostic
+        if reason == "restock":
+            restock = candidate
+        elif reason == "new_ramp":
+            new_ramp = candidate
+        elif reason == "unshaped":
+            unshaped = candidate
+        elif reason == "tide":
+            tide_lost.append(("突然爆火", candidate["sales_ratio"], need_surge))
+    revived = bool((surge or new_ramp or {}).get("from_zero") and max_new is not None and (age is None or age > max_new))
     # 断货恢复：对比期多半断货、更早之前卖得和现在差不多，“涨”只是恢复供货——不算爆火，也不算潜力 / 上升中
     potential = (evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
                  if idx is not None and not relist and not restock else None)
@@ -237,7 +255,7 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
 
 def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
              data_date: date | None = None, events=frozenset(), tide: float | None = None) -> dict:
-    """data_date：本期日数据的最新日期（所有追踪商品里最晚的一天），“数据陈旧”和它比；
+    """data_date：本期日数据的最新日期（所有追踪商品里最晚的一天），“数据陈旧”与它和本期业务日期中较晚者比较；
     events：大促日（detect/events.py），爆火 / 潜力 / 上升中 / 回落 / 持续热销都在去掉这些天的日数据上判断；
     tide：所在子类目的大盘倍数（universe.node_tide），潜力、上升中要跑赢它（_judge_growth）。"""
     th = cfg["thresholds"]
@@ -246,7 +264,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     idx = full.index_of(as_of) if full and as_of else None
     node = rec.get("node") or (disc_row or {}).get("node")
     st = stats.get(node, {})
-    stale = as_of is None or ((data_date or today) - as_of).days > th["stale_days"]
+    # today 是本次判定的业务日期；历史回看及重生成传原报告日期，不使用机器当前日期。
+    stale = as_of is None or (max(data_date or today, today) - as_of).days > th["stale_days"]
     d = full.without(events) if full is not None and events else full
     rating, n_ratings = current_rating(rec, disc_row)
     age = clock.days_between(clock.parse_day(rec.get("available")), as_of or today)
@@ -468,7 +487,7 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     recs = [(asin, state["asins"][asin]) for asin in pool
             if (state["asins"].get(asin) or {}).get("series")]
     dailies = [d for d in (Daily.from_record(rec["series"]) for _, rec in recs) if d is not None]
-    data_date = max((day for day in (d.as_of() for d in dailies) if day), default=None)
+    data_date = latest_data_date(dailies)
     ev = events_mod.detect(dailies, cfg["thresholds"]["events"], cfg.get("deal_windows") or [])
     # 近几天排名普遍大幅提升（大促、圣诞后）：这几天的销量卖家精灵还没修订，报告和钉钉里提示（不改判定，见 events.bsr_lift）
     ev["lift"] = events_mod.bsr_lift(dailies, cfg["thresholds"]["events"], data_date)
@@ -610,7 +629,7 @@ def recent_inflation(dailies: list[Daily], events, window: int, back: int = 14) 
             return None
         return (sum(a) / len(a)) / (sum(b) / len(b))
 
-    data_date = max((d.as_of() for d in dailies if d.as_of() is not None), default=None)
+    data_date = latest_data_date(dailies)
     if data_date is None:
         return None
     pairs = []

@@ -106,7 +106,7 @@ def test_vision_tags_are_cached(cfg):
     assert vision.tag_items(items, state, cfg, "key", client=client) == 0  # 图片没变：不再调用
     assert calls == {"img": 2, "llm": 2}
     summary = vision.summarize(items, [], state)
-    assert summary["dimensions"]["材质"][0] == {"label": "泰迪绒/羊羔绒", "focus": 2, "focus_share": 1.0, "brands": 2,
+    assert summary["dimensions"]["材质"][0] == {"label": "泰迪绒/羊羔绒", "focus": 2, "focus_share": 1.0, "brands": 0,
                                               "reference": 0, "reference_share": None, "distinct": False}
     # 有持续热销对照时，“比热销多见”的特征排前面并标出
     state["asins"]["H1"] = {"vision": {"image": "x", "summary": "", "tags": {"材质": ["人造板"], "造型": ["弧形曲线"]}}}
