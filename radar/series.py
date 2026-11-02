@@ -199,12 +199,12 @@ def log_growth(values: list) -> float | None:
 # ---------------------------------------------------------------- 月度 ----
 
 def closed_months(months: list, as_of: date | None) -> list[tuple[str, float]]:
-    """去掉 as_of 所在的未完结月份，返回 [(yyyy-mm, 月销量)]，按时间升序。"""
+    """只取 as_of 之前已经结束的月份，返回 [(yyyy-mm, 月销量)]，按时间升序。"""
     current = clock.month_key(as_of) if as_of else None
     out = []
     for row in months or []:
         key, sales = row[0], row[1]
-        if key == current or sales is None:
+        if (current is not None and key >= current) or sales is None:
             continue
         out.append((key, float(sales)))
     out.sort()
@@ -213,6 +213,12 @@ def closed_months(months: list, as_of: date | None) -> list[tuple[str, float]]:
 
 def daily_avg_of_month(key: str, sales: float) -> float:
     return sales / clock.days_in_month(key)
+
+
+def recent_month_keys(as_of: date, n: int) -> list[str]:
+    """as_of 之前 n 个已结束自然月，按时间升序；用于保留缺月的真实位置。"""
+    periods = [clock.step_period(clock.period_of(as_of), -back) for back in range(n, 0, -1)]
+    return [f"{period[:4]}-{period[4:]}" for period in periods]
 
 
 def baseline_average(d: Daily, end: int, length: int, oos_bsr: float | None,

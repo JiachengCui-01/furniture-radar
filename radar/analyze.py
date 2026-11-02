@@ -154,13 +154,13 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
     max_new = th["surge"].get("new_listing_max_age_days")
     revived = bool(surge and surge.get("from_zero") and max_new is not None and (age is None or age > max_new))
     new_ramp = None
-    if surge and surge.get("from_zero"):
+    if surge and surge.get("from_zero") and not surge.get("pulse"):
         sc = th["surge"]
         node_daily = (st.get("threshold") or 0) / 30
         need = max(sc["new_listing_min_daily"], sc["new_listing_node_share"] * node_daily)
         if surge["recent_avg"] < need:
             new_ramp, surge = surge, None
-    if surge and revived:
+    if surge and revived and surge.get("kind"):
         surge = {**surge, "kind": "老链接重新起量"}
     unshaped = None
     if surge and not surge["kind"]:  # 不符合任何一种爆火形态

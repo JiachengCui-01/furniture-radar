@@ -8,7 +8,7 @@ from datetime import date
 from .. import clock
 from .fakehot import _actual, inherited
 from ..series import (Daily, closed_months, cv, daily_avg_of_month, log_growth, mean, median, surge_metrics,
-                      surge_shape)
+                      surge_shape, recent_month_keys)
 
 
 def current_rating(rec: dict | None, row: dict | None) -> tuple[float | None, float | None]:
@@ -157,12 +157,16 @@ def momentum(d: Daily, as_of_idx: int, cfg: dict) -> dict:
             "fading": falling or lower_week or bool(sliding)}
 
 
-def _restock(d: Daily, as_of_idx: int, best: dict, cfg: dict) -> dict | None:
+def _restock(d: Daily, as_of_idx: int, best: dict, cfg: dict, oos_bsr: float | None = None) -> dict | None:
     """断货恢复：对比窗口里大部分日子没有销量（BSR 飙到几百万），而更早之前卖得和现在差不多。
     这类“暴涨”只是恢复供货，不是新需求。"""
     base_end = as_of_idx - best["window"]
     base = d.raw_window("sales", base_end, cfg["base_days"])
-    zero_days = sum(1 for v in base if not v)
+    # 缺失不证明断货；只有明确零销量或 BSR 达到断货线的日子才计入。
+    indices = range(max(0, base_end - cfg["base_days"] + 1), base_end + 1)
+    zero_days = sum(1 for k in indices if k not in d.masked and
+                    ((k < len(d.sales) and d.sales[k] == 0)
+                     or (oos_bsr and k < len(d.bsr) and d.bsr[k] is not None and d.bsr[k] >= oos_bsr)))
     if zero_days < max(7, 0.25 * len(base)):
         return None
     earlier = [v for v in d.window("sales", base_end - cfg["base_days"], 90) if v]
@@ -200,7 +204,7 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
     if best is None:
         return None
 
-    restock = _restock(d, as_of_idx, best, cfg)
+    restock = _restock(d, as_of_idx, best, cfg, oos_bsr)
     if restock:
         return {**best, "kind": "断货恢复", "restock": True, **restock, "price_driven": False,
                 "days_elevated": 0, "top2_share": 0.0}
@@ -210,10 +214,10 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
     shape = surge_shape(d, as_of_idx, best["base_avg"], cfg["sustained_mult"])
     last3, week = shape["last3_ratio"], shape["week_ratio"]
     pulse = shape["top2_share"] >= cfg["pulse_share"]
-    if best["from_zero"]:
+    if pulse:
+        kind = None  # 从零起量也要排除短时脉冲，不能凭一天的尖峰认定爆发
+    elif best["from_zero"]:
         kind = "新品爆发"   # 之前 28 天几乎没卖
-    elif pulse:
-        kind = None
     elif shape["days_elevated"] >= cfg["sustained_days"] and last3 is not None \
             and abs(last3 - 1) <= cfg["steady_band"]:
         kind = "稳在高位"   # 近 7 天大多数天在高位，且最近 3 天走平
@@ -229,7 +233,7 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
         "kind": kind,
         "days_elevated": shape["days_elevated"],
         "top2_share": round(shape["top2_share"], 3),
-        "pulse": pulse and not best["from_zero"],
+        "pulse": pulse,
         "last3_ratio": None if last3 is None else round(last3, 3),
         "week_ratio": None if week is None else round(week, 3),
         "base_days": cfg["base_days"],
@@ -241,8 +245,15 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
                  cfg: dict, recent_daily: float | None = None) -> dict | None:
     """months：[[YYYY-MM, 月销量, 月销售额, 价格]]。
     recent_daily：没有日数据（d 为空）时的近期日均（月度名单补判用近 30 天名单的销量 ÷ 30）。"""
-    closed = closed_months(months, as_of)
-    look = closed[-cfg["lookback_months"]:]
+    if as_of is None:
+        return None
+    closed = dict(closed_months(months, as_of))
+
+    def recent_months(n: int) -> list[tuple[str, float | None]]:
+        # 缺月保留位置，不能拿更早的月份补足“最近 n 个月”，也不能压缩月趋势的时间跨度。
+        return [(key, closed.get(key)) for key in recent_month_keys(as_of, n)]
+
+    look = [(k, value) for k, value in recent_months(cfg["lookback_months"]) if value is not None]
     if node_threshold is None or len(look) < cfg["months_required"]:
         return None
     threshold = node_threshold
@@ -255,10 +266,11 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
                 or (money is not None and float(money) >= float(cfg.get("min_revenue") or math.inf) - 1e-9))
 
     hits = sum(1 for k, s in look if s >= threshold and enough(k, s))
-    six = [s for _, s in closed[-6:]]
+    six_months = [(k, value) for k, value in recent_months(6) if value is not None]
+    six = [s for _, s in six_months]
     variation = cv(six)
-    trend = log_growth([s for _, s in closed[-3:]])
-    six_daily = mean([daily_avg_of_month(k, s) for k, s in closed[-6:]])
+    trend = log_growth([s for _, s in recent_months(3)])
+    six_daily = mean([daily_avg_of_month(k, s) for k, s in six_months])
     recent = recent_daily
     if d is not None and as_of is not None:
         recent = mean(d.window("sales", d.index_of(as_of), 28))
@@ -268,13 +280,13 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
         hits >= cfg["months_required"]
         and variation is not None and variation <= cfg["max_cv"]
         and (trend is None or trend >= cfg["min_trend"])
-        and (recent_ratio is None or recent_ratio >= cfg["min_recent_ratio"])
+        and recent_ratio is not None and recent_ratio >= cfg["min_recent_ratio"]
     )
     if not ok:
         return None
     return {
         "months_hit": hits,
-        "lookback": len(look),
+        "lookback": cfg["lookback_months"],
         "threshold": round(threshold, 1),
         "cv": round(variation, 3),
         "trend": None if trend is None else round(trend, 3),
@@ -305,8 +317,8 @@ def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: flo
     prev28 = mean(base)
     recent_ratio = avg28 / prev28 if prev28 else None
     launch_month = clock.month_key(available)
-    full = [(k, s) for k, s in closed_months(rec.get("months") or [], as_of) if k > launch_month]
-    growth = log_growth([s for _, s in full[-3:]]) if len(full) >= 2 else None
+    full = dict(closed_months(rec.get("months") or [], as_of))
+    growth = log_growth([full.get(key) for key in recent_month_keys(as_of, 3) if key > launch_month])
     ok = (recent_ratio is not None and recent_ratio >= cfg["min_recent_ratio"]
           and (growth is None or growth >= cfg["min_monthly_growth"]))
     if not ok:
