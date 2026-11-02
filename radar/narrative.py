@@ -153,26 +153,28 @@ def design_facts(tr: dict) -> dict:
 
 
 def direction_facts(tr: dict) -> list[dict]:
-    """开发方向（directions.py 算好的），每个特征带“几个品牌有 / 该子类目增长商品的品牌数”和头部商品里的占比。"""
+    """开发方向：支持品牌数、品牌均占比和同口径的头部占比分别列明。"""
     out = []
     for d in tr.get("directions") or []:
         n, nb = d["n"], d.get("n_brands", d["n"])
         cmp = d.get("compare") or {}
         if cmp.get("mode"):
             basis = (f"“比头部多”= 比同子类目头部商品 {cmp['n_head']} 个（{'标题 + 主图' if cmp['mode'] == 'image' else '只看标题'}）"
-                     "明显多的；“基本款”= 多数品牌有、但头部也一样多（这个品类本来就这样做）")
+                     "的品牌均占比明显多；“基本款”= 品牌均占比至少一半、但不比头部多")
         else:
-            basis = "同子类目头部商品太少，没有对比；“基本款”里是多数品牌都有的共同特征"
+            basis = "同子类目头部已知品牌不足，没有对比；只列共同特征，不能声称比头部更多"
 
         def feats(tier: str) -> dict:
             return {dim.replace("卖点", ""): [
-                f"{f['label']} {f['count']}/{nb} 个品牌" + (f"（头部 {f['head_share']:.0%}）" if f.get("head_share") is not None else "")
+                f"{f['label']} {f['count']}/{nb} 个已知品牌支持"
+                + (f"，品牌均占比 {f['share']:.0%}" if f.get("share") is not None else "")
+                + (f"（头部品牌均占比 {f['head_share']:.0%}）" if f.get("head_share") is not None else "")
                 for f in d["features"][dim][tier]] for dim in directions.DIMENSIONS if d["features"][dim][tier]}
 
         sales = d.get("sales") or {}
         row = {"子类目": d["node"],
                "依据": f"该子类目的增长商品 {n} 个、来自 {nb} 个品牌（突然爆火 {d['n_surge']} 个），"
-                     f"特征按品牌计数（同一品牌的多个商品只算一次）；{basis}",
+                     f"双方先计算品牌内商品特征占比，再对已知品牌等权平均；品牌缺失不作为独立品牌证据；{basis}",
                "销售额": f"月销售额约 {directions.money_text(sales.get('monthly'))}，"
                       f"增量约 {directions.money_text(sales.get('increment'))}（比之前 28 天多的部分）",
                "增量": directions.money_text(sales.get("increment")),

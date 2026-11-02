@@ -215,6 +215,20 @@ def daily_avg_of_month(key: str, sales: float) -> float:
     return sales / clock.days_in_month(key)
 
 
+def baseline_average(d: Daily, end: int, length: int, oos_bsr: float | None,
+                     zero_run: int = 0) -> float | None:
+    """在卖日子的基准均值；未知保留 None。至少 7 个明确零销量日才能补认已知零基准。
+
+    断货过滤会把明确的零销量也去掉，所以另看原始销量；缺失、只有大促日有数、
+    或仅因 BSR 缺失而被过滤的正销量，都不能当成零。不要求在卖满 14 天。
+    """
+    values = d.in_stock_window("sales", end, length, oos_bsr, zero_run)
+    if values:
+        return mean(values)
+    observed = d.window("sales", end, length)
+    return 0.0 if len(observed) >= min(7, length) and all(v == 0 for v in observed) else None
+
+
 # ---------------------------------------------------------------- 暴涨 ----
 
 def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
@@ -227,9 +241,8 @@ def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
     recent_bsr = median(d.window("bsr", recent_end, window))
     base_bsr = median(d.in_stock_window("bsr", base_end, base_days, oos_bsr))
     recent_sales = d.window("sales", recent_end, window)
-    base_sales = d.in_stock_window("sales", base_end, base_days, oos_bsr)
     recent_avg = mean(recent_sales)
-    base_avg = mean(base_sales)
+    base_avg = baseline_average(d, base_end, base_days, oos_bsr)
     if recent_avg is None:
         return None
     recent_price = median(d.window("price", recent_end, window))
@@ -237,7 +250,7 @@ def surge_metrics(d: Daily, window: int, base_days: int, as_of_idx: int,
     return {
         "window": window,
         "recent_avg": recent_avg,
-        "base_avg": base_avg or 0.0,
+        "base_avg": base_avg,
         "base_in": d.in_stock_days(base_end, base_days, oos_bsr),  # 对比期里在卖的天数（大促日也算）
         "sales_ratio": (recent_avg / base_avg) if base_avg and base_avg > 0 else None,
         "recent_bsr": recent_bsr,

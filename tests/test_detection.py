@@ -1009,8 +1009,10 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
     assert deal_items[0]["recent_avg28"] == round(1210 / 30 / 1.10, 2)
     # 近 30 天名单里最后几天的数也还会被下调：默认按校正后的数判（不达标的不列）；tag 模式照样列、写明
     strong = {"window": 30, "median": 0.5, "items": 100}
-    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, strong)[0] == []
-    light = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, {**strong, "median": 0.9})[0]
+    assert analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, strong,
+                                     correction_applied=True)[0] == []
+    light = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, {**strong, "median": 0.9},
+                                      correction_applied=True)[0]
     assert light[0]["recent_avg28"] == round(1210 / 30 * 0.9, 2)
     tag_cfg = {**cfg, "thresholds": {**cfg["thresholds"], "revision_mode": "tag"}}
     rev_items = analyze.monthly_hot_items(state, disc, stats, tag_cfg, END, [{"asin": "T1"}], None, strong)[0]
@@ -1049,7 +1051,9 @@ def test_judgments_are_made_on_revision_corrected_data(cfg):
     潜力 69%→85%、上升中 57%→82%），按当期拉到的数才成立的不上榜、卡片上写明。走势图和卡片上的数也是校正后的。"""
     rev = {"window": 9, "median": 0.8, "items": 100}
     state = {"asins": {"THIN": _rec([5] * 110 + [12] * 10, 4.5), "SOLID": _rec([5] * 110 + [18] * 10, 4.5)}}
-    by = {i["asin"]: i for i in analyze.analyze(state, None, ["THIN", "SOLID"], cfg, END, revision=rev)["items"]}
+    # 本期也偏高的共同对照足够，才自动校正，不能用 None 绕过证据门槛。
+    state["asins"].update({f"F{k}": _rec([20] * 111 + [25] * 9, 4.5) for k in range(40)})
+    by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END, revision=rev)["items"]}
     assert by["SOLID"]["label"] == "surge" and not by["SOLID"]["revision_raw_only"]
     assert by["THIN"]["label"] != "surge" and by["THIN"]["revision_raw_only"] == ["突然爆火"]
     assert "按当期拉到的数算突然爆火，但最近 9 天的数还会被下调（本期测到改成原来的 80%），校正后不算" in by["THIN"]["tags"]
@@ -1084,7 +1088,7 @@ def test_tag_mode_lists_on_fetched_data_and_notes_the_correction(cfg):
     state = {"asins": {"THIN": _rec([5] * 110 + [12] * 10, 4.5), "SOLID": _rec([5] * 110 + [18] * 10, 4.5)}}
     by = {i["asin"]: i for i in analyze.analyze(state, None, ["THIN", "SOLID"], cfg, END, revision=rev)["items"]}
     assert by["THIN"]["label"] == by["SOLID"]["label"] == "surge"  # 不排除
-    assert "最近 9 天的数还会被改：按本期测到的幅度（改成原来的 80%）校正后不算突然爆火" in by["THIN"]["tags"]
+    assert any("本期是否偏高尚不能确认" in t and "则不算突然爆火" in t for t in by["THIN"]["tags"])
     assert by["THIN"]["revision_lost"] == ["突然爆火"] and not by["SOLID"]["revision_lost"]
 
 

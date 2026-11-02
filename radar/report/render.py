@@ -10,7 +10,7 @@ import html
 import re
 
 from .. import shipping
-from ..analyze import display_name, increment_note
+from ..analyze import display_name, increment_note, usable_revision
 from ..detect import directions, events
 from ..tracking import REASON_CN
 from .sparkline import HOVER_JS, bars, sparkline
@@ -229,6 +229,7 @@ details.rules{margin:0 0 6px;font-size:12.5px}details.rules ul{margin:4px 0;padd
 .chips2 span.more{border-color:var(--potential);border-width:1.5px;font-weight:600}
 .chips2 span.more em{font-weight:400}
 .chips2 span.base{color:var(--muted)}
+.dirs .chips2 span{white-space:normal;max-width:100%;box-sizing:border-box}
 .dsale{margin:-4px 0 4px;font-size:13px;font-weight:600}
 .dbasis{margin:0 0 8px;font-size:12px;color:var(--muted)}
 .curve{font-size:11.5px;color:var(--muted);margin-top:2px}
@@ -309,7 +310,8 @@ def card(item: dict, kind: str, group: str = "", notes: list[tuple[str, str]] = 
             kv.append(f"<span><em>较前28天</em> <b>×{p['recent_ratio']:.2f}</b></span>")
     if kind in ("surge", "potential"):  # 这两个板块按它排（analyze.sections），和开发方向的增量同一个口径
         note = increment_note(item)
-        kv.append(f"<span><em>月增量</em> <b>{esc(directions.money_text(directions.increment(item)))}</b>"
+        amount = "无法估算" if item.get("baseline_unknown") else directions.money_text(directions.increment(item))
+        kv.append(f"<span><em>月增量</em> <b>{esc(amount)}</b>"
                   + (f"（{esc(note)}）" if note else "") + "</span>")
     if kind == "hot" and item.get("hot"):
         h = item["hot"]
@@ -472,8 +474,9 @@ def _direction_box(d: dict, cfg: dict) -> str:
 
     def chip(r: dict, tier: str) -> str:
         head = f" · 头部 {r['head_share']:.0%}" if r.get("head_share") is not None else ""
+        share = f" · 品牌均占比 {r['share']:.0%}" if r.get("share") is not None else ""
         up = '<b class="up" title="在全部增长商品里也比对照组更多">↑</b>' if r.get("trend") else ""
-        return f'<span class="{tier}">{esc(r["label"])}{up}<em>{r["count"]}/{n}{head}</em></span>'
+        return f'<span class="{tier}">{esc(r["label"])}{up}<em>{r["count"]}/{n} 品牌有{share}{head}</em></span>'
 
     def chips(f) -> str:
         rows = f if isinstance(f, list) else None
@@ -506,9 +509,9 @@ def _direction_box(d: dict, cfg: dict) -> str:
     cmp = d.get("compare") or {}
     if compared:
         src = "标题 + 主图" if cmp["mode"] == "image" else "只看标题"
-        basis = f"对比同子类目头部商品 {cmp['n_head']} 个（{src}）"
+        basis = f"对比同子类目头部商品 {cmp['n_head']} 个、已知品牌 {cmp.get('n_head_brands', cmp['n_head'])} 个（{src}，双方品牌等权）"
     else:
-        basis = f"同子类目头部商品只有 {cmp.get('n_head_all', 0)} 个，没有对比，只列共同特征"
+        basis = f"同子类目头部已知品牌只有 {cmp.get('n_head_brands_all', 0)} 个，没有对比，只列共同特征"
     return (f'<div class="dbox dir"><h4>{esc(d["node"])}<span class="sub">增长商品 {d["n"]} 个、{n} 个品牌{surge}</span></h4>'
             f'{money}<p class="dbasis">{esc(basis)}</p>'
             f'<dl class="spec">{spec}</dl><div class="grp-h">参考商品</div>{refs}</div>')
@@ -575,13 +578,14 @@ def _directions(tr: dict, cfg: dict) -> str:
             f"{cfg['thresholds'].get('short_base_days', 14)} 天的老链接增量也按 0"
             + (f"、{recovery_text(cfg['thresholds'])}增量也按 0" if recovery_text(cfg["thresholds"]) else "")
             + "（销量是卖家精灵按 BSR 估算的，大促日不算；"
-            "本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的）。"
-            "特征按品牌计数，同一品牌的多个商品只算一次（该品牌任一增长商品的标题或主图有就算），数字 = 具备的品牌数 / 品牌数，"
-            "“头部”= 同子类目头部商品里有这个特征的占比（月度名单里这个子类目、不在增长商品里（同一父体的也不算）的，按月销量取前 "
-            f"{c.get('head_max', 30)} 个；有主图识别的 ≥{c.get('head_min', 10)} 个时两边都看标题 + 主图，头部只算识别过的，"
-            f"否则两边都只看标题；头部不足 {c.get('head_min', 10)} 个时不对比）。"
+            "仅确认本期偏高并执行校正时，近 28 天日均才用校正后的；对比基准未知的不计入增量合计）。"
+            "特征两边同口径：先算每个品牌旗下商品具备该特征的比例，再对品牌等权平均，称为“品牌均占比”；"
+            "数字同时列出支持品牌数 / 已知品牌数。品牌缺失不作为独立品牌证据。"
+            "“头部”= 同子类目头部商品的品牌均占比（月度名单里这个子类目、不在增长商品里（同一父体的也不算）的，按月销量取前 "
+            f"{c.get('head_max', 30)} 个；有主图识别的已知品牌 ≥{c.get('head_min', 10)} 个时两边都看标题 + 主图，头部只算识别过的，"
+            f"否则两边都只看标题；头部已知品牌不足 {c.get('head_min', 10)} 个时不对比）。"
             f"绿框 = 比头部多：≥2 个品牌有，占比比头部高 {c.get('head_min_gap', 0.2) * 100:.0f} 个百分点以上、"
-            f"是头部的 {c.get('head_min_lift', 1.5):g} 倍以上；灰框 = 基本款：≥{c['feature_min_share']:.0%}（且 ≥2 个）品牌有，但不比头部多，"
+            f"是头部的 {c.get('head_min_lift', 1.5):g} 倍以上；灰框 = 基本款：品牌均占比 ≥{c['feature_min_share']:.0%}（且 ≥2 个品牌支持），但不比头部多，"
             f"说明这个品类本来就都这样做；每档最多 {c['per_dim']} 个；主材质只看 ≥{c['feature_min_share']:.0%} 品牌，不和头部比；"
             "“不统一”= 两档都没有；↑ = 这个特征在全部增长商品里也比对照组更多。"
             "价格 = 最低价 ~ 最高价（3 个以上给中位数）；包装 = 有数据的增长商品的包装体积（卖家精灵给的包装长宽高换算）、"
@@ -706,7 +710,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
     tide_surge = ("（所在子类目整体在涨时先除以品类大盘倍数，见“判定方法”；从零起量的没有倍数，不扣）"
                   if (th.get("tide") or {}).get("enabled", True) else "")
     stall = "（不是大促日的 7 天；达不到的卡片上标“近 7 天没涨够”，见“判定方法”）"
-    corrected = ("最近几天的日销量按本期测到的修订幅度校正后再判（见“判定方法”）。"
+    corrected = ("仅确认本期也偏高时校正最近几天的日销量；证据不足只提示、不改判定和金额排序（见“判定方法”）。"
                  if str(th.get("revision_mode") or "correct") == "correct" else "")
     short = (f"对比期在卖不到 {th['short_base_days']} 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。"
              if th.get("short_base_days") else "")
@@ -715,14 +719,14 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
              f"{th.get('short_base_days', 14)} 天）、老链接重新起量、上架超过 {s.get('new_listing_max_age_days', 180)} 天且之前 28 天在卖不到 "
              f"{th.get('short_base_days', 14)} 天的老链接"
              + ("、现在的水平没超过对比期之前 " + str(th.get("recovery_days")) + " 天里卖到过的（跌下去又涨回来）" if th.get("recovery_days") else "")
-             + "按 0（卡片上写明原因）；近 28 天不比再之前 28 天多的排在后面。")
+             + "按 0（卡片上写明原因）；基准未知的不计入增量合计，写明无法估算；近 28 天不比再之前 28 天多的排在后面。")
     return {
         "surge": scope + f"近 {windows} 天对比之前 {s['base_days']} 天：BSR 中位数降到 {s['bsr_ratio']} 倍以下（排名提升一倍以上），"
                  f"日均销量 ≥{s['sales_ratio']:g} 倍{tide_surge}且 ≥{s['min_daily_sales']} 件；形态是新品爆发 / 老链接重新起量 / 稳在高位 / 仍在上涨之一；"
-                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。{short}{corrected}{order}同额的按爆发强度。",
+                 f"没有回落；异常分 <{f['suspect_score']}（轻微信号列在卡片上）。缺失基准不当成零销量，不直接认定从零爆发。{short}{corrected}{order}同额的按爆发强度。",
         "potential": scope + f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条、不是老品换链接；近 28 天日均 ≥{p['min_daily_sales']} 件、"
                      f"≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}，近 7 天日均也 ≥ 之前 28 天的 {p['min_recent_ratio']} 倍{stall}；"
-                     f"有两个以上完整月份的，最近 3 个完整月的月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；"
+                     f"有两个以上完整月份的，最近 3 个完整月的月销量平均每月增长 ≥{p['min_monthly_growth']:.0%}；不足的标“月度增长尚未验证”；"
                      f"没有回落、不是断货恢复、不是短时脉冲撑起来的；异常分 <{f['suspect_score']}。{short}{corrected}{order}同额的按月销量增长（不满两个完整月份的按近 28 天增长）。",
         "hot": f"近 {h['lookback_months']} 个月里至少 {h['months_required']} 个月的月销量达到所在子类目第 {h['rank_in_node']} 名的水平（按月销量排名，同一父体只算一次）、"
                f"且这个月量够（≥{h.get('min_units', 0):g} 件或销售额 ≥${h.get('min_revenue') or 0:,.0f}）；"
@@ -731,7 +735,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                f"不在追踪池里的头部商品也判（月度名单补判）：近 {h.get('list_months', 6)} 个月每个月都在子类目销售额前 50 或月销量前 50"
                f"（便宜、走量的头部进不了销售额前 50）、"
                f"本期有它近 30 天销量的（全市场名单；小子类目的头部量不够全市场门槛，另查它的近 30 天名单），按同样的条件判，"
-               f"近 28 天日均用近 30 天的销量 ÷ 30（名单的销量含大促日，按本期追踪商品算的大促系数扣掉；最近几天的数按修订幅度校正）；"
+               f"近 28 天日均用近 30 天的销量 ÷ 30（名单的销量含大促日，按本期追踪商品算的大促系数扣掉；仅确认本期偏高并执行校正时调整最近几天的数）；"
                f"没有日数据，卡片上标“只有月度数据”：没有走势图、不判回落，异常信号只看留评率一项（追踪商品还看评论增速、评分跳升、短时脉冲等）。正在回落的（规则见“判定方法”）标“最近回落”，不影响上榜。按近 6 个月月均销量排序。",
         "fake": f"异常分 ≥{f['suspect_score']} 的商品，不论是否在增长；同时满足爆火条件的标“假爆火嫌疑”。"
                 f"仅为数据异常提示，需人工核实。按异常分排序。",
@@ -746,15 +750,17 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
 def _revision_method(th: dict) -> str:
     """“判定方法”里修订怎么用（thresholds.revision_mode）。"""
     if str(th.get("revision_mode") or "correct") == "correct":
-        return ("测到了修订、而且这期拉到的数最近这几天也确实偏高（全部追踪商品“最近几天 ÷ 之前 18 天”的中位数，比两周前那个截面高出测到幅度的一半以上；"
+        return ("测到了有效的下调修订、而且这期拉到的数最近这几天也确实偏高（按本期最新数据日对齐，只用两截面都有效、历史比值为正的同一批商品，至少 30 个；"
+                "“最近几天 ÷ 之前 18 天”的中位数，比两周前那个截面高出测到幅度的一半以上；"
                 "实测修订前那次 ×1.17、修订后那次 ×0.93）时，"
                 "判定前把最近这几天按测到的幅度校正（卡片上的数、走势图、开发方向的增量和月销售额都是校正后的；持续热销补判的近 30 天销量也一样），"
                 "按当期拉到的数才成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销不上榜，卡片上写明“按当期拉到的数算 X，…校正后不算”。"
+                "共同有效商品不足时本期是否偏高无法确认，只提示校正敏感性，保留原始判定、金额、排序、月度补判和品类大盘。"
                 "回测（2025-11~2026-09 每两周回放，按实测的每个商品的修订幅度还原当期看到的数，和修订完的数比）：准确率 突然爆火 70%→86%、"
                 "潜力 69%→85%、上升中 57%→82%，召回少 7~11 个百分点。")
     return ("判定用当期拉到的数，再把最近这几天按测到的幅度校正后重判一次，原来成立、校正后不成立的突然爆火 / 潜力 / 上升中 / 持续热销 / "
             "最近回落（比回落规则本身），卡片上标“最近 N 天的数还会被改：…校正后不算 X”，钉钉消息里那一行也提醒，不排除。"
-            "开发方向的增量和月销售额用校正后的近 28 天日均。")
+            "金额、排序和品类大盘保留原始口径；本期是否偏高无法确认时用条件式提示，不把上期修订当成本期必然下调。")
 
 
 def _method(cfg: dict) -> str:
@@ -849,7 +855,7 @@ def _method(cfg: dict) -> str:
 <li><b>开发方向</b>：增长商品 ≥{th['directions']['min_items']} 个、来自 ≥{th['directions'].get('min_brands', 1)} 个品牌的子类目{f"按增量销售额取前 {th['directions']['max']} 个" if int(th['directions'].get('max') or 0) else "都列，按增量销售额从大到小"}（增量 = （近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30 的合计；
 老链接重新起量的增量按 0；上架超过 {s.get('new_listing_max_age_days', 180)} 天、之前 28 天在卖不到 {th.get('short_base_days', 14)} 天的老链接增量也按 0（多是断货很久后恢复，不是新增的需求）；
 {(recovery_text(th) + "的增量也按 0（不是新增的需求，标签不变）；") if recovery_text(th) else ""}
-本期测到了日数据修订时，近 28 天日均用最近几天按修订幅度校正后的），
+仅确认本期偏高并自动校正时，近 28 天日均才用校正后的；对比基准未知的增量不参与合计），
 各给一个产品画像：主材质；风格、造型、工艺、颜色、功能分两档——“比头部多”（增长商品比同子类目头部商品明显多的）和
 “基本款”（增长商品多数有、头部也一样多，说明这个品类本来就这样做）；价格；包装体积、包装重量和 FBA 配送费（卖家精灵的包装数据）。
 本期要点和钉钉只写有画像的子类目里增量最大的 {th['directions'].get('summary_max', 5)} 个（增量排得进这几个、却画不出画像的子类目另写一条，写明原因）；全部子类目有没有画像、没有的写了原因，在“开发方向依据”的一览表里。每项的门槛、入选比例和商品数写在“开发方向依据”里。</li>
@@ -922,12 +928,15 @@ def render(ctx: dict) -> str:
     rev = cov.get("revision")
     if rev and rev.get("window"):
         th = ctx["cfg"]["thresholds"]
-        usable = (rev.get("items") or 0) >= int(th.get("revision_min_items", 30))             and abs(float(rev.get("median") or 1) - 1) >= float(th.get("revision_min_change", 0.02))
+        usable = usable_revision(rev, th) is not None
         check = cov.get("revision_check") or {}
         if not usable:
-            how = "测到的商品太少或幅度太小，本期不校正"
+            how = "测到的商品太少、下调幅度太小或不是有效的下调测量，本期不校正"
+        elif check.get("state") == "uncertain" or (not check.get("applied") and check.get("inflation") is None):
+            how = ("两截面共同有效商品不足，本期是否偏高尚不能确认；保留原始判定、金额和排序，"
+                   "校正后可能不成立的仅作敏感性提示，月度补判和品类大盘也不自动校正")
         elif str(th.get("revision_mode") or "correct") == "correct" and not check.get("applied"):
-            seen = f"（×{check['inflation']:.2f}，要 ≥×{check['need']:.2f} 才校正）" if check.get("inflation") else ""
+            seen = f"（×{check['inflation']:.2f}，要 ≥×{check['need']:.2f} 才校正）" if check.get("inflation") is not None else ""
             how = (f"但这期拉到的数最近 {rev['window']} 天并不比之前偏高{seen}，上期那次下调可能是卖家精灵一次性的重新估算，"
                    f"本期按拉到的数判、不校正")
         elif str(th.get("revision_mode") or "correct") == "correct":

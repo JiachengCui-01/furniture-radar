@@ -156,20 +156,31 @@ def test_directions_match_their_definition(world_run, master_key, cfg):
         rows = [i for i in growth if directions.node_of(i) == d["node"]]
         assert d["sales"]["increment"] == round(sum(directions.increment(i) for i in rows))
         heads = directions.heads(d["node"], disc, growth, cfg)
-        assert d["compare"] == {"mode": "title", "n_head": len(heads), "n_head_all": len(heads)}  # 测试里没有主图识别
+        assert d["compare"]["mode"] == "title"  # 测试里没有主图识别，已知品牌数足够
+        assert d["compare"]["n_head"] == len(heads)
         assert not {h["asin"] for h in heads} & {i["asin"] for i in growth}
         nb = d["n_brands"]
         for dim, tiers in d["features"].items():
             for f in tiers["more"]:
-                head = sum(1 for h in heads if f["label"] in design.extract(h["title"])[dim]) / len(heads)
+                def brand_share(products):
+                    groups = {}
+                    for p in products:
+                        if (p.get("brand") or "").strip():
+                            groups.setdefault(design.brand_key(p), []).append(p)
+                    return statistics.mean(statistics.mean(f["label"] in design.extract(p["title"])[dim] for p in ps)
+                                           for ps in groups.values())
+                head = brand_share(heads)
                 assert f["head_share"] == round(head, 3)
-                assert f["count"] >= 2 and f["count"] / nb - head >= c["head_min_gap"] - 1e-9
-                assert f["count"] / nb >= c["head_min_lift"] * head - 1e-9
+                share = brand_share(rows)
+                assert f["share"] == round(share, 3)
+                assert f["count"] >= 2 and share - head >= c["head_min_gap"] - 1e-9
+                assert share >= c["head_min_lift"] * head - 1e-9
             for f in tiers["base"]:
                 assert f["count"] >= d["need"]
-                more = f["count"] / nb - f["head_share"] >= c["head_min_gap"] - 1e-9 \
-                    and f["count"] / nb >= c["head_min_lift"] * f["head_share"] - 1e-9
-                assert not more, (d["node"], f)
+                if d["compare"]["mode"]:
+                    more = f["share"] - f["head_share"] >= c["head_min_gap"] - 0.001 \
+                        and f["share"] >= c["head_min_lift"] * f["head_share"] - 0.001
+                    assert not more, (d["node"], f)
         volumes = [shipping.cubic_feet(i["pkg"]["dims"]) for i in rows if i.get("pkg")]
         assert d["pkg"]["n"] == len(rows) and d["pkg"]["ft3"] == round(statistics.median(volumes), 1)
     assert not any("season" in d for d in out)

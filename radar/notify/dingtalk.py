@@ -87,6 +87,8 @@ def _short(text: str, n: int) -> str:
 
 def increment_text(item: dict) -> str:
     """“月增量$33 万”；按 0 算的写原因、近 28 天没多卖的写明（同报告卡片，analyze.increment_note）。"""
+    if item.get("baseline_unknown"):
+        return "月增量无法估算（对比数据不足，不计入增量合计）"
     reason = zero_increment_reason(item)
     if reason:
         return f"月增量按 0：{reason}"
@@ -115,7 +117,10 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     def item_line(item: dict, extra: str) -> str:
         node = item.get("node_cn") or item.get("node_name") or ""
         # 按本期测到的修订幅度校正最近几天后不成立的判定：卡片上有完整说明，这里只提醒一句
-        caveat = f"（最近几天的数待修订，校正后不算{'、'.join(item['revision_lost'])}）" if item.get("revision_lost") else ""
+        caveat = ""
+        if item.get("revision_lost"):
+            prefix = "本期是否偏高未确认，若校正则不算" if item.get("revision_uncertain") else "最近几天的数待修订，校正后不算"
+            caveat = f"（{prefix}{'、'.join(item['revision_lost'])}）"
         if any(t.startswith(DATA_TAGS) for t in item.get("tags") or []):  # 变体变多、名单和日数据对不上、日数据有缺
             caveat += "（数据可能有问题，见报告卡片）"
         return f"- {_short(display_name(item['brand'], item['title']), 36)}（{node}）{extra}{caveat}"

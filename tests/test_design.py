@@ -261,9 +261,9 @@ def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
     # 没有月度名单（同子类目头部商品）时不对比，只列共同特征
     assert v["compare"]["mode"] is None
     assert v["features"]["工艺"] == {"more": [], "base": [{"label": "玻璃门", "count": 2, "trend": True,
-                                                           "head_share": None}]}  # 标题 1 个 + 主图 1 个
+                                                           "share": 0.667, "head_share": None}]}  # 标题 1 个 + 主图 1 个
     assert [f["label"] for f in v["features"]["功能卖点"]["base"]] == ["LED 灯"]  # 充电/插座、抽屉各只有 1 个
-    assert v["features"]["颜色"]["base"] == [{"label": "白色", "count": 2, "trend": False, "head_share": None}]
+    assert v["features"]["颜色"]["base"] == [{"label": "白色", "count": 2, "trend": False, "share": 0.667, "head_share": None}]
     assert v["price"] == {"min": 160, "max": 228, "median": 170}
     assert [r["asin"] for r in v["refs"]] == ["V1", "V2"]
     assert directions.headline(v) == "梳妆台：板材，玻璃门、白色、LED 灯，$160–$228"
@@ -418,7 +418,7 @@ def test_directions_compare_with_heads_of_the_same_subcategory(cfg):
     disc = {"products": {r["asin"]: r for r in heads}}
     out = directions.compute(focus, {"asins": {}}, {}, cfg, disc=disc)
     d = out[0]
-    assert d["compare"] == {"mode": "title", "n_head": 14, "n_head_all": 14}
+    assert d["compare"] == {"mode": "title", "n_head": 14, "n_head_all": 14, "n_head_brands": 14, "n_head_brands_all": 14}
     assert [f["label"] for f in d["features"]["工艺"]["more"]] == ["凹槽竖纹"]  # 4/4 品牌 vs 头部 1/14
     assert d["features"]["工艺"]["more"][0]["head_share"] == round(1 / 14, 3)
     assert [f["label"] for f in d["features"]["造型"]["more"]] == []
@@ -429,7 +429,7 @@ def test_directions_compare_with_heads_of_the_same_subcategory(cfg):
     state = {"asins": {f"G{k}": {"vision": {"tags": {"颜色": ["胡桃色"]}}} for k in range(4)},
              vision.EXTRA_KEY: {r["asin"]: {"vision": {"tags": {"颜色": ["黑色"]}}} for r in heads[:12]}}
     d = directions.compute(focus, state, {}, cfg, disc=disc)[0]
-    assert d["compare"] == {"mode": "image", "n_head": 12, "n_head_all": 14}
+    assert d["compare"] == {"mode": "image", "n_head": 12, "n_head_all": 14, "n_head_brands": 12, "n_head_brands_all": 14}
     assert [f["label"] for f in d["features"]["颜色"]["more"]] == ["胡桃色"]
 
     # 头部商品不够 10 个：不对比

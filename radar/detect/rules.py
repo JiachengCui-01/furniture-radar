@@ -181,6 +181,8 @@ def evaluate_surge(d: Daily, as_of_idx: int, cfg: dict, oos_bsr: float | None = 
         m = surge_metrics(d, window, cfg["base_days"], as_of_idx, oos_bsr)
         if not m:
             continue
+        if m["base_avg"] is None:
+            continue  # 没有基准证据不能认作从零爆发；新品仍在观察中提示起量
         from_zero = m["base_avg"] < 0.5
         volume_ok = m["recent_avg"] >= cfg["min_daily_sales"]
         bsr_ok = m["bsr_ratio"] is not None and m["bsr_ratio"] <= cfg["bsr_ratio"]

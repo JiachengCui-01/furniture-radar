@@ -8,8 +8,8 @@
         （实测：10-23 够格的 12 个、前 5 个只占增量的 70%；11-01 彩排 24 个、前 5 个只占 53%）；
   月销售额 = 该子类目每个增长商品的 近 28 天日均 × 当前售价 × 30，加起来；
   增量销售额 = 每个增长商品的（近 28 天日均 − 之前 28 天在卖日子的日均）× 当前售价 × 30，加起来，
-        之前 28 天没在卖的按 0 算（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
-        近 28 天日均：卖家精灵会回头改最近几天的日销量，本期测到了修订幅度时用最近几天按它校正后的（analyze.recent_daily；
+        已知之前 28 天没在卖的按 0 算，未知基准不计入增量合计（日均和“上升中”是同一个口径，大促日不算；销量是卖家精灵按 BSR 估算的）；
+        近 28 天日均：卖家精灵会回头改最近几天的日销量，仅确认本期偏高并自动校正时用校正后的（analyze.recent_daily；
         2026-10-20 的数据按 ×0.85 校正后，前 5 个方向顺序不变、每个方向的增量少 7~16%）；
         老品换链接（rules.relisted）之前 28 天没在卖、或在卖不到 thresholds.short_base_days 天时增量按 0：
         它的销量是从老链接转过来的，不是新增的需求（以前只看“没在卖”：之前零星卖过两天 1 件的，现在的销量几乎全算成了增量，
@@ -23,13 +23,13 @@
         8 月日均 105 件、9 月 54 件、10 月 97 件的梳妆台判上升中、月增量 $18 万，一个商品就把梳妆台顶到 10-23 那期第 1；
         只按品牌数排序时，便宜、门槛低的品类会排前面（实测 2026-10-20：$35 的衣帽架 8 个品牌排第一，增量约 $26 万；
         $138 的梳妆台 4 个品牌进不了前 5，增量约 $57 万）；
-  特征按品牌计数（同一品牌的多条链接只算一次，该品牌任一增长商品有就算），每个维度分两档，一个特征只进一档：
-    比头部多 = 至少 2 个品牌有，且具备的品牌占比 比 同子类目头部商品里的占比 高 head_min_gap 以上、
+  特征两边同口径：品牌内商品特征比例，再对已知品牌等权平均（品牌均占比）；另记支持品牌数，每个维度分两档，一个特征只进一档：
+    比头部多 = 至少 2 个品牌有，且增长侧品牌均占比 比 同子类目头部的品牌均占比 高 head_min_gap 以上、
               是它的 head_min_lift 倍以上（只看差距时，4 个品牌全有、头部 73% 有的“带抽屉”也会算进来）；
-    基本款   = 至少 feature_min_share（且不少于 2 个）品牌有，但不比头部多（例如书架的“开放格”、衣帽架的“带挂钩”）；
+    基本款   = 品牌均占比至少 feature_min_share 且 ≥2 个品牌支持，但不比头部多（例如书架的“开放格”、衣帽架的“带挂钩”）；
   同子类目头部商品 = 月度名单里同一子类目、不在增长商品里（同一父体也不算）的商品，按月销量取前 head_max 个，
-    按商品数算占比。两边特征的来源要一致：有主图识别的头部商品 ≥ head_min 个时，两边都用“标题 + 主图”
-    （颜色只看主图），头部只算识别过的那些；否则两边都只看标题。头部商品不足 head_min 个时不分档，
+    双方品牌等权，品牌缺失不作为独立品牌证据。两边来源一致：有主图识别的头部已知品牌 ≥ head_min 个时，两边都用“标题 + 主图”
+    （颜色只看主图），头部只算识别过的那些；否则两边都只看标题。头部已知品牌不足 head_min 个时不分档，
     只列“共同特征”（同基本款的门槛，但没有和头部比过）；
   主材质：同“外观与工艺依据”的口径，每个商品一类，至少 feature_min_share（且 ≥2 个）品牌是这一类才列，不和头部比；
   价格：该子类目增长商品的最低价 ~ 最高价，3 个以上再给中位数；
@@ -74,7 +74,28 @@ def _median(values: list[float]) -> float:
 
 
 def _n_brands(rows: list[dict]) -> int:
-    return len({brand_key(i) for i in rows})
+    return len({brand_key(i) for i in rows if (i.get("brand") or "").strip()})
+
+
+def _feature_rates(rows: list[dict], state: dict, use_vision: bool) -> tuple[dict, dict]:
+    """两边同口径：品牌内部算商品占比，再对已知品牌等权平均；另记支持品牌数。
+
+    品牌缺失的商品不用于证明独立品牌支持，不能把不同 ASIN 当成不同品牌。
+    """
+    groups: dict[str, list[dict]] = {}
+    for item in rows:
+        if (item.get("brand") or "").strip():
+            groups.setdefault(brand_key(item), []).append(_features(item, state, use_vision))
+    counts, shares = {}, {}
+    for dim in DIMENSIONS:
+        support, weighted = Counter(), Counter()
+        for products in groups.values():
+            hits = Counter(label for f in products for label in f[dim])
+            support.update(hits.keys())
+            weighted.update({label: n / len(products) for label, n in hits.items()})
+        counts[dim] = support
+        shares[dim] = {label: total / len(groups) for label, total in weighted.items()} if groups else {}
+    return counts, shares
 
 
 def ranked(focus: list[dict], cfg: dict) -> list[tuple[str, list[dict]]]:
@@ -110,6 +131,7 @@ def ref_candidates(rows: list[dict], n: int = 2) -> list[dict]:
     refs: list[dict] = []
     for item in rows:
         if len(refs) < n and not (item.get("fake") or {}).get("score") \
+                and (item.get("brand") or "").strip() \
                 and brand_key(item) not in {brand_key(r) for r in refs}:
             refs.append(item)
     return refs
@@ -143,9 +165,9 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
         need = max(2, math.ceil(need_share * nb - 1e-9))
         hs = heads(node, disc, focus, cfg)
         tagged = [h for h in hs if vision.of(state, h["asin"])]
-        if len(hs) < head_min:
+        if _n_brands(hs) < head_min:
             mode, sample = None, []
-        elif len(tagged) >= head_min:
+        elif _n_brands(tagged) >= head_min:
             mode, sample = "image", tagged
         else:
             mode, sample = "title", hs
@@ -154,32 +176,35 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
         # 每个品牌：它的增长商品里任何一个有就算这个品牌有
         by_brand: dict[str, dict[str, set[str]]] = {}
         for item in rows:
+            if not (item.get("brand") or "").strip():
+                continue
             have = by_brand.setdefault(brand_key(item), {dim: set() for dim in (*DIMENSIONS, "主材质")})
             for dim, labels in _features(item, state, use_vision).items():
                 have[dim] |= labels
             have["主材质"].add(item.get("material") or "未注明")
         brands = list(by_brand.values())
-        head_feats = [_features(h, state, use_vision) for h in sample]
+        counts_by_dim, shares = _feature_rates(rows, state, use_vision)
+        _, head_shares = _feature_rates(sample, state, use_vision)
 
         features = {}
         for dim in DIMENSIONS:
-            counts = Counter(label for b in brands for label in b[dim])
-            head_counts = Counter(label for f in head_feats for label in f[dim])
+            counts = counts_by_dim[dim]
             order = {label: k for k, label in enumerate(dict.fromkeys(label for b in brands for label in sorted(b[dim])))}
 
             def row(label: str) -> dict:
-                share = head_counts[label] / len(sample) if sample else None
+                share = head_shares[dim].get(label, 0.0) if sample else None
                 return {"label": label, "count": counts[label], "trend": label in trend.get(dim, set()),
+                        "share": round(shares[dim][label], 3),
                         "head_share": None if share is None else round(share, 3)}
 
             def is_more(label: str, k: int) -> bool:
-                share, head = k / nb, head_counts[label] / len(sample)
+                share, head = shares[dim][label], head_shares[dim].get(label, 0.0)
                 return k >= 2 and share - head >= gap - 1e-9 and share >= lift * head - 1e-9
 
             more = [] if mode is None else [label for label, k in counts.items() if is_more(label, k)]
-            more.sort(key=lambda label: (-(counts[label] / nb - head_counts[label] / len(sample)), -counts[label],
+            more.sort(key=lambda label: (-(shares[dim][label] - head_shares[dim].get(label, 0.0)), -counts[label],
                                          order[label]))
-            base = [label for label, k in counts.items() if k >= need and label not in more]
+            base = [label for label, k in counts.items() if k >= 2 and shares[dim][label] >= need_share - 1e-9 and label not in more]
             base.sort(key=lambda label: (-counts[label], label not in trend.get(dim, set()), order[label]))
             features[dim] = {"more": [row(label) for label in more[:per_dim]],
                              "base": [row(label) for label in base[:per_dim]]}
@@ -197,7 +222,8 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
                       "increment": round(sum(increment(i) for i in rows))},
             "materials": materials,
             "features": features,
-            "compare": {"mode": mode, "n_head": len(sample), "n_head_all": len(hs)},
+            "compare": {"mode": mode, "n_head": len(sample), "n_head_all": len(hs),
+                        "n_head_brands": _n_brands(sample), "n_head_brands_all": _n_brands(hs)},
             "price": {"min": min(prices), "max": max(prices),
                       "median": _median(prices) if len(prices) >= 3 else None} if prices else None,
             "pkg": shipping.summarize(rows),
@@ -239,7 +265,7 @@ def overview(items: list[dict], focus: list[dict], shown: list[dict], disc: dict
         elif len(g) < min_items:
             status = f"增长商品不到 {min_items} 个"
         elif nb < min_brands:
-            status = f"增长商品只来自 {nb} 个品牌"
+            status = f"增长商品只来自 {nb} 个品牌" if nb else "增长商品品牌信息不足"
         elif limit and len(shown) >= limit and order.index(name) > last:
             status = f"增量排在前 {limit} 个之后"
         else:
