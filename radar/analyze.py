@@ -758,7 +758,8 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
     评分不达标的不列。
     返回 (达标的商品, 判过的 ASIN, 状态 {"months": 已齐的月数, "units_months": 按件数的往月名单已齐的月数, "need": 要几个月,
     "rolling": 几个子类目有当期的近 30 天销量,
-    "rolling_date": 近 30 天名单是哪天查的, "judged", "listed"})。没有日数据：没有走势图，不判回落，异常分只有留评率一项。"""
+    "rolling_date": 近 30 天名单是哪天查的, "judged", "listed"（列进持续热销的个数）})。
+    没有日数据：没有走势图，不判回落，异常分只有留评率和评论抽查（抽查过的）两项；够疑似线的列进异常信号（label fake）。"""
     th = cfg["thresholds"]
     n = int(th["hot"].get("list_months", 6))
     deal = deal or {"*": 1.0}
@@ -815,8 +816,8 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             continue
         rec = dict(state["asins"].get(p["asin"]) or {})
         fake = fakehot.score(rec, None, None, p, stats[p["node"]].get("median_rate"), th["fake"])
-        if fake["level"]:
-            continue
+        # 异常分够疑似线的列进异常信号（和追踪商品一样，符合持续热销条件的标“长期头部”），不再悄悄从持续热销里去掉
+        label = "fake" if fake["level"] else "hot"
         title = clean_text(r.get("title") or p.get("title") or p["asin"])
         out.append({
             "asin": p["asin"], "title": title, "brand": clean_text(r.get("brand") or p.get("brand") or ""),
@@ -824,17 +825,18 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             "node_cn": p.get("node_cn") or "", "price": r.get("price") or p.get("price"), "bsr": r.get("bsr"),
             "rating": rating, "ratings": n_ratings, "variations": r.get("variations") or p.get("variations"),
             "age_days": clock.days_between(clock.parse_day(p.get("available")), data_date),
-            "as_of": None, "stale": False, "label": "hot", "label_cn": LABEL_CN["hot"],
-            "tags": ["只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率）"] + fake["tags"],
+            "as_of": None, "stale": False, "label": label, "label_cn": LABEL_CN[label],
+            "tags": ["只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率和评论抽查）"]
+                    + (["长期头部"] if label == "fake" else []) + fake["tags"],
             "surge": None, "restock": None, "rising": None, "material": main_material(title), "hot": hot,
             "potential": None, "fake": fake, "relist": None, "spark": [], "spark_start": None,
             "monthly": [[k, u] for k, u, *_ in months], "recent_avg7": None, "recent_avg28": round(recent, 2),
             "prev_avg28": None, "pkg": r.get("pkg") or p.get("pkg"), "fetched_run": None, "source": "monthly",
             "daily": False,
         })
-        if rev and not correct:  # tag 模式：近 30 天名单里最后几天的数也还会被改，校正后不达标的写明
+        if rev and not correct and label == "hot":  # tag 模式：近 30 天名单里最后几天的数也还会被改，校正后不达标的写明
             _revision_tag(out[-1], [] if judge(recent * shrink) else ["持续热销"], rev, uncertain=uncertain)
-    status.update(judged=len(judged), listed=len(out))
+    status.update(judged=len(judged), listed=sum(1 for i in out if i["label"] == "hot"))
     return out, judged, status
 
 

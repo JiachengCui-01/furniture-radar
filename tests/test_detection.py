@@ -1,6 +1,8 @@
 """判定规则的单元测试：用合成的 120 天日序列覆盖各种形态。"""
 from datetime import date, timedelta
 
+import pytest
+
 from radar import analyze
 from radar.detect import fakehot
 from radar.detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
@@ -354,6 +356,37 @@ def test_review_rate_signal_uses_node_median(cfg):
     assert normal["score"] == 0
 
 
+def test_relisted_reviews_do_not_count_as_a_high_review_rate(cfg):
+    """老品换链接的评论是从老链接转过来的：留评率和新品评论/销量比一样不计分，卡片上写明原因。"""
+    f = cfg["thresholds"]["fake"]
+    row = {"ratings_rate": 64.9, "ratings_cv": 1303}
+    rec = {"obs": [{"date": END.isoformat(), "ratings": 1344}]}
+    plain = fakehot.score(rec, None, None, row, 1.5, f, [])
+    assert [s["code"] for s in plain["signals"]] == ["review_rate"]
+    moved = fakehot.score(rec, None, None, row, 1.5, f, [], relisted=True)
+    assert moved["score"] == 0 and "评论是从老链接继承来的（老品换链接），留评率不计分" in moved["tags"]
+
+
+@pytest.mark.parametrize("check,codes,level", [
+    ({"n": 20, "top3": 15, "span": 20, "total": 20, "unverified_share": 0.0},
+     ["review_rate", "review_burst"], "suspect"),
+    ({"n": 20, "top3": 15, "span": 20, "total": 20, "unverified_share": 0.5},
+     ["review_rate", "review_burst", "unverified"], "high"),
+    ({"n": 20, "top3": 3, "span": 60, "total": 20, "unverified_share": 0.5},
+     ["review_rate", "unverified"], "suspect"),
+    ({"n": 9, "top3": 9, "span": 60, "total": 20, "unverified_share": 1.0},
+     ["review_rate"], None),
+    (None, ["review_rate"], None),
+])
+def test_review_check_counts_for_products_without_daily_data(cfg, check, codes, level):
+    """只有月度数据的商品（持续热销的月度名单补判）抽查过评论的，评论集中照样计分：以前没有日数据时在留评率之后就结束了，最多 2 分。"""
+    f = cfg["thresholds"]["fake"]
+    row = {"ratings_rate": 14.0, "ratings_cv": 30}
+    rec = {"checks": {"review": {**check, "vine_share": 0.0, "checked": END.isoformat()}}} if check else {}
+    result = fakehot.score(rec, None, None, row, 1.0, f, [])
+    assert [s["code"] for s in result["signals"]] == codes and result["level"] == level
+
+
 def test_review_velocity_between_runs(cfg):
     f = cfg["thresholds"]["fake"]
     d = make([10] * 120)
@@ -612,6 +645,36 @@ def test_unlisted_suspects_get_a_review_check_after_listed_ones(cfg):
     assert [a for a, _ in jobs] == ["HOT2", "POT", "W2", "VINE"]
     small = {**cfg, "budget": {**cfg["budget"], "review_checks": 3}}
     assert [a for a, _ in verify.select(items, {"asins": {}}, small, END)] == ["HOT2", "POT", "W2"]
+
+
+def test_unlisted_suspects_keep_reserved_review_checks(cfg):
+    """不在榜单上、只有一条信号的（异常分 2）留 review_checks_unlisted 个保底名额：以前可疑的上榜商品和点名的商品把 15 个名额用完，
+    保底的同分先查月销售额大的；这类不够保底数时名额还给其他，不超过总名额。"""
+    from radar import verify
+
+    hots = [{"asin": f"H{k}", "label": "hot", "fake": {"score": 2}, "as_of": None, "hot": {"x": 1},
+             "recent_avg28": 1, "price": 1} for k in range(10)]                     # ① 可疑的上榜商品
+    surges = [{"asin": f"S{k}", "label": "surge", "fake": {"score": 0}, "as_of": None, "brand": f"B{k}",
+               "node_cn": "其他", "surge": {"strength": 50 - k}, "recent_avg28": 1, "price": 1} for k in range(6)]
+    pots = [{"asin": f"P{k}", "label": "potential", "fake": {"score": 0}, "as_of": None} for k in range(6)]  # ② 点名的
+    unlisted = [{"asin": f"W{k}", "label": "watch", "fake": {"score": 2}, "as_of": None,
+                 "recent_avg28": 10 + k, "price": 100} for k in range(7)]                # ③
+    listed = hots + surges + pots
+    budget = {**cfg["budget"], "review_checks": 15, "review_checks_unlisted": 5}
+    jobs = [a for a, _ in verify.select(listed + unlisted, {"asins": {}}, {**cfg, "budget": budget}, END)]
+    assert len(jobs) == 15 and [a for a in jobs if a.startswith("W")] == ["W6", "W5", "W4", "W3", "W2"]
+    assert jobs[:10] == [f"H{k}" for k in range(10)]  # 可疑的上榜商品照样排在最前
+    old = {**budget, "review_checks_unlisted": 0}
+    assert not any(a.startswith("W") for a, _ in verify.select(listed + unlisted, {"asins": {}}, {**cfg, "budget": old}, END))
+    few = [a for a, _ in verify.select(listed + unlisted[:2], {"asins": {}}, {**cfg, "budget": budget}, END)]
+    assert len(few) == 15 and {"W0", "W1"} <= set(few)  # 只有 2 个：其余 3 个名额还给点名的商品
+    small = {**cfg, "budget": {**budget, "review_checks": 3}}
+    assert verify.select(listed + unlisted, {"asins": {}}, small, END) == [(f"W{k}", "review") for k in (6, 5, 4)]
+    cached = {"asins": {f"W{k}": {"checks": {"review": {"checked": END.isoformat()}}} for k in (5, 6)}}
+    pending = verify.select(listed + unlisted, cached, {**cfg, "budget": budget}, END)
+    assert len(pending) == 15 and {a for a, _ in pending if a.startswith("W")} == {f"W{k}" for k in range(5)}
+    disabled = {**cfg, "budget": {**budget, "review_checks": 0}}
+    assert verify.select(listed + unlisted, {"asins": {}}, disabled, END) == []
 
 
 def test_data_problems_are_written_on_the_card(cfg):
@@ -982,7 +1045,7 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
     assert [i["asin"] for i in items] == ["M1"] and set(judged) == {"M1", "M4", "M6"}
     m1 = items[0]
     assert m1["label"] == "hot" and not m1["daily"] and m1["as_of"] is None and m1["spark"] == []
-    assert m1["tags"][0] == "只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率）"
+    assert m1["tags"][0] == "只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率和评论抽查）"
     assert m1["recent_avg28"] == round(1210 / 30, 2) and m1["hot"]["months_hit"] == 4
     assert status == {"months": 6, "units_months": 0, "need": 6, "rolling": 1, "nodes": 1, "judged": 3, "listed": 1,
                       "deal": 1.0, "rolling_date": END.isoformat()}
@@ -1014,6 +1077,15 @@ def test_untracked_heads_are_judged_from_monthly_lists(cfg):
     light = analyze.monthly_hot_items(state, disc, stats, cfg, END, [{"asin": "T1"}], None, {**strong, "median": 0.9},
                                       correction_applied=True)[0]
     assert light[0]["recent_avg28"] == round(1210 / 30 * 0.9, 2)
+    # 异常分够疑似线的列进异常信号（标“长期头部”），不再悄悄从持续热销里去掉；抽查到的评论集中也计分
+    disc_f = {**disc, "products": {**disc["products"], "M1": {**disc["products"]["M1"], "ratings_rate": 14.0, "ratings_cv": 30}}}
+    state_f = {**state, "asins": {"M1": {"checks": {"review": {"n": 20, "top3": 15, "span": 20, "total": 20,
+                                                               "unverified_share": 0.0, "vine_share": 0.0}}}}}
+    flagged, _, status_f = analyze.monthly_hot_items(state_f, disc_f, stats, cfg, END, [{"asin": "T1"}])
+    assert [(i["asin"], i["label"]) for i in flagged] == [("M1", "fake")] and "长期头部" in flagged[0]["tags"]
+    assert status_f["listed"] == 0
+    sections = analyze.sections(flagged, 0)
+    assert sections["counts"]["fake"] == 1 and sections["counts"]["hot"] == 0 and sections["fake"] == flagged
     tag_cfg = {**cfg, "thresholds": {**cfg["thresholds"], "revision_mode": "tag"}}
     rev_items = analyze.monthly_hot_items(state, disc, stats, tag_cfg, END, [{"asin": "T1"}], None, strong)[0]
     assert rev_items[0]["label"] == "hot" and rev_items[0]["revision_lost"] == ["持续热销"]

@@ -5,13 +5,14 @@
 | 分 | 信号 | 首期可用 |
 | +2 | 留评率 ≥ max(子类目中位数×3, 6%) 且本月新增评论 ≥10（当月新增多于商品总评论的是父体数据，不计） | ✓ |
 | +2 | 新品（≤90 天）累计评论数 / 累计销量 ≥ 10%（和留评率同时成立时这一项只计 1 分：同一个证据） | ✓ |
-| —  | Vine 评论先扣掉（抽查过的按抽到的比例；没抽查过的、上架 ≤90 天的新品，前 30 条当作可能是 Vine）；抽查到的近 60 天评论不到应有的一半 = 评论是继承来的，上面两项都不计 | ✓ |
+| —  | Vine 评论先扣掉（抽查过的按抽到的比例；没抽查过的、上架 ≤90 天的新品，前 30 条当作可能是 Vine）；抽查到的近 60 天评论不到应有的一半 = 评论是继承来的，上面两项都不计；
+       老品换链接（rules.relisted）的评论是从老链接转过来的，上面两项也都不计 | ✓ |
 | +2 | 两期之间新增评论 / 新增销量 ≥ 15%（或几乎无销量却涨评论）：和之前 45 天里记到的最高评论数比（评论数会来回跳），
        新品前 30 条里新增的当作可能是 Vine；和上面两项同时成立时只计 1 分（同一个证据） | 第 2 期起 |
 | +1 | 45 天内评分上升 ≥0.2 且评论数 ≥50 | 第 2 期起 |
 | +1 | 1~3 天脉冲后迅速回落（不在大促日，见 events.py） | ✓ |
-| +2 | 评论核查：评论最多的 3 天 ≥30%，且比随机分布时 3 天最多的条数（99% 分位）还多 | ✓（需额外调用） |
-| +1 | 评论核查：非验证购买占比 ≥50% | ✓（需额外调用） |
+| +2 | 评论核查：评论最多的 3 天 ≥30%，且比随机分布时 3 天最多的条数（99% 分位）还多 | ✓（需额外调用；只有月度数据的也算） |
+| +1 | 评论核查：非验证购买占比 ≥50% | ✓（需额外调用；只有月度数据的也算） |
 | 标签 | 评论数暴增 ≥30% 且父体/变体数变化 → 变体合并（不计分） | 第 2 期起 |
 
 评论数和销量都是整个父体的（卖家精灵名单按父体一行，日数据也是父体的），变体多少都直接比，不除以变体数。
@@ -79,7 +80,7 @@ def merge_detected(rec: dict, disc_row: dict | None) -> bool:
 def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
           node_median_rate: float | None, cfg: dict, event_days=(), *, relisted: bool = False) -> dict:
     """d 是完整的日数据（不去掉大促日）；event_days：大促日（events.detect），落在大促日的脉冲不计分；
-    relisted：老品换链接，不算“新品评论/销量比”。"""
+    relisted：老品换链接，留评率和新品评论/销量比不使用继承评论计分；其他独立证据照常判断。"""
     signals: list[dict] = []
     tags: list[str] = []
 
@@ -110,7 +111,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         # 当月新增评论比这个商品一共的评论还多：名单行里的评论数是整个父体的，不是它的（实测 1 条评论的商品“当月新增 403 条”）
         family = total is not None and new_reviews > total * 1.05 + 5
         bar = max(cfg["review_rate_floor"], cfg["review_rate_mult"] * (node_median_rate or 0))
-        raw_flag |= bool(not family and rate >= bar and new_reviews >= cfg["min_new_reviews"])
+        raw_flag |= bool(not family and not relisted and rate >= bar and new_reviews >= cfg["min_new_reviews"])
         if vine and new_reviews and not family:  # Vine 评论是亚马逊安排的测评，不算刷评
             # 没抽查过时只知道“总评论里最多 vine 条是 Vine”：当月新增里按同样的比例扣（全扣会把 171 条评论的商品也扣没）
             if check and check.get("vine_share") is not None:
@@ -123,11 +124,17 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
                 tags.append("留评率数据是父体的，不计分")
             elif inherited(check, new_reviews):
                 tags.append(f"评论多是继承来的（抽查近 60 天只有 {_actual(check)} 条），留评率不计分")
+            elif relisted:
+                # 老品换链接（rules.relisted）的评论是从老链接转过来的，同“新品评论/销量比”一样不计分。
+                tags.append("评论是从老链接继承来的（老品换链接），留评率不计分")
             else:
                 add("review_rate", 2, f"留评率 {rate:.1f}%，远高于子类目中位数 {node_median_rate or 0:.1f}%"
                                       f"（当月新增评论 {int(new_reviews)} 条{f'，已按 {vine} {vine_text}扣过' if vine else ''}）")
 
     if d is None or as_of is None:
+        # 只有月度数据（持续热销的月度名单补判）：没有日数据，但抽查过评论的照样算核查的分。
+        # 以前在这里直接结束，最多只有留评率的 2 分，抽查过也进不了异常信号
+        _check_signals(rec, cfg, signals, tags)
         return _finish(signals, tags, cfg)
     as_of_idx = d.index_of(as_of)
     current_obs = (rec.get("obs") or [{}])[-1]
@@ -213,21 +220,29 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
         break
 
     # 6. 评论核查
-    check = (rec.get("checks") or {}).get("review")
-    if check and check.get("n", 0) >= 10:
-        burst = burst_limit(check, cfg)
-        if burst is not None:
-            add("review_burst", 2, f"近 {burst['span']} 天抽到的 {check['n']} 条评论里 {burst['top3']} 条集中在 3 天"
-                                   f"（{', '.join(check.get('burst_days', [])[:3])}），"
-                                   f"随机分布时 3 天最多约 {burst['usual']} 条")
-        if check.get("unverified_share", 0) >= cfg["unverified_share"]:
-            add("unverified", 1, f"抽查评论中非验证购买占 {check['unverified_share']:.0%}")
-        if check.get("vine_share", 0) >= 0.3:
-            tags.append("Vine 评论多")
+    _check_signals(rec, cfg, signals, tags)
 
     out = _finish(signals, tags, cfg)
     out["check_reviews"] = bool(assumed and raw_flag)
     return out
+
+
+def _check_signals(rec: dict, cfg: dict, signals: list[dict], tags: list[str]) -> None:
+    """评论核查（verify.py 抽查的近 60 天评论）的分：评论集中、非验证购买多；Vine 多只标注。"""
+    check = (rec.get("checks") or {}).get("review")
+    if not check or check.get("n", 0) < 10:
+        return
+    burst = burst_limit(check, cfg)
+    if burst is not None:
+        signals.append({"code": "review_burst", "points": 2,
+                        "text": f"近 {burst['span']} 天抽到的 {check['n']} 条评论里 {burst['top3']} 条集中在 3 天"
+                                f"（{', '.join(check.get('burst_days', [])[:3])}），"
+                                f"随机分布时 3 天最多约 {burst['usual']} 条"})
+    if check.get("unverified_share", 0) >= cfg["unverified_share"]:
+        signals.append({"code": "unverified", "points": 1,
+                        "text": f"抽查评论中非验证购买占 {check['unverified_share']:.0%}"})
+    if check.get("vine_share", 0) >= 0.3:
+        tags.append("Vine 评论多")
 
 
 def _actual(check: dict | None) -> int:

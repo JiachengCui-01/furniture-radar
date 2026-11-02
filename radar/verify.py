@@ -73,10 +73,12 @@ def named(items: list[dict], cfg: dict, spare: int = 2) -> set[str]:
 
 
 def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple[str, str]]:
-    """返回 [(asin, 'review'|'detail')]，按优先级排序，长度不超过 review_checks。"""
+    """返回 [(asin, 'review'|'detail')]，按优先级排序，长度不超过 review_checks；
+    其中至少 review_checks_unlisted 个留给 ③（不在榜单上、已有一条异常信号的），这类不够时名额还给其他。"""
     fcfg = cfg["thresholds"]["fake"]
-    limit = int(cfg["budget"]["review_checks"])
-    jobs: list[tuple[float, str, str]] = []
+    limit = max(0, int(cfg["budget"]["review_checks"]))
+    reserve = min(limit, max(0, int(cfg["budget"].get("review_checks_unlisted") or 0)))
+    jobs: list[tuple[float, float, str, str, bool]] = []  # (先后, 同分时按月销售额, asin, 核查种类, 是不是 ③)
     shown = named(items, cfg)
     for item in items:
         if item["label"] == "low":
@@ -84,9 +86,10 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
         rec = state["asins"].get(item["asin"]) or {}
         checks = rec.get("checks") or {}
         as_of = clock.parse_day(item.get("as_of"))
+        sales = analyze.monthly_sales(item)
         jump = ratings_jump(rec, as_of) if as_of else None
         if jump is not None and jump >= fcfg["merge_jump"] and not _fresh(checks.get("detail"), today):
-            jobs.append((1000 + jump, item["asin"], "detail"))
+            jobs.append((1000 + jump, sales, item["asin"], "detail", False))
         if _fresh(checks.get("review"), today):
             continue
         # 评论核查的先后（名额不够时先查前面的）：① 可疑的（异常分 ≥ 疑似线 − 1，且是爆火 / 潜力 / 异常 / 持续热销）；
@@ -95,22 +98,27 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
         # ④ 其余爆火、潜力（以前只查异常分 ≥2 的，10-23 那期 31 个爆火 / 潜力一个都没查过评论）；
         # ⑤ 按“可能是 Vine”扣过才不够评论信号的新品（fakehot 的 check_reviews：查了按抽到的 Vine 比例重算）。
         # 以前 ② 和 ④ 不分、排在 ③ 前面：11-01 彩排（全市场名单）爆火 + 潜力 88 个把 40 个名额占满，③ 一个都查不到，
-        # 开发方向的 42 个参考商品只有 21 个排进前 40
+        # 开发方向的 42 个参考商品只有 21 个排进前 40。
+        # ③ 在总名额内留出补查机会，避免只查上榜商品和详情，单条信号的观察商品长期得不到第二条证据。
         interesting = item["label"] in ("surge", "potential", "fake") or item.get("hot")
         strength = (item.get("surge") or {}).get("strength", 0) / 100
         suspect = item["fake"]["score"] >= fcfg["suspect_score"] - 1
+        score = item["fake"]["score"]
         if suspect and interesting:
-            jobs.append((400 + item["fake"]["score"] + strength, item["asin"], "review"))
+            jobs.append((400 + score + strength, sales, item["asin"], "review", False))
         elif item["asin"] in shown:
-            jobs.append((300 + item["fake"]["score"] + strength, item["asin"], "review"))
+            jobs.append((300 + score + strength, sales, item["asin"], "review", False))
         elif suspect:
-            jobs.append((200 + item["fake"]["score"], item["asin"], "review"))
+            jobs.append((200 + score, sales, item["asin"], "review", True))
         elif item["label"] in ("surge", "potential"):
-            jobs.append((150 + item["fake"]["score"] + strength, item["asin"], "review"))
+            jobs.append((150 + score + strength, sales, item["asin"], "review", False))
         elif item["fake"].get("check_reviews"):
-            jobs.append((100 + item["fake"]["score"], item["asin"], "review"))
-    jobs.sort(key=lambda j: -j[0])
-    return [(asin, kind) for _, asin, kind in jobs[:limit]]
+            jobs.append((100 + score, sales, item["asin"], "review", False))
+    jobs.sort(key=lambda j: (-j[0], -j[1]))  # 同分时先查月销售额大的
+    kept = [j for j in jobs if j[4]][:reserve]
+    kept += [j for j in jobs if j not in kept][:limit - len(kept)]
+    kept.sort(key=lambda j: (-j[0], -j[1]))
+    return [(asin, kind) for _, _, asin, kind, _ in kept]
 
 
 def run_checks(vendor: Vendor, jobs: list[tuple[str, str]], state: dict, cfg: dict, today: date) -> int:

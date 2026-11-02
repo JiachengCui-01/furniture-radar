@@ -60,6 +60,7 @@ DEFAULTS: dict = {
         "bootstrap_run": 3300,
         "monthly_cap": 22000,
         "review_checks": 40,
+        "review_checks_unlisted": 0,
         "material_lookups": 100,
         "monthly_list_calls": 200,
         "stable_refresh_every": 1,
