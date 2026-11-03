@@ -895,7 +895,8 @@ def _method(cfg: dict, repo_url: str = "") -> str:
         ("评分门槛", f"评分 <{th['min_rating']}（评论不到 {th['few_ratings']} 条时 <{th['few_ratings_min_rating']}）的不进任何板块"),
     ]
     if sc.get("enabled", True):
-        rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构）的，数据达标也不列"),
+        rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构，"
+                            "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列"),
                  ("相近款", f"同子类目里和已列出的一款主图特征、标题用词平均 ≥{float(sc.get('similar_min', 0.5)):.0%} 相同的，"
                             "只列排在前面的那款，其余记在它的卡片上")]
     link = f'<a href="{esc(repo_url)}" {LINK}>{GLOSSARY_README}</a>' if repo_url else GLOSSARY_README

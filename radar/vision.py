@@ -1,7 +1,7 @@
 """商品主图外观识别（可选）：用视觉大模型读主图，提取风格、材质、造型、工艺、颜色、看得见的功能和一句外观要点。
 
 默认用 DeepSeek 的视觉模型（与 AI工作台 相同），每张图约 300 tokens。
-结果按“ASIN + 图片地址 + 词表版本”缓存在加密状态里，图片和词表都不变就不会重复调用。
+结果按“ASIN + 图片编号 + 词表版本”缓存在加密状态里，图片和词表都不变就不会重复调用（只是尺寸不同的地址算同一张图）。
 识别失败不影响报告，只是少了“主图识别”这一块；单张失败会重试，还不行就跳过这张，不影响其他图片。
 """
 from __future__ import annotations
@@ -45,6 +45,19 @@ VOCAB_VERSION = hashlib.sha1(PROMPT.encode("utf-8")).hexdigest()[:8]
 def small_image(url: str, size: int = 400) -> str:
     """亚马逊图片地址里的尺寸段换成 SL400，减少下载量和 token。"""
     return re.sub(r"\._[^/]*_\.(jpg|jpeg|png|webp)$", rf"._AC_SL{size}_.\1", url or "", flags=re.I)
+
+
+_IMAGE_ID = re.compile(r"/images/I/([^./]+)")
+
+
+def same_image(a: str | None, b: str | None) -> bool:
+    """两个亚马逊图片地址是不是同一张图：比 /images/I/ 后面的图片编号，不管尺寸段（._AC_US200_ / ._AC_US600_）和域名。
+    同一个 ASIN，月度名单和全市场名单 / 日数据给的地址常常只是尺寸不同（11-02 那期 102 个里 53 个），以前按整个地址比，
+    每期都当成新图重看一遍。认不出编号的按整个地址比。"""
+    ia, ib = _IMAGE_ID.search(a or ""), _IMAGE_ID.search(b or "")
+    if ia and ib:
+        return ia.group(1) == ib.group(1)
+    return (a or "") == (b or "")
 
 
 def _parse(text: str) -> dict | None:
@@ -151,7 +164,7 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
             if not url or rec is None:
                 continue
             cached = rec.get("vision")
-            if cached and cached.get("image") == url and cached.get("vocab") == VOCAB_VERSION:
+            if cached and same_image(cached.get("image"), url) and cached.get("vocab") == VOCAB_VERSION:
                 continue
             try:
                 result = _describe_with_retry(client, cfg, api_key, url)

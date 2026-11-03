@@ -555,6 +555,13 @@ def refresh_similar(vendor: Vendor, cfg: dict, state: dict, disc: dict, run_seq:
     state["similar"] = {"run": run_seq, "items": found + [p for p in kept if p["asin"] not in new]}
 
 
+def current_rows(rows: list[dict], items: list[dict]) -> list[dict]:
+    """本期判定过的商品换成本期的商品（图片地址是当期的）：开发方向的头部商品来自月度名单，图片常是旧的主图或另一个尺寸，
+    同一个 ASIN 又在上榜商品里用当期的图，两步轮流把对方的识别结果当成旧图重看（11-02 那期每次重新生成约 50 张）。"""
+    by_asin = {i["asin"]: i for i in items}
+    return [by_asin.get(r["asin"], r) for r in rows]
+
+
 def listed_items(items: list[dict]) -> list[dict]:
     """上榜的商品：增长商品（势头顺序）+ 突然爆火、潜力、持续热销（含月度名单补判的），去重。
     都要看主图：报告按主图挑出简单款、相近款（detect.showcase），卡片上写特色。"""
@@ -566,11 +573,12 @@ def listed_items(items: list[dict]) -> list[dict]:
     return out
 
 
-def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict) -> dict:
+def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: dict | None = None) -> dict:
     """报告、钉钉、本期要点列出的商品（detect.showcase.curate）：各板块和增长商品去掉简单款、合并相近款；
-    gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。"""
-    out = {key: showcase.curate(sec[key], state, cfg) for key in ("surge", "potential", "hot")}
-    out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg)
+    gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。
+    common：各子类目的基本结构（showcase.common_features）。"""
+    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot")}
+    out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg, common)
     c = (cfg["report"].get("showcase") or {})
     ranked = sorted(out["growth"]["shown"], key=lambda i: -round(analyze.increment(i)))
     out["gallery"] = showcase.gallery(ranked, int(c.get("gallery", 12)), int(c.get("gallery_per_node", 1)))
@@ -606,8 +614,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         log.info(f"主图识别 {tagged} 张")
     # 开发方向：够格的子类目（directions.max > 0 时只看前几个），增长商品和同子类目头部商品都看主图，两边特征的来源才一致
     growth = analyze.focus_items(items)
-    tagged = vision.tag_items(directions.vision_targets(growth, disc, cfg), state, cfg, secrets.llm_api_key,
-                              untracked=True)
+    tagged = vision.tag_items(current_rows(directions.vision_targets(growth, disc, cfg), items), state, cfg,
+                              secrets.llm_api_key, untracked=True)
     if tagged:
         log.info(f"开发方向主图识别 {tagged} 张")
     listed = listed_items(items)
@@ -619,12 +627,14 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
                                        min_gap=float(cfg["thresholds"]["appearance"]["image_min_gap"]))
     trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
     trait["appearance"] = merge_appearance(trait, trait["vision"], cfg)
+    # 各子类目的基本结构（衣帽架的挂钩、梳妆台的镜子……）：本期商品 + 月度名单商品里主图识别过的多数都有的，不算特色
+    common = showcase.common_features(items + list(((disc or {}).get("products") or {}).values()), state, cfg)
     for item in items:
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = vision.of(state, item["asin"]).get("summary") or ""
-        item["features"] = showcase.features(item, state)
-        item["plain"] = showcase.is_plain(item, state)
+        item["features"] = showcase.features(item, state, common)
+        item["plain"] = showcase.is_plain(item, state, common)
         item["design"] = {dim: sorted(v) for dim, v in directions.design_of(item, state).items()}
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
     trait["direction_overview"] = directions.overview(items, growth, trait["directions"], disc, cfg)
@@ -645,7 +655,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "items": items,
         "focus": analyze.focus_items(items),
         "sections": sec,
-        "curated": curated_lists(items, sec, state, cfg),
+        "curated": curated_lists(items, sec, state, cfg, common),
         "traits": trait,
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)
                                 else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)},

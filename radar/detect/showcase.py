@@ -4,6 +4,8 @@
 不算基本结构的造型（圆形、拱形、L 形、悬浮…）、看得见的功能（灯带、插座、升降台面、电子壁炉、轮子…）、特殊材质（藤编、大理石纹、岩板、亚克力）。
 简单款 = 主图识别过、而主图和标题都没有任何特色的（例：开放格收纳柜、金属平台床架、普通三层边几）：数据达标也不列。
 双色拼接、高光烤漆、做旧、金色金属件只是表面处理，只有这些的也算简单款。
+造型和功能还要看子类目：这个子类目里主图识别过的商品多数（≥ common_share）都有的，是这个品类的基本结构，不算它的特色
+（衣帽架的挂钩、单柱底座，梳妆台的镜子和灯，电动升降桌的升降）。工艺和特殊材质再常见也算设计，不按子类目扣。
 没有主图识别的不判简单款（只看标题会误伤：标题没写的灯芯草坐面、人字纹床头板都算不出特色），照常列出。
 相近款 = 同一个子类目里，和已经列出的某一款长得差不多的：主图特征（造型 / 工艺 / 功能 + 主材质）重合度和标题用词重合度的平均 ≥ similar_min。
 只列排在前面（势头更好）的那一款，其余记在它的卡片上（“相近款 N 个”）。
@@ -12,6 +14,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter, defaultdict
 
 from .. import vision
 from .design import extract
@@ -26,6 +29,7 @@ FINISHES = frozenset({"双色拼接", "高光烤漆", "自然边/做旧", "金�
 TITLE_FUNCTIONS = frozenset({"LED 灯", "充电/插座", "电动/可升降", "升降台面", "可伸缩/加长", "带轮可移动", "带镜子",
                              "显示器架/键盘托", "配凳子", "可折叠", "旋转", "电子壁炉"})
 FEATURE_ORDER = ("工艺", "造型", "功能卖点", "材质")
+STRUCTURAL_DIMS = ("造型", "功能卖点")  # 按子类目扣“基本结构”的维度
 # 决定款式的功能：同一个子类目里都带它的，不管别的细节，看上去就是同一类款（电子壁炉电视柜、升降台面茶几 / 储物凳）。
 # 不放“电动/可升降”：标题写 standing desk 的小号带轮笔记本桌也算，和电动升降大桌长得并不像
 CONCEPTS = frozenset({"电子壁炉", "升降台面"})
@@ -42,30 +46,66 @@ def _vision_tags(state: dict, asin: str) -> dict | None:
     return v.get("tags") if v else None
 
 
-def features(item: dict, state: dict) -> list[str]:
-    """这个商品的特色（主图在前、标题补充），按 工艺 → 造型 → 功能 → 材质 的顺序、去重。"""
+def _node(item: dict) -> str:
+    return item.get("node") or item.get("node_cn") or ""
+
+
+def _by_dim(item: dict, state: dict) -> list[tuple[str, str]]:
+    """(维度, 特色)：主图在前、标题补充，按 工艺 → 造型 → 功能 → 材质 的顺序、去重。"""
     tags = _vision_tags(state, item["asin"]) or {}
     title = extract(item.get("title") or "")
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
 
     def add(dim: str, labels) -> None:
         for label in labels:
             keep = (dim == "工艺" or (dim == "造型" and label not in BASIC_SHAPES)
                     or (dim == "功能卖点" and label not in PLAIN_FUNCTIONS)
                     or (dim == "材质" and label in SPECIAL_MATERIALS))
-            if keep and label not in out:
-                out.append(label)
+            if keep and label not in seen:
+                seen.add(label)
+                out.append((dim, label))
 
     for dim in FEATURE_ORDER:
         add(dim, tags.get(dim) or [])
+        if dim == "材质" and tags:
+            continue  # 材质以主图为准（同颜色）：标题里的 stone / slate / marble 常是底座配重或颜色名，11-02 一个普通铁艺衣帽架因此算有“岩板”
         labels = sorted(title.get(dim) or ())
         add(dim, [x for x in labels if dim != "功能卖点" or x in TITLE_FUNCTIONS])
     return out
 
 
-def is_plain(item: dict, state: dict) -> bool:
-    """简单款：主图识别过，而主图和标题都没有任何特色（只有表面处理 FINISHES 的也算）。没有主图识别的不算（照常列出）。"""
-    return _vision_tags(state, item["asin"]) is not None and all(f in FINISHES for f in features(item, state))
+def features(item: dict, state: dict, common: dict | None = None) -> list[str]:
+    """这个商品的特色（主图在前、标题补充）。给了 common（common_features）时，去掉它所在子类目的基本结构。"""
+    drop = (common or {}).get(_node(item)) or frozenset()
+    return [label for dim, label in _by_dim(item, state) if not (dim in STRUCTURAL_DIMS and label in drop)]
+
+
+def common_features(rows: list[dict], state: dict, cfg: dict) -> dict[str, frozenset]:
+    """每个子类目的基本结构：rows（本期商品 + 月度名单商品）里主图识别过的，≥ common_share 都有的造型 / 功能。
+    主图识别过的不到 common_min_items 个的子类目不算（样本太少）。11-02 那期：衣帽架 挂钩 100%、单柱底座 57%，
+    梳妆台 镜子、LED 灯 100%、插座 65%，计算机工作站 电动升降 79%，床头柜 插座 70%。"""
+    c = (cfg.get("report") or {}).get("showcase") or {}
+    share, min_n = float(c.get("common_share", 0.5)), int(c.get("common_min_items", 10))
+    if share <= 0:
+        return {}
+    by_node: dict[str, dict[str, set[str]]] = defaultdict(dict)
+    for row in rows:
+        if row["asin"] in by_node[_node(row)] or _vision_tags(state, row["asin"]) is None:
+            continue
+        by_node[_node(row)][row["asin"]] = {label for dim, label in _by_dim(row, state) if dim in STRUCTURAL_DIMS}
+    out = {}
+    for node, feats in by_node.items():
+        if len(feats) >= min_n:
+            counts = Counter(label for labels in feats.values() for label in labels)
+            out[node] = frozenset(label for label, k in counts.items() if k / len(feats) >= share - 1e-9)
+    return out
+
+
+def is_plain(item: dict, state: dict, common: dict | None = None) -> bool:
+    """简单款：主图识别过，而主图和标题都没有任何特色（只有表面处理 FINISHES、或只有这个子类目的基本结构的也算）。
+    没有主图识别的不算（照常列出）。"""
+    return _vision_tags(state, item["asin"]) is not None and all(f in FINISHES for f in features(item, state, common))
 
 
 def _shape(item: dict, state: dict) -> set[str]:
@@ -100,10 +140,10 @@ def similarity(a: dict, b: dict, state: dict) -> float:
     return (_jaccard(sa | mat(a), sb | mat(b)) + words) / 2
 
 
-def curate(rows: list[dict], state: dict, cfg: dict) -> dict:
+def curate(rows: list[dict], state: dict, cfg: dict, common: dict | None = None) -> dict:
     """按 rows 的顺序（各板块自己的排序）挑出要列的商品。返回
     {"shown": [...], "plain": [...], "similar": {列出的 ASIN: [并进来的商品…]}}；
-    关掉（report.showcase.enabled: false）时全部列出。"""
+    common：各子类目的基本结构（common_features）。关掉（report.showcase.enabled: false）时全部列出。"""
     c = (cfg.get("report") or {}).get("showcase") or {}
     if not c.get("enabled", True):
         return {"shown": list(rows), "plain": [], "similar": {}}
@@ -113,7 +153,7 @@ def curate(rows: list[dict], state: dict, cfg: dict) -> dict:
     plain: list[dict] = []
     similar: dict[str, list[dict]] = {}
     for item in rows:
-        if hide_plain and is_plain(item, state):
+        if hide_plain and is_plain(item, state, common):
             plain.append(item)
             continue
         host = next((s for s in shown if th > 0 and any(similarity(item, x, state) >= th - 1e-9

@@ -101,3 +101,66 @@ def test_popup_says_how_many_were_left_out_and_lists_plain_ones_folded():
     assert html.count('<article class="card"') == 1 and "相近款 1 个：" in html and "<i>升降台面</i>" in html
     assert '<details class="skip"><summary>另有 1 个简单款没列出' in html and "P1 Coffee Table" in html
     assert "._AC_SL300_.jpg" in html  # 卡片主图按需缩小
+
+
+def test_structure_most_of_a_sub_category_has_is_not_a_feature():
+    """子类目里主图识别过的商品多数都有的造型 / 功能是这个品类的基本结构：普通铁艺衣帽架只有单柱底座和挂钩，是简单款
+    （11-02 图墙里的 Tujurich 衣帽架）；有大理石底座（主图认出）的不是；标题里的 stone 不算材质（以主图为准）；
+    工艺再常见也照样算；主图识别过的不到 common_min_items 个的子类目不扣。"""
+    cfg = {"report": {"showcase": {"common_share": 0.5, "common_min_items": 10}}}
+    racks = {f"R{k}": {"造型": ["单柱/郁金香底座"], "功能卖点": ["带挂钩"]} for k in range(9)}
+    racks["MARBLE"] = {"造型": ["单柱/郁金香底座"], "功能卖点": ["带挂钩"], "材质": ["金属", "大理石纹"]}
+    racks["FLUTE"] = {"造型": ["单柱/郁金香底座"], "工艺": ["凹槽竖纹"]}
+    state = _state(racks)
+    rows = [_item(a, "Coat Rack with 8 Hooks", node="衣帽架") for a in racks]
+    common = showcase.common_features(rows, state, cfg)
+    assert common == {"衣帽架": frozenset({"单柱/郁金香底座", "带挂钩"})}
+    plain = _item("R0", "Coat Rack with 8 Hooks, 3 Adjustable Heights, Sturdy Metal Clothes Stand, Stone Base", node="衣帽架")
+    assert showcase.features(plain, state) == ["单柱/郁金香底座", "带挂钩"]  # 不扣时照常有；adjustable heights、stone 都不算
+    assert showcase.is_plain(plain, state, common) and not showcase.is_plain(plain, state)
+    assert showcase.features(rows[9], state, common) == ["大理石纹"]
+    assert showcase.features(rows[10], state, common) == ["凹槽竖纹"]
+    assert showcase.common_features(rows[:9], state, cfg) == {}  # 只有 9 个识别过的
+    assert showcase.curate(rows[:1], state, cfg, common)["plain"] == rows[:1]
+
+
+def test_adjustable_heights_on_a_coat_rack_is_not_a_lifting_desk():
+    from radar.detect import design
+
+    assert "电动/可升降" not in design.extract("Coat Rack with 8 Hooks, 3 Adjustable Heights")["功能卖点"]
+    assert "电动/可升降" in design.extract("Narrow Console Table with Adjustable Height (25\"-33\")")["功能卖点"]
+    assert "电动/可升降" in design.extract("ErGear Height Adjustable Electric Standing Desk")["功能卖点"]
+
+
+def test_cached_image_tags_are_reused_when_only_the_size_differs(cfg):
+    """同一个 ASIN，月度名单给 ._AC_US200_、日数据给 ._AC_US600_：同一张图，不重看；换了图片编号才重看。
+    以前按整个地址比，开发方向（月度名单的图）和上榜商品（当期的图）两步每期轮流把对方当旧图，每次约 50 张。"""
+    import httpx
+
+    from radar import pipeline, vision
+
+    assert vision.same_image("https://m.media-amazon.com/images/I/61AYTycliAL._AC_US200_.jpg",
+                             "https://images-na.ssl-images-amazon.com/images/I/61AYTycliAL._AC_US600_.jpg")
+    assert not vision.same_image("https://x/images/I/81c2iv8Ly9L._AC_US200_.jpg", "https://x/images/I/81SSU2zvgCL._AC_US200_.jpg")
+    assert vision.same_image("https://x/a.jpg", "https://x/a.jpg") and not vision.same_image("https://x/a.jpg", "https://x/b.jpg")
+
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(str(request.url))
+        if request.method == "GET":
+            return httpx.Response(200, content=b"\xff\xd8fake", headers={"content-type": "image/jpeg"})
+        content = '{"风格":[],"材质":[],"造型":["开放格"],"工艺":[],"颜色":[],"外观要点":"x"}'
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    old = {"image": "https://m.media-amazon.com/images/I/61AYTycliAL._AC_US200_.jpg", "vocab": vision.VOCAB_VERSION,
+           "tags": {"造型": ["开放格"]}, "summary": "x"}
+    state = {"asins": {"A": {"vision": dict(old)}, "B": {"vision": dict(old)}}}
+    items = [{"asin": "A", "image": "https://images-na.ssl-images-amazon.com/images/I/61AYTycliAL._AC_US600_.jpg"},
+             {"asin": "B", "image": "https://m.media-amazon.com/images/I/71NEWPHOTOL._AC_US200_.jpg"}]
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert vision.tag_items(items, state, cfg, "key", client=client) == 1  # 只有换了图的 B
+    assert all("61AYTycliAL" not in u for u in seen)
+    # 开发方向的头部商品（月度名单行）在本期判定过的，用本期商品自己的图
+    head = {"asin": "A", "image": "https://m.media-amazon.com/images/I/OLDHEADIMG._AC_US200_.jpg"}
+    assert pipeline.current_rows([head, {"asin": "C"}], items)[0] is items[0]

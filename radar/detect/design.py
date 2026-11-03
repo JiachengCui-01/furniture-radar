@@ -101,7 +101,8 @@ LEXICON: dict[str, list[tuple[str, str]]] = {
         ("带储物/抽屉", r"storage|drawers?"),
         ("LED 灯", r"\bled\b|light(?:s|ed)?\b"),
         ("充电/插座", r"charging|outlets?|\busb\b|power strip"),
-        ("电动/可升降", r"sit[- ]stand|standing desk|height[- ]adjustable|adjustable height|electric (?:standing )?desk"),
+        # “3 Adjustable Heights”（衣帽架几档高度）不算：只认单数的 adjustable height
+        ("电动/可升降", r"sit[- ]stand|standing desk|height[- ]adjustable|adjustable height(?!s)|electric (?:standing )?desk"),
         ("升降台面", r"lift[- ]?top"),
         ("电子壁炉", r"fireplace"),  # 只看标题（不在 VISION_FUNCTIONS 里，改了主图词表要全部重看）
         ("可调层板", r"adjustable (?:shel(?:f|ves)|shelving)"),

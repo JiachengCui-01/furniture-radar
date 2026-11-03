@@ -74,15 +74,17 @@ def named(items: list[dict], cfg: dict, spare: int = 2, state: dict | None = Non
     （势头最强、没有异常信号、不同品牌的前 3 个：抽查后有一个变成异常时，第 3 个顶上当参考）。
     给了 state 时和报告一样只算列出的（去掉简单款、合并相近款，detect.showcase；用已有的主图识别）。"""
     sec = analyze.sections([i for i in items if i["label"] in ("surge", "potential")], 0)
+    products = list((((state or {}).get("discovery") or {}).get("products") or {}).values())
+    common = showcase.common_features(items + products, state, cfg) if state is not None else None
 
     def listed(rows: list[dict]) -> list[dict]:
-        return rows if state is None else showcase.curate(rows, state, cfg)["shown"]
+        return rows if state is None else showcase.curate(rows, state, cfg, common)["shown"]
 
     out = {i["asin"] for key in ("surge", "potential") for i in listed(sec[key])[:narrative.FACT_ITEMS]}
     top = narrative.summary_limit(cfg) + spare
     for _node, rows in directions.ranked(analyze.focus_items(items), cfg)[:top]:
         if state is not None:
-            rows = [dict(i, plain=showcase.is_plain(i, state)) for i in rows]
+            rows = [dict(i, plain=showcase.is_plain(i, state, common)) for i in rows]
         out |= {i["asin"] for i in directions.ref_candidates(rows, 3)}
     return out
 
