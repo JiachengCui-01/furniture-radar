@@ -67,6 +67,11 @@ def _features(item: dict, state: dict, use_vision: bool = True) -> dict[str, set
     return out
 
 
+def design_of(item: dict, state: dict) -> dict[str, set[str]]:
+    """一个商品各维度的外观特征（标题 + 主图，同 _features），报告里给特征配示例图用。"""
+    return _features(item, state)
+
+
 def _median(values: list[float]) -> float:
     values = sorted(values)
     mid = len(values) // 2
@@ -127,10 +132,10 @@ def heads(node: str, disc: dict | None, focus: list[dict], cfg: dict) -> list[di
 
 
 def ref_candidates(rows: list[dict], n: int = 2) -> list[dict]:
-    """参考商品：按势头顺序，没有异常信号（异常分 0）、来自不同品牌的前 n 个。"""
+    """参考商品：按势头顺序，没有异常信号（异常分 0）、不是简单款（detect.showcase，item["plain"]）、来自不同品牌的前 n 个。"""
     refs: list[dict] = []
     for item in rows:
-        if len(refs) < n and not (item.get("fake") or {}).get("score") \
+        if len(refs) < n and not (item.get("fake") or {}).get("score") and not item.get("plain") \
                 and known_brand_key(item) is not None \
                 and brand_key(item) not in {brand_key(r) for r in refs}:
             refs.append(item)

@@ -12,9 +12,9 @@ from typing import Callable
 
 from . import (analyze, clock, crypto, discovery, log, materials, monthly_lists, narrative,
                store, tracking, universe, verify, vision)
-from .config import Secrets, report_base_url
+from .config import Secrets, github_repo_from_remote, report_base_url
 from .detect import diff as diffing
-from .detect import directions
+from .detect import directions, showcase
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -386,6 +386,10 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     # 4. 判定 + 核查 + 再判定
     extra_rows = tracking.fresh_rows(state)
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, revision)
+    # 上榜商品先看主图：报告只列有特色、不重复的（detect.showcase），评论抽查“点名”的也按列出的挑
+    tagged = vision.tag_items(listed_items(result["items"]), state, cfg, secrets.llm_api_key, untracked=True)
+    if tagged:
+        log.info(f"上榜商品主图识别 {tagged} 张")
     jobs = verify.select(result["items"], state, cfg, today)
     checked = 0
     if jobs and vendor.budget.remaining > 0:
@@ -407,9 +411,8 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     # 两组交替排：名额不够时两组都有一部分查到亚马逊 Material，主材质对比的口径不会一边倒；
     # 名额还有剩，再查其余增长商品（开发方向的主材质用全部增长商品）和其余上榜商品（卡片上的主材质）
     both = [i for pair in itertools.zip_longest(focus, reference) for i in pair if i is not None]
-    listed = analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot")]
     seen = {i["asin"] for i in both}
-    for item in listed:
+    for item in listed_items(items):
         if item["asin"] not in seen:
             seen.add(item["asin"])
             both.append(item)
@@ -552,6 +555,28 @@ def refresh_similar(vendor: Vendor, cfg: dict, state: dict, disc: dict, run_seq:
     state["similar"] = {"run": run_seq, "items": found + [p for p in kept if p["asin"] not in new]}
 
 
+def listed_items(items: list[dict]) -> list[dict]:
+    """上榜的商品：增长商品（势头顺序）+ 突然爆火、潜力、持续热销（含月度名单补判的），去重。
+    都要看主图：报告按主图挑出简单款、相近款（detect.showcase），卡片上写特色。"""
+    out, seen = [], set()
+    for item in analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot")]:
+        if item["asin"] not in seen:
+            seen.add(item["asin"])
+            out.append(item)
+    return out
+
+
+def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict) -> dict:
+    """报告、钉钉、本期要点列出的商品（detect.showcase.curate）：各板块和增长商品去掉简单款、合并相近款；
+    gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。"""
+    out = {key: showcase.curate(sec[key], state, cfg) for key in ("surge", "potential", "hot")}
+    out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg)
+    c = (cfg["report"].get("showcase") or {})
+    ranked = sorted(out["growth"]["shown"], key=lambda i: -round(analyze.increment(i)))
+    out["gallery"] = showcase.gallery(ranked, int(c.get("gallery", 12)), int(c.get("gallery_per_node", 1)))
+    return out
+
+
 def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict]]:
     """外观/材质分析的两组：增长商品（按势头）和持续热销对照组（按月销量）。
     持续热销里带“上升中”的也是增长商品，不进对照组：同一个商品两边都算，会把两组的差距抹小。"""
@@ -585,7 +610,11 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
                               untracked=True)
     if tagged:
         log.info(f"开发方向主图识别 {tagged} 张")
-    vision.prune_extra(state, set(((disc or {}).get("products") or {})))
+    listed = listed_items(items)
+    tagged = vision.tag_items(listed, state, cfg, secrets.llm_api_key, untracked=True)
+    if tagged:
+        log.info(f"上榜商品主图识别 {tagged} 张")
+    vision.prune_extra(state, set(((disc or {}).get("products") or {})) | {i["asin"] for i in listed})
     trait["vision"] = vision.summarize(focus, reference, state,
                                        min_gap=float(cfg["thresholds"]["appearance"]["image_min_gap"]))
     trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
@@ -594,6 +623,9 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = vision.of(state, item["asin"]).get("summary") or ""
+        item["features"] = showcase.features(item, state)
+        item["plain"] = showcase.is_plain(item, state)
+        item["design"] = {dim: sorted(v) for dim, v in directions.design_of(item, state).items()}
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
     trait["direction_overview"] = directions.overview(items, growth, trait["directions"], disc, cfg)
 
@@ -613,6 +645,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "items": items,
         "focus": analyze.focus_items(items),
         "sections": sec,
+        "curated": curated_lists(items, sec, state, cfg),
         "traits": trait,
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)
                                 else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)},
@@ -624,6 +657,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "top_n": int(cfg["report"]["top_n"]),
         "events": events or {},
         "nodes": (disc or {}).get("nodes") or [],
+        "repo_url": repo_url(),
     }
     ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
     # 往期链接不带密钥：带的话一份报告里有前 6 期的密钥、一期期往回连，泄露一个钉钉链接就能打开全部往期。
@@ -713,6 +747,12 @@ def point_to_latest(cfg: dict, site: Path, report_ids: list[str]) -> None:
         payload = shell.read_payload(path.read_text(encoding="utf-8"))
         if payload.get("latest") != latest:
             _write_shell(cfg, site, old_id, shell.envelope_of(payload), latest)
+
+
+def repo_url() -> str:
+    """仓库 README 的地址（报告“名词说明”链过去看完整规则）：GITHUB_REPOSITORY，本地取 git 的 origin；都没有返回空。"""
+    repo = os.environ.get("GITHUB_REPOSITORY", "") or github_repo_from_remote()
+    return f"https://github.com/{repo}#readme" if "/" in repo else ""
 
 
 def growth_map(items: list[dict]) -> dict[str, str]:

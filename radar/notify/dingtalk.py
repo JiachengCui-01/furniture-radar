@@ -17,7 +17,8 @@ from .. import log
 from ..analyze import display_name, zero_increment_reason
 from ..detect.directions import headline, increment, money_text, skipped_big, skipped_text
 from ..report.render import growth_text, lift_text
-from ..narrative import top_design_labels
+from ..vision import small_image
+from ..narrative import listed, top_design_labels
 
 
 def signed_url(webhook: str, secret: str, timestamp_ms: int | None = None) -> str:
@@ -103,16 +104,24 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     """ActionCard 正文（钉钉 markdown 子集）。"""
     sec = ctx["sections"]
     c = sec["counts"]
+    # 和报告顶部一样只数列出的（去掉简单款、合并相近款）
+    surge, potential, hot = listed(ctx, "surge"), listed(ctx, "potential"), listed(ctx, "hot")
     lines = [
         f"### {ctx['title']} · {ctx['report_id']}",
         f"追踪 {c['total']} 个家具 ASIN · 日数据截至 {ctx['as_of']}",
         "",
-        f"**🚀 突然爆火 {c['surge']}　🌱 潜力 {c['potential']}　🔥 持续热销 {c['hot']}　⚠️ 异常 {c['fake']}**",
+        f"**🚀 突然爆火 {len(surge)}　🌱 潜力 {len(potential)}　🔥 持续热销 {len(hot)}　⚠️ 异常 {c['fake']}**",
         "",
     ]
+    hidden = sum(c[k] - len(rows) for k, rows in (("surge", surge), ("potential", potential), ("hot", hot)))
+    if hidden > 0:
+        lines[-2] += f"（另有 {hidden} 个简单款、相近款没列）"
     lift = lift_text((ctx.get("events") or {}).get("lift"), ctx.get("cfg") or {})
     if lift:  # 大促后数据待修订：放在最前面，下面的爆火 / 潜力可能有三分之一修订后不成立
         lines += [f"**⏳ 大促后数据待修订**：{lift}。", ""]
+    top_image = next((i.get("image") for i in surge + potential if i.get("image")), "")
+    if top_image:  # 卡片里放一张图：列出的突然爆火里月增量最大的那个（没有就潜力）
+        lines += [f"![]({small_image(top_image, 400)})", ""]
 
     def item_line(item: dict, extra: str) -> str:
         node = item.get("node_cn") or item.get("node_name") or ""
@@ -125,17 +134,17 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
             caveat += "（数据可能有问题，见报告卡片）"
         return f"- {_short(display_name(item['brand'], item['title']), 36)}（{node}）{extra}{caveat}"
 
-    if sec["surge"]:
+    if surge:
         lines.append("**🚀 突然爆火**")
-        for item in sec["surge"][:max_items]:
+        for item in surge[:max_items]:
             s = item["surge"]
             ratio = f"×{s['sales_ratio']:.1f}" if s.get("sales_ratio") else "新起量"
             tags = "·".join(t for t in item["tags"][:2])
             lines.append(item_line(item, f" 日均{s['base_avg']:.0f}→{s['recent_avg']:.0f}（{ratio}，{increment_text(item)}）{tags}"))
         lines.append("")
-    if sec["potential"]:
+    if potential:
         lines.append("**🌱 潜力产品**")
-        for item in sec["potential"][:max_items]:
+        for item in potential[:max_items]:
             lines.append(item_line(item, f" {growth_text(item)}（{increment_text(item)}）"))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]

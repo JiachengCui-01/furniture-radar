@@ -18,7 +18,7 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
 1. 只能使用 JSON 里出现的数字和事实，不得编造或推算新数字；没有的数据就不提。
 2. 不要复述各板块的商品数量（页面顶部已经有），也不要逐个罗列商品（点开板块就能看到）。
 3. 结构固定为四个小节，用 "- " 开头：
-   ### 外观与工艺趋势（3~5 条）
+   ### 外观与工艺趋势（3~4 条）
    ### 开发建议（2~3 条）
    ### 开发方向（JSON“开发方向”里有几个就写几条，一个方向一条）
    ### 风险提醒（1~3 条）
@@ -43,8 +43,9 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产�
    ② “标签”里有“降价驱动”“变体变多”“名单和日数据对不上”“最近 28 天有 N 天没有日数据”的爆火 / 潜力商品：
       降价驱动提醒上涨可能是降价带来的、不要当成长期需求；另外三种提醒“数据可能有问题，需人工核实”。
    不要根据功能卖点、外观、品类或价格自己推测风险；两类都没有就只写一条“本期没有需要特别提醒的风险”。
-9. 不要输出链接和长标题。“开发方向”每条不超过 100 字，其余每条不超过 60 字、一条只说一个特征或一个建议；
-   总长度不超过 950 字，宁可少写几条趋势。
+9. 不要输出链接和长标题。“开发方向”每条不超过 90 字，其余每条不超过 50 字、一条只说一个特征或一个建议；
+   引用依据时只写最有力的一组数字（如“主图 21/50，对照组 6/40”），不要把两种依据都抄一遍；
+   总长度不超过 800 字，宁可少写几条趋势。报告页面上有图和完整数字，这里只写结论。
 10. 点名具体商品时（开发建议的参考商品、开发方向末尾的“参考”、风险提醒里的商品）一律写成 [品牌 简短中文品名](ASIN)，
    ASIN 用 JSON 里这个商品的“ASIN”，方括号里必须有品牌，例如 [Huuger 窄长玄关桌](B0H2XKVQ5L)；
    报告里会变成点开就是亚马逊商品页的链接。同一条里同一个商品只写一次链接，链接里的 ASIN 不计入字数。"""
@@ -63,6 +64,8 @@ def build_facts(ctx: dict) -> dict:
         }
         if item.get("look"):
             out["外观要点"] = item["look"]
+        if item.get("features"):
+            out["特色"] = item["features"][:4]
         if item.get("surge"):
             s = item["surge"]
             out["突然爆火"] = {"近期日均": round(s["recent_avg"], 1), "之前日均": round(s["base_avg"], 1),
@@ -78,13 +81,20 @@ def build_facts(ctx: dict) -> dict:
     return {
         "数据截至": ctx["as_of"],
         "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子）",
-        "突然爆火": [brief(i) for i in sec["surge"][:FACT_ITEMS]],
-        "潜力": [brief(i) for i in sec["potential"][:FACT_ITEMS]],
+        # 只给列出的（去掉简单款、合并相近款，detect.showcase），本期要点点名的和报告里看到的一致
+        "突然爆火": [brief(i) for i in listed(ctx, "surge")[:FACT_ITEMS]],
+        "潜力": [brief(i) for i in listed(ctx, "potential")[:FACT_ITEMS]],
         "异常信号": [brief(i) for i in sec["fake"][:5]],
         "共性特点": design_facts(ctx["traits"]),
         # 报告里够格的子类目全部列出，本期要点只写增量最大的前 summary_max 个
         "开发方向": direction_facts(ctx["traits"])[: summary_limit(ctx["cfg"])],
     }
+
+
+def listed(ctx: dict, key: str) -> list[dict]:
+    """报告里列出的商品（ctx["curated"]，没有时退回板块全部）。"""
+    cur = (ctx.get("curated") or {}).get(key)
+    return cur["shown"] if cur else ctx["sections"].get(key) or []
 
 
 def summary_limit(cfg: dict) -> int:
@@ -96,7 +106,7 @@ def name_the_cut(text: str, total: int, shown: int) -> str:
     画不出画像的子类目不算（增量更大的另起一条写出来，见 note_skipped）。"""
     if total <= shown:
         return text
-    head = f"### 开发方向（有画像的子类目里增量最大的 {shown} 个，全部 {total} 个见下方“开发方向依据”）"
+    head = f"### 开发方向（有画像的子类目里增量最大的 {shown} 个，全部 {total} 个见下方“开发方向”）"
     return re.sub(r"(?m)^###\s*开发方向(?:（[^）\n]*）)?[ \t]*$", lambda _m: head, text, count=1)
 
 
@@ -238,6 +248,14 @@ def _link(item: dict) -> str:
     return f"[{_short(item['品名'])}]({item['ASIN']})" if item.get("ASIN") else _short(item["品名"])
 
 
+def _compact(text: str) -> str:
+    """模板文字里的依据写短：“主图识别：增长商品 21/50，持续热销对照组 6/40” → “主图 21/50，对照组 6/40”。"""
+    for old, new in (("标题统计：增长商品 ", "标题 "), ("主图识别：增长商品 ", "主图 "), ("，全部头部商品 ", "，头部 "),
+                     ("，持续热销对照组 ", "，对照组 "), ("增长商品 ", "")):
+        text = text.replace(old, new)
+    return text
+
+
 def template_summary(facts: dict) -> str:
     """没有大模型时的“本期要点”：结构和大模型版一致，只用计算好的事实。"""
     trait = facts["共性特点"]
@@ -247,9 +265,9 @@ def template_summary(facts: dict) -> str:
     mats = [m for m in next((v for k, v in trait.items() if k.startswith("主材质")), [])
             if not m.startswith(("未注明", "木质（未注明）", "其他")) and "：增长商品 0/" not in m]
     if mats:
-        lines.append(f"- 主材质：{'；'.join(mats[:3])}。")
+        lines.append(f"- 主材质：{'；'.join(_compact(m) for m in mats[:3])}。")
     for dim, rows in trait.get("外观特征（增长商品更多）", {}).items():
-        lines.append(f"- {dim}：{'；'.join(rows[:2])}。")
+        lines.append(f"- {dim}：{'；'.join(_compact(r) for r in rows[:2])}。")
     if len(lines) == 1:
         lines.append("- 增长商品没有明显偏多的外观/工艺特征。")
     lines.append("### 开发建议")

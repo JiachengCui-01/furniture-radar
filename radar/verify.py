@@ -10,7 +10,7 @@ from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 
 from . import analyze, clock, evidence, log, materials, narrative
-from .detect import directions
+from .detect import directions, showcase
 from .detect.fakehot import ratings_jump
 from .vendor import BudgetExhausted, Vendor
 
@@ -68,14 +68,21 @@ def _fresh(check: dict | None, today: date) -> bool:
     return evidence.fresh(check, today)
 
 
-def named(items: list[dict], cfg: dict, spare: int = 2) -> set[str]:
+def named(items: list[dict], cfg: dict, spare: int = 2, state: dict | None = None) -> set[str]:
     """报告里点名、团队会照着去看的商品：本期要点里的突然爆火、潜力（各前 narrative.FACT_ITEMS 个，钉钉列的前几个也在里面），
     和增量最大的前 directions.summary_max 个开发方向（多看 spare 个：有的方向画不出画像会被跳过）的参考商品候选
-    （势头最强、没有异常信号、不同品牌的前 3 个：抽查后有一个变成异常时，第 3 个顶上当参考）。"""
+    （势头最强、没有异常信号、不同品牌的前 3 个：抽查后有一个变成异常时，第 3 个顶上当参考）。
+    给了 state 时和报告一样只算列出的（去掉简单款、合并相近款，detect.showcase；用已有的主图识别）。"""
     sec = analyze.sections([i for i in items if i["label"] in ("surge", "potential")], 0)
-    out = {i["asin"] for key in ("surge", "potential") for i in sec[key][:narrative.FACT_ITEMS]}
+
+    def listed(rows: list[dict]) -> list[dict]:
+        return rows if state is None else showcase.curate(rows, state, cfg)["shown"]
+
+    out = {i["asin"] for key in ("surge", "potential") for i in listed(sec[key])[:narrative.FACT_ITEMS]}
     top = narrative.summary_limit(cfg) + spare
     for _node, rows in directions.ranked(analyze.focus_items(items), cfg)[:top]:
+        if state is not None:
+            rows = [dict(i, plain=showcase.is_plain(i, state)) for i in rows]
         out |= {i["asin"] for i in directions.ref_candidates(rows, 3)}
     return out
 
@@ -87,7 +94,7 @@ def select(items: list[dict], state: dict, cfg: dict, today: date) -> list[tuple
     limit = max(0, int(cfg["budget"]["review_checks"]))
     reserve = min(limit, max(0, int(cfg["budget"].get("review_checks_unlisted") or 0)))
     jobs: list[tuple[float, float, str, str, bool]] = []  # (先后, 同分时按月销售额, asin, 核查种类, 是不是 ③)
-    shown = named(items, cfg)
+    shown = named(items, cfg, state=state)
     for item in items:
         if item["label"] == "low":
             continue  # 评分不达标的不会上榜，不必花调用核查

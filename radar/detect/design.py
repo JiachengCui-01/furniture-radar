@@ -103,6 +103,7 @@ LEXICON: dict[str, list[tuple[str, str]]] = {
         ("充电/插座", r"charging|outlets?|\busb\b|power strip"),
         ("电动/可升降", r"sit[- ]stand|standing desk|height[- ]adjustable|adjustable height|electric (?:standing )?desk"),
         ("升降台面", r"lift[- ]?top"),
+        ("电子壁炉", r"fireplace"),  # 只看标题（不在 VISION_FUNCTIONS 里，改了主图词表要全部重看）
         ("可调层板", r"adjustable (?:shel(?:f|ves)|shelving)"),
         ("可伸缩/加长", r"extendable|expandable|extension|telescoping"),
         ("带轮可移动", r"wheels?|casters?|rolling|\bmobile\b"),
