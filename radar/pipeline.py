@@ -14,7 +14,7 @@ from . import (analyze, clock, crypto, discovery, log, materials, monthly_lists,
                store, tracking, universe, verify, vision)
 from .config import Secrets, github_repo_from_remote, report_base_url
 from .detect import diff as diffing
-from .detect import directions, showcase
+from .detect import directions, market, showcase
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -638,6 +638,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         item["design"] = {dim: sorted(v) for dim, v in directions.design_of(item, state).items()}
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
     trait["direction_overview"] = directions.overview(items, growth, trait["directions"], disc, cfg)
+    trait["market"] = market.summarize(state, today, cfg)  # 开发方向一览的价格带、新品占比、头部评论（本期全市场名单，0 次调用）
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]

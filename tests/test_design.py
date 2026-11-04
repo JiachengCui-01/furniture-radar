@@ -135,7 +135,8 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
     for kind in ("surge", "potential", "hot", "fake", "growth", "all"):
         assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
-    assert plain.count('class="pop-src"') == 6 and 'id="pop"' in plain
+    n_dirs = plain.count('class="dbox dir"')  # 每个开发方向一个小窗（点一览里的一行弹出）
+    assert plain.count('class="pop-src"') == 6 + n_dirs and 'id="pop"' in plain
     # 季节判断已经去掉：没有季节性商品、季节日历，也没有品类季节性标签
     assert "季节" not in plain
     # 主体里不放完整的商品卡片（都在隐藏的小窗内容里），但商品要有图：KPI 缩略图、本期增长商品图墙
@@ -148,13 +149,16 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
     assert "Material 属性" in plain and f"每期最多查 {cfg['budget']['material_lookups']} 个" in plain
     assert body.index("<h3>开发建议</h3>") < body.index("<h3>开发方向")  # 两节都要有，不是互相替换
-    assert '<section id="dirs"' in body and 'class="dbox dir"' in body
+    # 开发方向：主体里一行一个子类目（可排序的一览），完整画像在小窗里，每行点开对应的那个
+    assert '<section id="dirs"' in body and 'class="dbox dir"' not in body and n_dirs > 0
+    assert body.count('class="brow"') == n_dirs
+    assert all(f'data-pop="dir{k}"' in body and f'id="pop-dir{k}"' in plain for k in range(n_dirs))
     # 够格的子类目全部有画像；本期要点只写前 summary_max 个，标题写明；一览表把每个子类目都列出来
-    n_dirs = body.count('class="dbox dir"')
     top = cfg["thresholds"]["directions"]["summary_max"]
     if n_dirs > top:
         assert f"<h3>开发方向（有画像的子类目里增量最大的 {top} 个，全部 {n_dirs} 个见下方“开发方向”）</h3>" in body
-    assert f"个子类目一览：{n_dirs} 个有画像（见下方）" in body and body.count("<td>有（见下方）</td>") == n_dirs
+    assert f"个子类目一览：{n_dirs} 个有画像（见上表）" in body and body.count("<td>有（见上表）</td>") == n_dirs
+    assert 'class="cards" data-tools' in plain and "data-node=" in plain  # 小窗里能按子类目、类别筛，按月增量、售价排
     for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
         assert gone not in plain, gone  # 同一个概念只有一种叫法
 
