@@ -32,7 +32,7 @@ def clean_text(value) -> str:
 
 # 读的时候就过滤的商品级条件（keep_product / apply_product_filter）：改了不用重新发现，不算进监控范围的指纹
 READ_TIME_FILTERS = ("exclude_product_regex", "upholstered_material_regex", "upholstered_item_regex", "accessory_regex",
-                     "furniture_noun_regex")
+                     "furniture_noun_regex", "small_item", "exclude_node_regex")
 # exclude_product_regex 以前算在指纹里：2026-10-28 补布艺抽屉的写法（bc8ec11）后指纹从 1d2b7354530a 变了，下一期会当成换了监控范围——
 # 重新发现子类目和头部商品（多花约 100 次调用）、“与上期对比”空着。它和其他商品级条件一样是读的时候过滤的，现在也不算进指纹；
 # 以前存下的旧指纹换成现在的（migrate_scope_keys）：旧指纹 → 那时的范围按现在的算法算出来的指纹，范围后来又改了的对不上，照常重新发现
@@ -58,10 +58,35 @@ def migrate_scope_keys(state: dict, cfg: dict) -> int:
     return count
 
 
+def small_item(item: dict | None, cfg: dict) -> bool:
+    """小件：包装在亚马逊标准尺寸以内——三边从长到短 ≤ scope.small_item.max_dims（18 × 14 × 8 英寸）且包装重量 ≤ max_weight（20 磅）。
+    和卖家精灵自己给的尺寸分段一致（10-23 全覆盖试跑约 1.1 万个商品：pkgDimensionType 是 SS / LS 的全部符合、其余全部不符合）。
+    没有包装尺寸或重量的不算小件（判断不了，不剔除）。"""
+    rule = cfg["scope"].get("small_item") or {}
+    pkg = (item or {}).get("pkg") or {}
+    dims, weight = pkg.get("dims"), pkg.get("weight")
+    if not rule or not dims or len(dims) != 3 or weight is None:
+        return False
+    limits = sorted((float(v) for v in rule.get("max_dims") or ()), reverse=True)
+    if len(limits) != 3:
+        return False
+    return (all(d <= lim + 1e-9 for d, lim in zip(sorted(dims, reverse=True), limits))
+            and weight <= float(rule.get("max_weight", 0)) + 1e-9)
+
+
+def excluded_node(name: str | None, cfg: dict) -> bool:
+    """整个子类目不追踪（scope.exclude_node_regex，按子类目自己的英文名）：读的时候过滤，改了不用重新发现。"""
+    pattern = cfg["scope"].get("exclude_node_regex")
+    return bool(pattern and name and re.search(pattern, name))
+
+
 def keep_product(item: dict | None, cfg: dict) -> bool:
     """商品级过滤：标题里是软包、布艺抽屉、塑料等不在监控范围内的，直接剔除；
-    软包的床 / 床头板 / 长凳 / 椅凳（面料词 + 这几类商品词都有）；配件（配件词出现在任何家具名词之前）。"""
+    软包的床 / 床头板 / 长凳 / 椅凳（面料词 + 这几类商品词都有）；配件（配件词出现在任何家具名词之前）；
+    小件（small_item）；不追踪的子类目里的（excluded_node）。"""
     if not item:
+        return False
+    if small_item(item, cfg) or excluded_node(item.get("node_name"), cfg):
         return False
     scope = cfg["scope"]
     title = item.get("title") or ""
@@ -80,7 +105,10 @@ def keep_product(item: dict | None, cfg: dict) -> bool:
 
 
 def apply_product_filter(disc: dict | None, cfg: dict) -> dict | None:
-    """月度名单里不在范围内的商品去掉（商品级条件改了以后，已经拉到的名单也按新条件算，不用重新发现）。"""
+    """月度名单里不在范围内的商品去掉（商品级条件改了以后，已经拉到的名单也按新条件算，不用重新发现）；
+    不追踪的子类目（exclude_node_regex）从子类目列表里去掉：全市场名单、近 30 天名单都不再翻它。"""
+    if disc and disc.get("nodes"):
+        disc["nodes"] = [n for n in disc["nodes"] if not excluded_node(n.get("name"), cfg)]
     if disc and disc.get("products"):
         disc["products"] = {a: p for a, p in disc["products"].items() if keep_product(p, cfg)}
     return disc
@@ -142,7 +170,7 @@ def select_nodes(raw: list[dict], cfg: dict) -> list[dict]:
             continue
         # 只看子类目自己的名字：父类目名会误伤（如 Kitchen Islands 的父类目叫 Storage Islands & Carts）
         name = node["name"] or _relative_label(node)
-        if exclude and exclude.search(name):
+        if (exclude and exclude.search(name)) or excluded_node(node["name"], cfg):
             continue
         if include and not include.search(name):
             continue

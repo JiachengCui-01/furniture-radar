@@ -14,7 +14,7 @@ import re
 
 from .. import shipping
 from ..analyze import display_name, growth_kind, increment_note, usable_revision
-from ..detect import directions, events
+from ..detect import blueocean, directions, events
 from ..detect.market import EDGES as market_edges
 from ..tracking import REASON_CN
 from ..vision import small_image
@@ -22,7 +22,7 @@ from . import charts
 from .sparkline import HOVER_JS, bars, sparkline
 
 LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
-               "low": "muted", "rising": "accent"}
+               "low": "muted", "rising": "accent", "ocean": "ocean"}
 GROUP_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
 LINK = 'target="_blank" rel="noopener noreferrer"'
 
@@ -150,11 +150,11 @@ def markdown(text: str, products: dict | None = None) -> str:
 
 CSS = """
 :root{--bg:#f5f6f8;--card:#fff;--text:#1c2230;--muted:#667085;--line:#e4e7ec;--chip:#f0f2f5;
---surge:#e8590c;--potential:#2b8a3e;--hot:#1c6dd0;--fake:#c92a2a;--accent:#1c6dd0;--spark:#1c6dd0;
+--surge:#e8590c;--potential:#2b8a3e;--hot:#1c6dd0;--fake:#c92a2a;--ocean:#0c8599;--accent:#1c6dd0;--spark:#1c6dd0;
 --hl:rgba(232,89,12,.10);--imgbg:#fff;--row:#f8f9fb;
 --k-surge:#eb6834;--k-potential:#1baf7a;--k-rising:#2a78d6;--ink-bar:#5b6578;--band:#d5d9e0}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#181c24;--text:#e6e8ec;
---muted:#9aa3b2;--line:#2a303b;--chip:#232833;--surge:#ff8a4c;--potential:#5cc477;--hot:#6aa8ff;--fake:#ff6b6b;
+--muted:#9aa3b2;--line:#2a303b;--chip:#232833;--surge:#ff8a4c;--potential:#5cc477;--hot:#6aa8ff;--fake:#ff6b6b;--ocean:#3bc9db;
 --accent:#6aa8ff;--spark:#6aa8ff;--hl:rgba(255,138,76,.14);--imgbg:#f4f4f2;--row:#1d222b;
 --k-surge:#d95926;--k-potential:#199e70;--k-rising:#3987e5;--ink-bar:#aab3c2;--band:#3a4150}}
 *{box-sizing:border-box}
@@ -170,7 +170,8 @@ img{display:block}
 .ph{display:flex;align-items:center;justify-content:center;background:var(--chip);color:var(--muted);font-weight:600;
 width:100%;height:100%}
 /* KPI */
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0 6px}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:14px 0 6px}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:640px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;border-top:3px solid var(--c);
 font:inherit;color:inherit;text-align:left;width:100%;cursor:pointer;display:flex;flex-direction:column;gap:4px;
@@ -600,7 +601,12 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
         kv.append(_pill("波动", f"{h['cv']:.2f}"))
         if h.get("trend") is not None:
             kv.append(_pill("近3月", f"{fmt_pct(h['trend'])}/月"))
-    if kind in ("hot", "fake", "rising") and item.get("recent_avg28") is not None:
+    if kind == "ocean" and item.get("ocean"):
+        o = item["ocean"]
+        kv.append(_pill("子类目", f"第 <b>{o['rank']}</b> 名 / {fmt_int(o['n'])} 个"))
+        kv.append(_pill("近30天", f"<b>{esc(directions.money_text(o['revenue']))}</b>"))
+        kv.append(_pill("评论", f"<b>{fmt_int(o['ratings'])}</b> 条 · 头部中位 {fmt_int(o['head_reviews'])}"))
+    if kind in ("hot", "fake", "rising", "ocean") and item.get("recent_avg28") is not None:
         kv.append(_pill("近28天日均", fmt_num(item["recent_avg28"])))
     note = ""
     if kind in ("surge", "potential", "rising"):  # 爆火、潜力两个板块按它排（analyze.sections），和开发方向同一个口径
@@ -666,6 +672,32 @@ def _growth_pop(cur: dict, hint: str, total: int) -> str:
     body = "".join(cards) or '<div class="empty">本期没有增长商品。</div>'
     return _pop_src("growth", "增长商品", "potential",
                     f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p><div class="cards" data-tools>{body}</div>{_skipped(cur)}')
+
+
+def ocean_group(item: dict) -> str:
+    """蓝海产品卡片上写它本来在哪个板块（蓝海是另一份名单，商品照样留在自己的板块里）。"""
+    kind = growth_kind(item)
+    if kind:
+        return GROUP_CN[kind]
+    return "持续热销" if item["label"] == "hot" else ""
+
+
+def _ocean_note(cov: dict) -> str:
+    """名单上符合 ①~④ 的几个、拉到日数据的几个、核对通过的几个，没通过的原因。"""
+    o = cov.get("ocean") or {}
+    if not o.get("candidates"):
+        return ""
+    missed = "、".join(f"{k} {v}" for k, v in sorted((o.get("missed") or {}).items(), key=lambda kv: -kv[1]))
+    return (f"名单上符合 {o['candidates']} 个 → 有日数据 {o['tracked']} 个 → 核对通过 {o['listed']} 个"
+            + (f"（没列：{missed}）" if missed else "") + "。")
+
+
+def _ocean_pop(cur: dict, hint: str, total: int, cov: dict) -> str:
+    similar = cur.get("similar") or {}
+    body = "".join(card(i, "ocean", ocean_group(i), similar=similar.get(i["asin"], [])) for i in cur["shown"])         or '<div class="empty">本期没有符合条件的商品。</div>'
+    return _pop_src("ocean", "蓝海产品", "ocean",
+                    f'<p class="hint">{esc(hint)} {esc(_ocean_note(cov))}{esc(_count_text(cur, total))}</p>'
+                    f'<div class="cards" data-tools>{body}</div>{_skipped(cur)}')
 
 
 def growth_text(item: dict) -> str:
@@ -1189,6 +1221,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
     universe：本期翻成了全市场名单；没翻成（预算不够）时说明机会候选退回月度名单和近 30 天榜单。"""
     th = cfg["thresholds"]
     s, h, p, f, r = th["surge"], th["hot"], th["potential"], th["fake"], th["rising"]
+    o = blueocean.settings(cfg)
     windows = " 或 ".join(map(str, s["windows"]))
     tide = "，子类目整体在涨时先扣掉大盘" if (th.get("tide") or {}).get("enabled", True) else ""
     scope = "" if universe else "（本期全市场名单没翻成，候选退回月度名单和近 30 天榜单）"
@@ -1200,6 +1233,10 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
         "hot": f"近 {h['lookback_months']} 个月里 ≥{h['months_required']} 个月达到子类目第 {h['rank_in_node']} 名的月销量，波动小、没在跌，"
                f"近 28 天还有近 6 个月日均的 {h['min_recent_ratio']:.0%}。按近 6 个月月均排。",
         "fake": f"异常分 ≥{f['suspect_score']}（留评率过高、评论暴增、评分跳升、短时脉冲等累计），只是提示，需人工核实。按异常分排。",
+        "ocean": (f"半年内（≤{o['max_age_days']} 天）上架、评论不到子类目前 {o['head_n']} 名中位数的 {o['review_share']:.0%}，"
+                  f"近 30 天销售额已进子类目前 {o['top_rank']} 名，品牌在全市场名单里没有老品，日数据核对过。"
+                  "按近 30 天销售额排，商品照样留在原板块。"
+                  if universe else "本期没翻成全市场名单，不判蓝海产品。"),
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
         "all": "本期拉了日数据的全部商品。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
     }
@@ -1221,6 +1258,15 @@ def _method(cfg: dict, repo_url: str = "") -> str:
         ("品类大盘", "子类目整体在涨时，增长倍数先除以大盘倍数再比门槛"),
         ("评分门槛", f"评分 <{th['min_rating']}（评论不到 {th['few_ratings']} 条时 <{th['few_ratings_min_rating']}）的不进任何板块"),
     ]
+    small = cfg["scope"].get("small_item") or {}
+    if small:
+        dims = " × ".join(f"{v:g}" for v in small.get("max_dims") or ())
+        rows.append(("小件", f"包装在亚马逊标准尺寸以内（≤{dims} 英寸、≤{float(small.get('max_weight', 0)):g} 磅）的商品不在监控范围；"
+                            "衣帽架整个子类目不追踪"))
+    ob = blueocean.settings(cfg)
+    if ob["enabled"]:
+        rows.append(("蓝海产品", f"上架 ≤{ob['max_age_days']} 天、评论不到子类目头部的 {ob['review_share']:.0%}，却已卖进子类目前 "
+                              f"{ob['top_rank']} 名，品牌在全市场名单里也没有老品：说明新卖家进得来"))
     if sc.get("enabled", True):
         rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构，"
                             "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列"),
@@ -1282,12 +1328,16 @@ def _facts(ctx: dict, counts: dict, cur: dict) -> list[tuple[str, str]]:
             out.append(("早期名单", f"上架半年内、量还不够门槛的 {cov['young'][0]} 个，拉日数据 {cov['young'][1]} 个"))
     elif cov.get("candidates"):
         out.append(("机会候选", f"{cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"))
-    listed = [(label, len(cur[k]["shown"]), counts[k]) for k, label in (("surge", "突然爆火"), ("potential", "潜力"), ("hot", "持续热销"))]
+    listed = [(label, len(cur[k]["shown"]), counts[k]) for k, label in (("surge", "突然爆火"), ("potential", "潜力"), ("hot", "持续热销"),
+                                                                       ("ocean", "蓝海产品")) if k in cur]
     if any(n != total for _l, n, total in listed):
         out.append(("列出", "、".join(f"{label} {n}/{total}" for label, n, total in listed)
                     + "（其余是简单款或相近款，见各小窗底部 / 卡片上）"))
     if counts.get("low"):
         out.append(("评分不达标", f"{counts['low']} 个，没上榜"))
+    note = _ocean_note(cov)
+    if note:
+        out.append(("蓝海候选", note.rstrip("。")))
     tides = cov.get("tides") or {}
     if tides:
         up = sorted(((t, p) for p, t in tides.items() if t > 1.0), reverse=True)
@@ -1333,7 +1383,8 @@ def _curated(ctx: dict) -> dict:
     def every(rows):
         return {"shown": list(rows), "plain": [], "similar": {}}
     growth = ctx.get("focus") or []
-    return {**{k: every(sec[k]) for k in ("surge", "potential", "hot")}, "growth": every(growth), "gallery": growth[:12]}
+    return {**{k: every(sec.get(k) or []) for k in ("surge", "potential", "hot", "ocean")}, "growth": every(growth),
+            "gallery": growth[:12]}
 
 
 def render(ctx: dict) -> str:
@@ -1348,6 +1399,7 @@ def render(ctx: dict) -> str:
         _kpi("surge", "突然爆火", "近 1~2 周销量和排名翻倍", cur["surge"]["shown"], counts["surge"]),
         _kpi("potential", "潜力产品", "新品，近 28 天和月销都在涨", cur["potential"]["shown"], counts["potential"]),
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
+        _kpi("ocean", "蓝海产品", "新品评论很少就卖进子类目头部", cur["ocean"]["shown"], counts.get("ocean", 0)),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
     ])
     facts = _facts(ctx, counts, cur)
@@ -1359,6 +1411,7 @@ def render(ctx: dict) -> str:
         _section_pop("surge", "突然爆火", hints["surge"], cur["surge"], counts["surge"]),
         _section_pop("potential", "潜力产品", hints["potential"], cur["potential"], counts["potential"]),
         _section_pop("hot", "持续热销", hints["hot"], cur["hot"], counts["hot"]),
+        _ocean_pop(cur["ocean"], hints["ocean"], counts.get("ocean", 0), ctx["coverage"]),
         _section_pop("fake", "异常信号", hints["fake"], {"shown": sec["fake"]}, counts["fake"]),
         _growth_pop(cur["growth"], hints["growth"], len(ctx.get("focus") or [])),
         _pop_src("all", f"全部追踪商品（{counts['total']} 个）", "muted",

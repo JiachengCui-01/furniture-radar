@@ -16,7 +16,7 @@ import httpx
 from .. import log
 from ..analyze import display_name, zero_increment_reason
 from ..detect.directions import headline, increment, money_text, skipped_big, skipped_text
-from ..report.render import growth_text, lift_text
+from ..report.render import growth_text, lift_text, ocean_group
 from ..vision import small_image
 from ..narrative import listed, top_design_labels
 
@@ -105,15 +105,15 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     sec = ctx["sections"]
     c = sec["counts"]
     # 和报告顶部一样只数列出的（去掉简单款、合并相近款）
-    surge, potential, hot = listed(ctx, "surge"), listed(ctx, "potential"), listed(ctx, "hot")
+    surge, potential, hot, ocean = listed(ctx, "surge"), listed(ctx, "potential"), listed(ctx, "hot"), listed(ctx, "ocean")
     lines = [
         f"### {ctx['title']} · {ctx['report_id']}",
         f"追踪 {c['total']} 个家具 ASIN · 日数据截至 {ctx['as_of']}",
         "",
-        f"**🚀 突然爆火 {len(surge)}　🌱 潜力 {len(potential)}　🔥 持续热销 {len(hot)}　⚠️ 异常 {c['fake']}**",
+        f"**🚀 突然爆火 {len(surge)}　🌱 潜力 {len(potential)}　🔥 持续热销 {len(hot)}　🌊 蓝海 {len(ocean)}　⚠️ 异常 {c['fake']}**",
         "",
     ]
-    hidden = sum(c[k] - len(rows) for k, rows in (("surge", surge), ("potential", potential), ("hot", hot)))
+    hidden = sum(c.get(k, 0) - len(rows) for k, rows in (("surge", surge), ("potential", potential), ("hot", hot), ("ocean", ocean)))
     if hidden > 0:
         lines[-2] += f"（另有 {hidden} 个简单款、相近款没列）"
     lift = lift_text((ctx.get("events") or {}).get("lift"), ctx.get("cfg") or {})
@@ -146,6 +146,14 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("**🌱 潜力产品**")
         for item in potential[:max_items]:
             lines.append(item_line(item, f" {growth_text(item)}（{increment_text(item)}）"))
+        lines.append("")
+    if ocean:  # 蓝海产品：另一份名单（商品照样在自己的板块里），写出凭什么算蓝海
+        lines.append("**🌊 蓝海产品**")
+        for item in ocean[:max_items]:
+            o = item["ocean"]
+            also = ocean_group(item)
+            lines.append(item_line(item, f" 第{o['rank']}名/{o['n']}个，评论{o['ratings']:,.0f}条（头部中位{o['head_reviews']:,.0f}），"
+                                         f"上架{o['age']}天" + (f"，也在{also}" if also else "")))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:

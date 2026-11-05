@@ -29,6 +29,8 @@ DEFAULTS: dict = {
         "include_label_regex": '(?i)\\bbeds?\\b|bed frames?|headboard|desk|workstation|dresser|\\bchests?\\b|bookcase|shel(f|ves|ving)|nightstand|night stand|tables?\\b|console|\\btv\\b|media|entertainment|cabinet|storage|pantr|buffet|sideboard|credenza|hutch|vanit|bench|rack|island|armoire|wardrobe|shoe|hall tree|filing|etagere',
         "exclude_label_regex": '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart|display|laborator|science',
         "exclude_product_regex": '(?i)upholster|tufted headboard|fabric (?:drawers?|bins?|storage|dresser|chest)|\\bplastic\\b|\\bresin\\b',
+        "small_item": {"max_dims": [18, 14, 8], "max_weight": 20},
+        "exclude_node_regex": "(?i)\\bcoat racks?\\b",
         "extra_nodes": [],
     },
     "discovery": {
@@ -49,7 +51,7 @@ DEFAULTS: dict = {
         "similar_cooldown_runs": 3,
     },
     "pool": {"max_size": 3000, "core_max": 100, "per_node_top": 1, "per_node_top_revenue": 1, "watch_runs": 3,
-             "watch_max": 300,
+             "watch_max": 300, "ocean_max": 40,
              "similar_max": 10, "opportunity_every_run": 20, "opportunity_min_units": 300,
              "opportunity_min_revenue": 40000, "opportunity_min_growth": 20,
              "opportunity_head_rising": 1.3,
@@ -103,6 +105,7 @@ DEFAULTS: dict = {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,
         },
+        "blue_ocean": {"enabled": True, "max_age_days": 180, "top_rank": 50, "head_n": 20, "review_share": 0.2},
         "fake": {
             "suspect_score": 3, "high_score": 5, "review_rate_mult": 3,
             "review_rate_floor": 6, "min_new_reviews": 10, "new_listing_days": 90,

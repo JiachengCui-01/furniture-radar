@@ -80,7 +80,7 @@ def build_facts(ctx: dict) -> dict:
     sec = ctx["sections"]
     return {
         "数据截至": ctx["as_of"],
-        "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子）",
+        "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子、衣帽架，也不含包装在亚马逊标准尺寸以内的小件）",
         # 只给列出的（去掉简单款、合并相近款，detect.showcase），本期要点点名的和报告里看到的一致
         "突然爆火": [brief(i) for i in listed(ctx, "surge")[:FACT_ITEMS]],
         "潜力": [brief(i) for i in listed(ctx, "potential")[:FACT_ITEMS]],

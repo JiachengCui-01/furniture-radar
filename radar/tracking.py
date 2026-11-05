@@ -25,6 +25,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 
 from . import clock, log, monthly_lists, universe
+from .detect import blueocean
 from .detect.rules import current_rating, low_rating
 from .discovery import clean_text, keep_product
 from .series import Daily, build_daily
@@ -32,8 +33,8 @@ from .vendor import Vendor
 
 FLAG_LABELS = ("surge", "potential", "fake")
 FRESH_SOURCES = ("riser", "fresh_new", "similar")  # 近 30 天数据（截至当天）
-REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "screen": "全市场初筛", "young": "早期名单", "similar": "爆款相似款",
-             "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
+REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "ocean": "蓝海候选", "screen": "全市场初筛", "young": "早期名单",
+             "similar": "爆款相似款", "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
 
 
 def watchlist(state: dict, runs: int) -> list[str]:
@@ -202,6 +203,13 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
         if len(order) >= core_max:
             break
         add(p["asin"], "top", core_max)
+
+    # 蓝海候选：全市场名单上满足蓝海产品 ①~④ 的（detect/blueocean.py），每期都拉日数据核对 ⑤，按近 30 天销售额
+    ocean_cap = min(size, len(order) + int(pcfg.get("ocean_max", 0)))
+    for ev in sorted(blueocean.candidates(state, today, cfg).values(), key=lambda e: -e["revenue"]):
+        if len(order) >= ocean_cap:
+            break
+        add(ev["asin"], "ocean", ocean_cap)
 
     # 2. 相似款：上期爆款的同类竞品，最新的优先
     similar = sorted((state.get("similar") or {}).get("items") or [], key=lambda p: (-p.get("run", 0), p["rank"]))

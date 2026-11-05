@@ -434,6 +434,7 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
                 "universe_pages": uni.get("pages") if screened is not None else None,
                 "universe_failed": len(uni.get("failed") or []) if screened is not None else None,
                 "tides": result.get("tides") or {}, "revision_check": result.get("revision_check"),
+                "ocean": result.get("ocean"),
                 "unsettled": {k: list(v) for k, v in ((state.get("monthly_lists") or {}).get("unsettled") or {}).items() if v}}
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=report_id, run_seq=run_seq,
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
@@ -566,7 +567,7 @@ def listed_items(items: list[dict]) -> list[dict]:
     """上榜的商品：增长商品（势头顺序）+ 突然爆火、潜力、持续热销（含月度名单补判的），去重。
     都要看主图：报告按主图挑出简单款、相近款（detect.showcase），卡片上写特色。"""
     out, seen = [], set()
-    for item in analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot")]:
+    for item in analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot") or i.get("ocean")]:
         if item["asin"] not in seen:
             seen.add(item["asin"])
             out.append(item)
@@ -577,7 +578,7 @@ def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: 
     """报告、钉钉、本期要点列出的商品（detect.showcase.curate）：各板块和增长商品去掉简单款、合并相近款；
     gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。
     common：各子类目的基本结构（showcase.common_features）。"""
-    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot")}
+    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot", "ocean")}
     out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg, common)
     c = (cfg["report"].get("showcase") or {})
     ranked = sorted(out["growth"]["shown"], key=lambda i: -round(analyze.increment(i)))
@@ -825,7 +826,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
         same_month = [r for r in state["runs"] if (r.get("date") or "")[:7] == month]
         coverage = {"refreshed": sum(1 for r in state["asins"].values() if r.get("fetched_run") == last["seq"]),
                     "calls": state["calls"].get(month) if len(same_month) == 1 else None, "budget": None}
-    coverage = {**coverage, "tides": result.get("tides") or {}, "revision_check": result.get("revision_check")}
+    coverage = {**coverage, "tides": result.get("tides") or {}, "revision_check": result.get("revision_check"),
+                "ocean": result.get("ocean")}
     prev_run = state["runs"][-2] if len(state["runs"]) >= 2 else None
     ctx = build_report(cfg, secrets, master, site, state, disc, items, report_id=last["id"], run_seq=last["seq"],
                        generated_at=last.get("generated_at") or clock.to_tz(datetime.now(timezone.utc),

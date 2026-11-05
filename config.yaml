@@ -36,6 +36,16 @@ scope:
   # 回测（11-01 彩排全市场名单 3,422 个标题）：多剔除 21 个，都是上面这几类，没有多放进来的
   accessory_regex: '(?i)desk (?:converter|riser)|monitor (?:stand )?riser|laptop stand|tv stand legs|\btv legs\b|tabletop tv stand|\btv (?:wall )?mounts?\b|locker (?:organizer )?shel(?:f|ves)|\bottomans?\b|\b(?:vanity|makeup) (?:chairs?|stools?)\b|\b(?:tv|monitor|computer) (?:screen )?top (?:shelf|shelves|storage)\b|\bmount bracket\b|\b(?:stackable|foldable|collapsible) (?:storage )?(?:bins?|cubes?)\b|\boutdoor\b|\bpatio\b'
   furniture_noun_regex: '(?i)\b(?:desk(?! converter| riser| organizer)|table|nightstand|dresser|cabinet|bookcase|bookshelf|tv stand(?! legs)|console|bench|bed|wardrobe|armoire|sideboard|buffet|hutch|vanity(?! chairs?| stools?)|island|chest|credenza|shelving unit|etagere)\b'
+  # 小件不在监控范围：包装在亚马逊标准尺寸以内（三边从长到短 ≤ 18 × 14 × 8 英寸、包装重量 ≤ 20 磅）的商品，在哪个子类目都剔除。
+  # 和卖家精灵自己给的尺寸分段一致（10-23 全覆盖试跑约 1.1 万个商品：pkgDimensionType 是 SS / LS 的全部符合、其余全部不符合）。
+  # 没有包装数据的不剔除（判断不了）。11-01 全市场名单 3,855 个里剔除 515 个：茶几 52%、床头柜 23%、玄关桌 18%、书架 10% 的销售额，其余子类目 ≤6%
+  small_item:
+    max_dims: [18, 14, 8]
+    max_weight: 20
+  # 整个子类目不追踪（按子类目自己的英文名，读的时候过滤，改了不用重新发现）。衣帽架：2026-04~09 每个月的月度名单里
+  # 67%~87% 的销售额是小件，剔除小件后只剩八九个大号的衣帽树，也还是衣帽架。
+  # 茶几（45%~60%）、音响架（31%~45%）一半左右是小件，只剔除小件、子类目保留（剩下的是带抽屉、柜体的大号边几）
+  exclude_node_regex: '(?i)\bcoat racks?\b'
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
   extra_nodes: []
   #  - path: "1055398:1063306:1063318:3733551"
@@ -92,6 +102,9 @@ pool:
   # 拉全市场 12% / 20% 时，抓到的增长商品 33% / 56% → 40% / 59%（按月增量 50% / 76% → 56% / 79%，初筛已按新进名单的新排法）
   watch_runs: 1
   watch_max: 300
+  # 蓝海候选（radar/detect/blueocean.py，全市场名单上满足蓝海产品 ①~④ 的）：每期都拉日数据核对，最多 N 个，按近 30 天销售额。
+  # 11-01 全市场名单上 19 个（追踪池里本来只有 3 个），每期约多 16 次调用
+  ocean_max: 40
   # 头部名额 30（2026-10-29 起，以前 60）：29 个子类目各取月销量第一。每月 2,000 次时日数据名额紧，头部有月度名单补判
   # （不拉日数据也判持续热销），省下来给初筛出来的商品。11-01 彩排：初筛多拉 40 个，抓到的增长商品 47% → 50%（按月增量 48% → 51%）；
   # 代价：持续热销 120 → 112（8 个月销售额第一的头部在月度名单里不是每个月都在前 50，补判不了），7 个变成“只有月度数据”
@@ -366,6 +379,23 @@ thresholds:
     min_recent_ratio: 1.2            # 近 28 天日均 ≥ 再之前 28 天日均的 1.2 倍；近 7 天（不是大促日的 7 天）日均也要 ≥ 1.2 倍
     max_ratings: 300                 # 评分要求见上面的 min_rating
     min_daily_sales: 2
+  # 蓝海产品（radar/detect/blueocean.py）：半年内上架的新链接，评论只有头部的零头，却已经在子类目里卖进了前几十名——
+  # 这个子类目的买家不看评论积累、老品牌也没把位置占住，新卖家进得来。五条都满足：
+  #   ① 上架 ≤ max_age_days 天，不是老品换链接；② 近 30 天销售额排进子类目前 top_rank 名（本期全市场名单，同一父体算一个）；
+  #   ③ 评论数 ≤ 同子类目销售额前 head_n 名评论数中位数 × review_share；
+  #   ④ 品牌已知，且这个品牌在本期全市场名单里（全部子类目）没有上架超过 max_age_days 天的商品（只看同一个子类目时，
+  #      11-01 的 31 个里 12 个是别的子类目的老品牌，例：FEZIBO 的升降桌在“计算机工作站”是新品，在“家庭办公桌”有老品）；
+  #   ⑤ 本期日数据核对过：不陈旧、没有回落、名单和日数据对得上、不是异常信号、评分达标。
+  # 只看评论数（≤100 条）挑不出蓝海：家具留评率低，11-01 半年内上架、评论 ≤100 条、量够门槛的有 346 个，约占全市场（不含小件）的一成；
+  # 床架头部的评论中位数 1,533 条、电视架 142 条，所以按“头部的几分之一”比。
+  # 回测：某个月有新品卖进子类目前 20 的，之后两个月另一个新品也卖进去的占 83%（没有的子类目 52%）——新品进得来这件事会重复；
+  # 9 月按 ①~④ 挑出的 69 个，10 月保住八成销售额的 39%（其余进了前 50 的新品 32%），不比别的新品更容易掉
+  blue_ocean:
+    enabled: true
+    max_age_days: 180
+    top_rank: 50
+    head_n: 20
+    review_share: 0.2
   fake:                              # 假爆火 / 异常信号评分
     suspect_score: 3                 # ≥3 分：疑似
     high_score: 5                    # ≥5 分：高度疑似

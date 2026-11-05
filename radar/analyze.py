@@ -5,6 +5,7 @@ import math
 from datetime import date
 
 from . import clock, evidence, monthly_lists, universe
+from .detect import blueocean
 from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
@@ -525,6 +526,8 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
         now_row = (extra_rows or {}).get(asin)
         month_row = month_rows.get(asin) or month_by_family.get(universe.family_key(now_row or rec, asin))
         data_tags(item, rec, now_row, month_row, state, today, th.get("data_checks") or {})
+    # 蓝海产品：全市场名单上满足 ①~④ 的候选，日数据核对 ⑤（detect/blueocean.py）；不改板块，另成一份名单
+    ocean = blueocean.mark(items, blueocean.candidates(state, today, cfg), cfg)
     monthly, judged, status = monthly_hot_items(state, disc, stats, cfg, data_date, items, deal, rev, today,
                                                correction_applied=correct, uncertain=uncertain)
     items += monthly
@@ -534,7 +537,8 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
         check = {"inflation": inflation, "need": round(need, 3), "applied": correct,
                  "state": "uncertain" if uncertain else "correct" if correct else "tag" if rev else "clear"}
     return {"items": items, "node_stats": stats, "events": ev, "data_date": data_date,
-            "monthly_judged": judged, "monthly_status": status, "tides": tides, "revision_check": check}
+            "monthly_judged": judged, "monthly_status": status, "tides": tides, "revision_check": check,
+            "ocean": ocean}
 
 
 def data_tags(item: dict, rec: dict, now_row: dict | None, month_row: dict | None, state: dict, today: date,
@@ -867,8 +871,11 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
     potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: (-round(increment(i)), -_growth(i)))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
-    return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot),
+    # 蓝海产品（detect/blueocean.py）：另成一份名单，商品照样留在自己的板块里；按近 30 天销售额排
+    ocean = sorted((i for i in items if i.get("ocean")), key=lambda i: -i["ocean"]["revenue"])
+    return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot), "ocean": cut(ocean),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
+                       "ocean": len(ocean),
                        # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
                        "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
                        "low": sum(1 for i in items if i["label"] == "low"),

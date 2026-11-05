@@ -133,10 +133,10 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     _secrets, second = _two_runs(cfg, master_key, tmp_path)
     page = (tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
-    for kind in ("surge", "potential", "hot", "fake", "growth", "all"):
+    for kind in ("surge", "potential", "hot", "ocean", "fake", "growth", "all"):
         assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
     n_dirs = plain.count('class="dbox dir"')  # 每个开发方向一个小窗（点一览里的一行弹出）
-    assert plain.count('class="pop-src"') == 6 + n_dirs and 'id="pop"' in plain
+    assert plain.count('class="pop-src"') == 7 + n_dirs and 'id="pop"' in plain
     # 季节判断已经去掉：没有季节性商品、季节日历，也没有品类季节性标签
     assert "季节" not in plain
     # 主体里不放完整的商品卡片（都在隐藏的小窗内容里），但商品要有图：KPI 缩略图、本期增长商品图墙
