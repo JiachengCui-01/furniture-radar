@@ -54,88 +54,90 @@ def test_small_items_and_coat_racks_are_out_of_scope(cfg):
 
 
 def _market():
-    """子类目 A：20 个老头部（评论 1000 条）+ 各种新链接；子类目 B 里有 OldCo 的老品。"""
-    heads = [row(f"H{k:02d}", revenue=200_000 - k * 1000) for k in range(20)]
-    new = {
-        "OK": row("OK", revenue=90_000, ratings=150, available="2026-09-01", brand="NewCo"),
-        "MANY": row("MANY", revenue=89_000, ratings=250, available="2026-09-01"),        # 评论 > 1000 × 20%
-        "OLDBRAND": row("OLDBRAND", revenue=88_000, ratings=50, available="2026-09-01", brand="OldCo"),
-        "OLD": row("OLD", revenue=87_000, ratings=50, available="2026-03-01"),           # 上架 245 天
-        "NOBRAND": row("NOBRAND", revenue=86_000, ratings=50, available="2026-09-01", brand=""),
-        "LOWSTAR": row("LOWSTAR", revenue=85_000, ratings=50, available="2026-09-01", rating=4.1),  # 评论 <100 要 ≥4.2
-        "SMALL": row("SMALL", revenue=84_000, ratings=50, available="2026-09-01", pkg={"dims": [17, 13, 5], "weight": 9}),
-    }
-    filler = [row(f"F{k:02d}", revenue=60_000 - k * 100, ratings=500) for k in range(24)]
-    late = row("LATE", revenue=40_000, ratings=50, available="2026-09-01")  # 排在第 51 名以后
-    oldco = row("OC", node=NODE_B, brand="OldCo", available="2023-05-01", name="Dressers")
-    return heads + list(new.values()) + filler + [late, oldco]
+    """几类细分人群 / 用途的商品，加上写法相近、但不是专门设计的（不算）。"""
+    return [
+        row("SEW", title="GIANTEX Folding Sewing Table with Charging Station, Storage Trays", revenue=44_000),
+        row("REC1", title="Record Player Stand, Turntable Stand Holds up to 160 Albums", revenue=66_000),
+        row("REC2", title="Vinyl Record Storage Cabinet with Power Outlets", revenue=30_000, ratings=50, rating=4.1),  # 评分不够
+        row("BED", title="Overbed Bedside Table with Wheels, Foldable Rolling Desk Adjustable Height", revenue=27_000),
+        row("CTAB", title="C Shaped End Table, Skinny Overbed Table for Coffee Drink Snack"),  # 没有轮子 / 可升降：不是卧床护理
+        row("DRUM", title="Mid Century Modern Fluted Drum Table"),                              # 鼓形是造型
+        row("KIDS", title="Kids Bookshelf for Classroom and Playroom"),                         # 适用场景的罗列
+        row("SMALL", title="Record Player Stand, Small End Table", pkg={"dims": [17, 13, 5], "weight": 9}),  # 小件
+    ]
 
 
-def test_blue_ocean_candidates_follow_each_condition(cfg):
-    """①~④ 只用本期全市场名单：上架 ≤180 天、销售额排进子类目前 50（小件不参与排名）、评论 ≤ 头部 20 名中位数的 20%、
-    品牌已知且在全市场名单里（别的子类目也算）没有上架超过 180 天的商品、评分达标。名单不是本期翻的不判。"""
+def test_niche_products_are_found_by_their_targeted_design(cfg):
+    """蓝海产品 = 标题写明是给特定人群 / 用途专门设计的（词表），在本期全市场名单里（量够门槛、在范围内、不是小件），
+    这一类全市场不超过 max_products 个（圈子小），评分达标。写法相近、但不是专门设计的不算；名单不是本期翻的不判。"""
     st = state_with(_market())
-    cands = blueocean.candidates(st, TODAY, cfg)
-    assert list(cands) == ["OK"]
-    ev = cands["OK"]
-    assert ev["rank"] == 21 and ev["head_reviews"] == 1000 and ev["limit"] == 200 and ev["age"] == 61
-    assert ev["n"] == 20 + 6 + 24 + 1  # 小件不算进子类目
-    assert blueocean.candidates(state_with(_market(), date(2026, 10, 20)), TODAY, cfg) == {}
-    cfg["thresholds"]["blue_ocean"]["enabled"] = False
-    assert blueocean.candidates(st, TODAY, cfg) == {}
+    cands, niches = blueocean.scan(st, TODAY, cfg)
+    assert {e["niche"] for e in cands.values()} == {"缝纫手工", "黑胶唱片", "卧床护理"}
+    assert sorted(cands) == ["BED", "REC1", "SEW"]  # REC2 评分不够：不列，但算进这一类的个数（也是竞品）
+    assert niches["黑胶唱片"]["n"] == 2 and niches["黑胶唱片"]["revenue"] == 96_000 and niches["黑胶唱片"]["small"]
+    assert cands["REC1"]["n"] == 2 and cands["REC1"]["niche_revenue"] == 96_000
+    cfg["thresholds"]["blue_ocean"]["max_products"] = 1  # 黑胶唱片 2 个：圈子不算小
+    cands, niches = blueocean.scan(st, TODAY, cfg)
+    assert "REC1" not in cands and not niches["黑胶唱片"]["small"] and "SEW" in cands
+    assert blueocean.scan(state_with(_market(), date(2026, 10, 20)), TODAY, cfg) == ({}, {})
 
 
 def _item(asin, **kw):
     base = {"asin": asin, "parent": None, "label": "watch", "label_cn": "观察", "daily": True, "spark": [1.0] * 30,
-            "stale": False, "relist": None, "fading": False, "tags": [], "age_days": 61, "rising": None,
-            "title": "NewCo Fluted Nightstand", "brand": "NewCo", "node_cn": "床头柜", "node_name": "Nightstands",
+            "stale": False, "relist": None, "fading": False, "tags": [], "age_days": 200, "rising": None,
+            "title": "Record Player Stand", "brand": "NewCo", "node_cn": "音响架", "node_name": "Audio-Visual Shelving",
             "price": 150.0, "rating": 4.6, "ratings": 150, "image": "", "fake": {"score": 0, "level": None, "signals": []},
             "monthly": [], "spark_start": "2026-10-03", "recent_avg28": 20.0, "material": "实木", "features": []}
     return {**base, **kw}
 
 
-def test_blue_ocean_is_listed_only_after_the_daily_data_check(cfg):
-    """⑤ 日数据核对：没回落、不是老品换链接、名单和日数据对得上、不陈旧、不是异常信号；没拉到日数据的不列。
-    商品照样留在自己的板块里，另成一份名单，按近 30 天销售额排。"""
-    ev = {"asin": "A", "node": NODE_A, "rank": 3, "n": 80, "revenue": 90_000.0, "ratings": 20.0, "head_reviews": 300.0,
-          "limit": 60.0, "age": 61}
-    cands = {a: {**ev, "asin": a, "revenue": ev["revenue"] - i} for i, a in enumerate("ABCDEFG")}
-    items = [_item("A", label="potential"), _item("B", fading=True), _item("C", relist={"why": "x"}),
-             _item("D", tags=["名单和日数据对不上（名单近 30 天 900 件，日数据合计 30 件）：数据可能有误"]),
-             _item("E", stale=True), _item("F", daily=False, spark=[])]
-    out = blueocean.mark(items, cands, cfg)
-    assert [i["asin"] for i in items if i.get("ocean")] == ["A"] and items[0]["label"] == "potential"
-    assert out == {"candidates": 7, "tracked": 5, "listed": 1,
-                   "missed": {"最近回落": 1, "老品换链接": 1, "名单和日数据对不上": 1, "数据陈旧": 1, "没有日数据": 2}}
-    sec = analyze.sections(items, 0)
-    assert [i["asin"] for i in sec["ocean"]] == ["A"] and sec["counts"]["ocean"] == 1 and sec["potential"][0]["asin"] == "A"
+def test_blue_ocean_list_checks_daily_data_when_it_has_it(cfg):
+    """拉到了日数据的再核对：异常信号、名单和日数据对不上的不列；月度名单补判的持续热销照样算；没拉到日数据的按名单那一行
+    做卡片，写明只有名单数据。商品照样留在自己的板块里，同一类排在一起（合计销售额大的类在前）。"""
+    st = state_with([row(a, title=f"Record Player Stand {a}", revenue=60_000 - i) for i, a in enumerate("ABCDE")]
+                    + [row("S", title="Folding Sewing Table", revenue=90_000)])
+    cands, niches = blueocean.scan(st, TODAY, cfg)
+    items = [_item("A", label="potential"), _item("B", label="fake", fake={"score": 4, "level": "suspect", "signals": []}),
+             _item("C", tags=["名单和日数据对不上（名单近 30 天 900 件，日数据合计 30 件）：数据可能有误"]),
+             _item("D", label="hot", daily=False, spark=[], source="monthly", hot={"avg_monthly": 500})]
+    out, judged = blueocean.mark(items, cands)
+    assert [i["asin"] for i in items if i.get("ocean")] == ["A", "D"] and items[0]["label"] == "potential"
+    assert out == {"candidates": 6, "daily": 3, "monthly": 1, "missed": {"异常信号": 1, "名单和日数据对不上": 1}}
+    extra = blueocean.list_items(st, cands, judged, TODAY)
+    assert sorted(i["asin"] for i in extra) == ["E", "S"] and all(i["tags"] == [blueocean.LIST_ONLY] for i in extra)
+    sec = analyze.sections(items + extra, 0)
+    assert [i["asin"] for i in sec["ocean"]] == ["A", "D", "E", "S"]  # 黑胶唱片合计 $30 万在前，缝纫 $9 万在后
+    assert sec["counts"]["ocean"] == 4 and sec["counts"]["total"] == 3  # 只有名单数据的不算追踪商品
 
     html = render.card(items[0], "ocean", render.ocean_group(items[0]))
-    assert "第 <b>3</b> 名 / 80 个" in html and "头部中位 300" in html and 'class="grp">潜力<' in html
-    note = render._ocean_note({"ocean": out})
-    assert note.startswith("名单上符合 7 个 → 有日数据 5 个 → 核对通过 1 个") and "没有日数据 2" in note
+    assert "<b>黑胶唱片</b> · 全市场 5 个" in html and 'class="grp">潜力<' in html and 'data-node="黑胶唱片"' in html
+    cov = {"ocean": {**out, "niches": niches, "list_only": len(extra)}}
+    note = render._ocean_note(cov)
+    assert note.startswith("名单上符合 6 个：有日数据 3 个、月度补判 1 个、只有名单数据 2 个") and "异常信号 1" in note
+    pop = render._ocean_pop({"shown": sec["ocean"]}, "x", 4, cov)
+    assert '<b>黑胶唱片</b> 5 个 · $30 万/月 · 5 个品牌' in pop and 'data-group="细分"' in pop
     hint = render.section_hints(cfg)["ocean"]
-    assert "≤180 天" in hint and "前 20 名中位数的 20%" in hint and "前 50 名" in hint
+    assert "特定人群 / 用途" in hint and f"不超过 {cfg['thresholds']['blue_ocean']['max_products']} 个" in hint
     assert render.section_hints(cfg, universe=False)["ocean"] == "本期没翻成全市场名单，不判蓝海产品。"
 
 
-def test_pool_pulls_daily_data_for_blue_ocean_candidates(cfg):
-    """名单上满足 ①~④ 的候选进追踪池（pool.ocean_max 个，按近 30 天销售额），每期都拉日数据核对。"""
+def test_pool_pulls_daily_data_for_blue_ocean_products(cfg):
+    """符合的商品进追踪池拉日数据（pool.ocean_max 个，按近 30 天销售额），卡片上才有走势图、才能核对异常信号。"""
     st = state_with(_market())
-    pool, reasons = tracking.select_pool(None, st, cfg, TODAY, limit=200)
-    assert reasons.get("OK") == "ocean" and list(reasons.values()).count("ocean") == 1
-    cfg["pool"]["ocean_max"] = 0
     _pool, reasons = tracking.select_pool(None, st, cfg, TODAY, limit=200)
-    assert reasons.get("OK") != "ocean"
+    assert {a for a, why in reasons.items() if why == "ocean"} == {"BED", "REC1", "SEW"}
+    cfg["pool"]["ocean_max"] = 1
+    _pool, reasons = tracking.select_pool(None, st, cfg, TODAY, limit=200)
+    assert [a for a, why in reasons.items() if why == "ocean"] == ["REC1"]
 
 
 def test_dingtalk_lists_blue_ocean_products(cfg):
-    item = _item("A", label="potential", ocean={"asin": "A", "rank": 3, "n": 80, "revenue": 90_000.0, "ratings": 20.0,
-                                                "head_reviews": 300.0, "limit": 60.0, "age": 61})
+    item = _item("A", label="potential", ocean={"asin": "A", "niche": "黑胶唱片", "n": 9, "revenue": 79_000.0,
+                                                "niche_revenue": 390_000.0})
     ctx = {"title": "家具爆品雷达", "report_id": "2026-11-02", "as_of": "2026-11-01", "cfg": cfg,
            "sections": {"surge": [], "potential": [], "hot": [], "fake": [], "ocean": [item],
                         "counts": {"surge": 0, "potential": 0, "hot": 0, "fake": 0, "ocean": 1, "total": 1}},
            "diff": {"first": True}, "traits": {}}
     text = dingtalk.build_text(ctx)
     assert "🌊 蓝海 1" in text and "**🌊 蓝海产品**" in text
-    assert "第3名/80个，评论20条（头部中位300），上架61天，也在潜力" in text
+    assert "黑胶唱片（全市场9个），近30天$8 万，也在潜力" in text

@@ -102,8 +102,8 @@ pool:
   # 拉全市场 12% / 20% 时，抓到的增长商品 33% / 56% → 40% / 59%（按月增量 50% / 76% → 56% / 79%，初筛已按新进名单的新排法）
   watch_runs: 1
   watch_max: 300
-  # 蓝海候选（radar/detect/blueocean.py，全市场名单上满足蓝海产品 ①~④ 的）：每期都拉日数据核对，最多 N 个，按近 30 天销售额。
-  # 11-01 全市场名单上 19 个（追踪池里本来只有 3 个），每期约多 16 次调用
+  # 蓝海产品（radar/detect/blueocean.py）：每期都拉日数据（卡片上才有走势图、才能核对异常信号），最多 N 个，按近 30 天销售额。
+  # 11-01 全市场名单上 61 个（评分达标的），那期追踪池里本来只有 5 个，所以每期最多多 40 次调用
   ocean_max: 40
   # 头部名额 30（2026-10-29 起，以前 60）：29 个子类目各取月销量第一。每月 2,000 次时日数据名额紧，头部有月度名单补判
   # （不拉日数据也判持续热销），省下来给初筛出来的商品。11-01 彩排：初筛多拉 40 个，抓到的增长商品 47% → 50%（按月增量 48% → 51%）；
@@ -379,23 +379,32 @@ thresholds:
     min_recent_ratio: 1.2            # 近 28 天日均 ≥ 再之前 28 天日均的 1.2 倍；近 7 天（不是大促日的 7 天）日均也要 ≥ 1.2 倍
     max_ratings: 300                 # 评分要求见上面的 min_rating
     min_daily_sales: 2
-  # 蓝海产品（radar/detect/blueocean.py）：半年内上架的新链接，评论只有头部的零头，却已经在子类目里卖进了前几十名——
-  # 这个子类目的买家不看评论积累、老品牌也没把位置占住，新卖家进得来。五条都满足：
-  #   ① 上架 ≤ max_age_days 天，不是老品换链接；② 近 30 天销售额排进子类目前 top_rank 名（本期全市场名单，同一父体算一个）；
-  #   ③ 评论数 ≤ 同子类目销售额前 head_n 名评论数中位数 × review_share；
-  #   ④ 品牌已知，且这个品牌在本期全市场名单里（全部子类目）没有上架超过 max_age_days 天的商品（只看同一个子类目时，
-  #      11-01 的 31 个里 12 个是别的子类目的老品牌，例：FEZIBO 的升降桌在“计算机工作站”是新品，在“家庭办公桌”有老品）；
-  #   ⑤ 本期日数据核对过：不陈旧、没有回落、名单和日数据对得上、不是异常信号、评分达标。
-  # 只看评论数（≤100 条）挑不出蓝海：家具留评率低，11-01 半年内上架、评论 ≤100 条、量够门槛的有 346 个，约占全市场（不含小件）的一成；
-  # 床架头部的评论中位数 1,533 条、电视架 142 条，所以按“头部的几分之一”比。
-  # 回测：某个月有新品卖进子类目前 20 的，之后两个月另一个新品也卖进去的占 83%（没有的子类目 52%）——新品进得来这件事会重复；
-  # 9 月按 ①~④ 挑出的 69 个，10 月保住八成销售额的 39%（其余进了前 50 的新品 32%），不比别的新品更容易掉
+  # 蓝海产品（radar/detect/blueocean.py）：给某个特定小圈子人群 / 用途专门设计的家具，和普通常规款不同、针对性强。四条都满足：
+  #   ① 标题里写明了下面 niches 词表的某一类（每类一个正则，按顺序取第一类）；
+  #   ② 在本期全市场名单里（近 30 天 ≥300 件或 ≥4 万美元），在监控范围内、不是小件；
+  #   ③ 圈子小：这一类在全市场名单里够门槛的商品（同一父体算一个）≤ max_products 个，多了就是大众品类
+  #      （11-01：标题写 gaming 的 114 个、standing desk 的 194 个、makeup vanity / vanity desk 的 142 个，加进词表也不算）；
+  #   ④ 评分达标；拉到了日数据的，还要不是异常信号、名单和日数据对得上。没拉到日数据的照样列出，卡片写明只有名单数据。
+  # 词表只认写明专门用途的说法。11-01 全市场名单里逐个看过标题（6 类 71 个，都是这一类专门的设计）；试过、去掉的写法：
+  #   drum table（鼓形是造型）、birdcage（壁炉款式）、concealed（隐藏式床）、for classroom / teacher（适用场景的罗列，标的是普通书架、会议桌）、
+  #   只写 overbed 的 C 形沙发边几（卧床护理要同时写了轮子、可升降或医院用）。
+  # 宠物、美甲沙龙、乐器、绘画、宗教、3D 打印这几类现在的监控范围里还没有够门槛的商品（多在宠物用品、美容、乐器等别的根类目），先留着词
   blue_ocean:
     enabled: true
-    max_age_days: 180
-    top_rank: 50
-    head_n: 20
-    review_share: 0.2
+    max_products: 50
+    niches:
+      - {name: 缝纫手工, regex: '\bsewing (?:machine )?(?:tables?|desks?|cabinets?|stations?|storage)\b|\bquilting (?:tables?|desks?)\b|\bcraft (?:tables?|desks?|stations?|cabinets?)\b|\bscrapbooking\b'}
+      - {name: 卧床护理, regex: '^(?=.*\b(?:wheels?|rolling|casters?|adjustable|hospital)\b).*\bover ?bed\b|\bhospital (?:bed )?tables?\b|\bfor (?:the )?(?:elderly|seniors)\b|\bwheelchair (?:accessible|friendly)\b'}
+      - {name: 黑胶唱片, regex: '\brecord player (?:stands?|tables?|cabinets?|consoles?)\b|\bturntable (?:stands?|tables?|cabinets?|consoles?)\b|\bvinyl (?:record )?(?:storage|stands?|cabinets?|holders?|shelf|shelves)\b|\brecord (?:storage|cabinets?)\b'}
+      - {name: 蒙氏幼儿, regex: '\bmontessori\b|\bchanging tables?\b|\btoddler (?:beds?|bookshelf|bookshelves|bookcases?|shelf|tables?)\b|\bnursery dressers?\b'}
+      - {name: 枪支暗格, regex: '\bgun (?:drawers?|safes?|cabinets?|compartments?|storage|racks?)\b|\bhidden gun\b|\bconcealment (?:furniture|shelf|shelves|tables?|nightstands?|cabinets?|beds?)\b|\bfirearms?\b'}
+      - {name: 店铺前台, regex: '\breception (?:desks?|counters?)\b|\bfront desk\b|\bcheckout counters?\b'}
+      - {name: 宠物, regex: '\blitter box (?:enclosures?|furniture|cabinets?|tables?)\b|\bdog crate (?:furniture|tables?|end tables?)\b|\b(?:dog|cat|pet) (?:kennel|crate) furniture\b|\bcat washroom\b|\baquarium stands?\b|\bfish tank stands?\b|\breptile\b|\bterrarium stands?\b'}
+      - {name: 美甲沙龙, regex: '\bnail (?:tables?|desks?|stations?)\b|\bmanicure (?:tables?|desks?|stations?)\b|\bsalon (?:stations?|desks?|cabinets?|furniture)\b|\bbarber (?:stations?|cabinets?)\b|\blash (?:beds?|tables?)\b'}
+      - {name: 乐器音乐, regex: '\bstudio desks?\b|\bproducer desks?\b|\bmusic (?:studio|production) desks?\b|\bpiano bench|\bkeyboard (?:stands?|desks?)\b|\bguitar (?:stands?|cabinets?|storage)\b'}
+      - {name: 绘画设计, regex: '\bdrafting (?:tables?|desks?)\b|\bdrawing (?:tables?|desks?)\b|\bartist (?:desks?|tables?)\b'}
+      - {name: 宗教, regex: '\bhome altar\b|\baltar (?:tables?|cabinets?)\b|\bprayer (?:tables?|altar|stands?)\b'}
+      - {name: 3D打印, regex: '\b3d printer (?:tables?|stands?|cabinets?|enclosures?)\b'}
   fake:                              # 假爆火 / 异常信号评分
     suspect_score: 3                 # ≥3 分：疑似
     high_score: 5                    # ≥5 分：高度疑似

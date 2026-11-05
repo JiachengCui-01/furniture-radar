@@ -184,6 +184,7 @@ font:inherit;color:inherit;text-align:left;width:100%;cursor:pointer;display:fle
 .kpi-th{display:flex;gap:4px;margin-top:2px;min-height:36px;overflow:hidden}
 .kpi-th img,.kpi-th .ph{width:36px;height:36px;object-fit:contain;background:var(--imgbg);border-radius:6px;border:1px solid var(--line)}
 .kpi-x{font-size:11.5px;color:var(--muted)}
+.nich{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}.nich span{background:var(--chip);border-radius:8px;padding:3px 9px;font-size:12.5px}.nich b{color:var(--c);margin-right:2px}
 .alert{border-left:3px solid var(--fake);background:rgba(201,42,42,.08);border-radius:8px;padding:8px 12px;margin:12px 0;font-size:14px}
 section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin:14px 0}
 section>h2{font-size:18px;margin:0 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -446,7 +447,7 @@ if(kn.length>1){var seg=el('span','seg');[''].concat(kn).forEach(function(k){var
 b.type='button';b.setAttribute('data-k',k);seg.appendChild(b);});bar.appendChild(seg);
 seg.addEventListener('click',function(e){var b=closest(e.target,'button');if(!b)return;st.k=b.getAttribute('data-k');
 [].forEach.call(seg.children,function(x){x.className=x===b?'on':'';});apply();});}
-if(order.length>1){var sel=el('select');sel.appendChild(new Option('全部子类目（'+cards.length+'）',''));
+if(order.length>1){var sel=el('select');sel.appendChild(new Option('全部'+(box.getAttribute('data-group')||'子类目')+'（'+cards.length+'）',''));
 order.sort(function(a,b){return nodes[b]-nodes[a];}).forEach(function(n){sel.appendChild(new Option(n+'（'+nodes[n]+'）',n));});
 sel.addEventListener('change',function(){st.n=sel.value;apply();});bar.appendChild(sel);}
 var so=el('select'),opts=[['','默认排序']];if(hasInc)opts.push(['-inc','月增量 高→低']);
@@ -564,7 +565,8 @@ def _card_data(item: dict, kind: str) -> str:
     inc = ""
     if kind in GROUP_CN and not item.get("baseline_unknown") and not increment_note(item).startswith("按 0"):
         inc = f"{directions.increment(item):.0f}"
-    vals = {"node": item.get("node_cn") or item.get("node_name") or "", "kind": kind, "inc": inc,
+    node = (item.get("ocean") or {}).get("niche") if kind == "ocean" else None
+    vals = {"node": node or item.get("node_cn") or item.get("node_name") or "", "kind": kind, "inc": inc,
             "price": item.get("price"), "age": item.get("age_days"), "rating": item.get("rating")}
     return "".join(f' data-{k}="{esc(v)}"' for k, v in vals.items() if v not in (None, ""))
 
@@ -603,9 +605,8 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
             kv.append(_pill("近3月", f"{fmt_pct(h['trend'])}/月"))
     if kind == "ocean" and item.get("ocean"):
         o = item["ocean"]
-        kv.append(_pill("子类目", f"第 <b>{o['rank']}</b> 名 / {fmt_int(o['n'])} 个"))
+        kv.append(_pill("细分", f"<b>{esc(o['niche'])}</b> · 全市场 {fmt_int(o['n'])} 个"))
         kv.append(_pill("近30天", f"<b>{esc(directions.money_text(o['revenue']))}</b>"))
-        kv.append(_pill("评论", f"<b>{fmt_int(o['ratings'])}</b> 条 · 头部中位 {fmt_int(o['head_reviews'])}"))
     if kind in ("hot", "fake", "rising", "ocean") and item.get("recent_avg28") is not None:
         kv.append(_pill("近28天日均", fmt_num(item["recent_avg28"])))
     note = ""
@@ -683,21 +684,34 @@ def ocean_group(item: dict) -> str:
 
 
 def _ocean_note(cov: dict) -> str:
-    """名单上符合 ①~④ 的几个、拉到日数据的几个、核对通过的几个，没通过的原因。"""
+    """全市场名单上符合的几个，其中有日数据的、只有名单数据的几个，核对没通过的原因（数据说明里也有这一行）。"""
     o = cov.get("ocean") or {}
     if not o.get("candidates"):
         return ""
     missed = "、".join(f"{k} {v}" for k, v in sorted((o.get("missed") or {}).items(), key=lambda kv: -kv[1]))
-    return (f"名单上符合 {o['candidates']} 个 → 有日数据 {o['tracked']} 个 → 核对通过 {o['listed']} 个"
-            + (f"（没列：{missed}）" if missed else "") + "。")
+    big = [k for k, v in (o.get("niches") or {}).items() if not v.get("small")]
+    return (f"名单上符合 {o['candidates']} 个：有日数据 {o.get('daily', 0)} 个、月度补判 {o.get('monthly', 0)} 个、"
+            f"只有名单数据 {o.get('list_only', 0)} 个" + (f"（没列：{missed}）" if missed else "")
+            + (f"；{'、'.join(big)} 圈子太大，不算" if big else "") + "。")
+
+
+def _niche_row(cov: dict) -> str:
+    """小窗顶部：每一类在全市场名单里有几个够门槛的商品、合计月销售额、几个品牌（圈子有多大）。"""
+    niches = (cov.get("ocean") or {}).get("niches") or {}
+    rows = sorted(((k, v) for k, v in niches.items() if v.get("small")), key=lambda kv: -kv[1]["revenue"])
+    if not rows:
+        return ""
+    return '<div class="nich">' + "".join(
+        f'<span title="{esc("、".join(v["nodes"]))}"><b>{esc(k)}</b> {v["n"]} 个 · {esc(directions.money_text(v["revenue"]))}/月'
+        f' · {v["brands"]} 个品牌</span>' for k, v in rows) + "</div>"
 
 
 def _ocean_pop(cur: dict, hint: str, total: int, cov: dict) -> str:
     similar = cur.get("similar") or {}
     body = "".join(card(i, "ocean", ocean_group(i), similar=similar.get(i["asin"], [])) for i in cur["shown"])         or '<div class="empty">本期没有符合条件的商品。</div>'
     return _pop_src("ocean", "蓝海产品", "ocean",
-                    f'<p class="hint">{esc(hint)} {esc(_ocean_note(cov))}{esc(_count_text(cur, total))}</p>'
-                    f'<div class="cards" data-tools>{body}</div>{_skipped(cur)}')
+                    f'<p class="hint">{esc(hint)} {esc(_ocean_note(cov))}{esc(_count_text(cur, total))}</p>{_niche_row(cov)}'
+                    f'<div class="cards" data-tools data-group="细分">{body}</div>{_skipped(cur)}')
 
 
 def growth_text(item: dict) -> str:
@@ -762,10 +776,10 @@ def _gallery(cur: dict, cfg: dict) -> str:
             f'阴影是判定比的最近几天，两段横线是前后两段的日均。点图打开亚马逊。</p><div class="gal">{body}</div></section>')
 
 
-def _kpi(key: str, label: str, desc: str, rows: list[dict], total: int) -> str:
+def _kpi(key: str, label: str, desc: str, rows: list[dict], total: int, folded: str = "简单款、相近款") -> str:
     thumbs = "".join(_img(i, 100) for i in rows[:5])
     hidden = total - len(rows)
-    extra = f'<span class="kpi-x">另 {hidden} 个简单款、相近款没列</span>' if hidden > 0 else ""
+    extra = f'<span class="kpi-x">另 {hidden} 个{folded}没列</span>' if hidden > 0 else ""
     return (f'<button type="button" class="kpi" data-pop="{key}" style="--c:var(--{key})">'
             f'<span class="kpi-n"><b>{len(rows)}</b><span>{label}</span></span><span class="kpi-d">{esc(desc)}</span>'
             f'<span class="kpi-th">{thumbs}</span>{extra}</button>')
@@ -1233,9 +1247,8 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
         "hot": f"近 {h['lookback_months']} 个月里 ≥{h['months_required']} 个月达到子类目第 {h['rank_in_node']} 名的月销量，波动小、没在跌，"
                f"近 28 天还有近 6 个月日均的 {h['min_recent_ratio']:.0%}。按近 6 个月月均排。",
         "fake": f"异常分 ≥{f['suspect_score']}（留评率过高、评论暴增、评分跳升、短时脉冲等累计），只是提示，需人工核实。按异常分排。",
-        "ocean": (f"半年内（≤{o['max_age_days']} 天）上架、评论不到子类目前 {o['head_n']} 名中位数的 {o['review_share']:.0%}，"
-                  f"近 30 天销售额已进子类目前 {o['top_rank']} 名，品牌在全市场名单里没有老品，日数据核对过。"
-                  "按近 30 天销售额排，商品照样留在原板块。"
+        "ocean": (f"标题写明是给特定人群 / 用途专门设计的（缝纫、卧床护理、黑胶唱片、蒙氏幼儿……，词表在 config.yaml），"
+                  f"近 30 天量够全市场门槛，这一类全市场不超过 {o['max_products']} 个。同一类排在一起，商品照样留在原板块。"
                   if universe else "本期没翻成全市场名单，不判蓝海产品。"),
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
         "all": "本期拉了日数据的全部商品。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
@@ -1265,8 +1278,8 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                             "衣帽架整个子类目不追踪"))
     ob = blueocean.settings(cfg)
     if ob["enabled"]:
-        rows.append(("蓝海产品", f"上架 ≤{ob['max_age_days']} 天、评论不到子类目头部的 {ob['review_share']:.0%}，却已卖进子类目前 "
-                              f"{ob['top_rank']} 名，品牌在全市场名单里也没有老品：说明新卖家进得来"))
+        rows.append(("蓝海产品", f"针对特定小圈子人群 / 用途专门设计的（缝纫机桌、卧床的人用的床边桌、黑胶唱片机柜……），"
+                              f"卖得够量，而且这一类全市场不超过 {ob['max_products']} 个：和常规款不同，做的卖家少"))
     if sc.get("enabled", True):
         rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构，"
                             "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列"),
@@ -1337,7 +1350,7 @@ def _facts(ctx: dict, counts: dict, cur: dict) -> list[tuple[str, str]]:
         out.append(("评分不达标", f"{counts['low']} 个，没上榜"))
     note = _ocean_note(cov)
     if note:
-        out.append(("蓝海候选", note.rstrip("。")))
+        out.append(("蓝海产品", note.rstrip("。")))
     tides = cov.get("tides") or {}
     if tides:
         up = sorted(((t, p) for p, t in tides.items() if t > 1.0), reverse=True)
@@ -1399,7 +1412,7 @@ def render(ctx: dict) -> str:
         _kpi("surge", "突然爆火", "近 1~2 周销量和排名翻倍", cur["surge"]["shown"], counts["surge"]),
         _kpi("potential", "潜力产品", "新品，近 28 天和月销都在涨", cur["potential"]["shown"], counts["potential"]),
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
-        _kpi("ocean", "蓝海产品", "新品评论很少就卖进子类目头部", cur["ocean"]["shown"], counts.get("ocean", 0)),
+        _kpi("ocean", "蓝海产品", "给特定人群 / 用途专门设计的", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
     ])
     facts = _facts(ctx, counts, cur)

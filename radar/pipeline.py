@@ -440,7 +440,8 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
                        generated_at=display_now.strftime("%Y-%m-%d %H:%M"), prev_run=prev_run,
                        coverage=coverage, today=today, events=result.get("events"),
                        monthly=result.get("monthly_status"), monthly_judged=result.get("monthly_judged"),
-                       retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows))
+                       retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows),
+                       ocean_extra=result.get("ocean_extra"))
     key_text = ctx["key_text"]
     sec = ctx["sections"]
 
@@ -578,7 +579,10 @@ def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: 
     """报告、钉钉、本期要点列出的商品（detect.showcase.curate）：各板块和增长商品去掉简单款、合并相近款；
     gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。
     common：各子类目的基本结构（showcase.common_features）。"""
-    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot", "ocean")}
+    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot")}
+    # 蓝海产品不按简单款去掉：针对特定人群 / 用途的设计本身就是它的特色（蒙氏玩具架主图上只看得到开放格）；相近款照样合并
+    show = {**((cfg["report"].get("showcase") or {})), "hide_plain": False}
+    out["ocean"] = showcase.curate(sec["ocean"], state, {**cfg, "report": {**cfg["report"], "showcase": show}}, common)
     out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg, common)
     c = (cfg["report"].get("showcase") or {})
     ranked = sorted(out["growth"]["shown"], key=lambda i: -round(analyze.increment(i)))
@@ -601,11 +605,14 @@ def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict
 def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: dict, disc: dict | None,
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
                  prev_run: dict | None, coverage: dict, today, events: dict | None = None,
-                 monthly: dict | None = None, monthly_judged: list[str] | None = None, retro: dict | None = None) -> dict:
+                 monthly: dict | None = None, monthly_judged: list[str] | None = None, retro: dict | None = None,
+                 ocean_extra: list[dict] | None = None) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
     events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；
-    retro：上期没追踪的商品回看上期那天的判定（previous_view），“与上期对比”用。"""
-    sec = analyze.sections(items, int(cfg["report"]["top_n"]))
+    retro：上期没追踪的商品回看上期那天的判定（previous_view），“与上期对比”用；
+    ocean_extra：没拉到日数据的蓝海产品（只在蓝海产品里列出，不进任何板块、“全部追踪商品”和与上期对比）。"""
+    extra = list(ocean_extra or [])
+    sec = analyze.sections(items + extra, int(cfg["report"]["top_n"]))
     trait = analyze.compute_traits(items, disc, state, today, cfg)
 
     # 主图外观识别 + 主材质：增长商品，另取持续热销对照组
@@ -619,7 +626,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
                               secrets.llm_api_key, untracked=True)
     if tagged:
         log.info(f"开发方向主图识别 {tagged} 张")
-    listed = listed_items(items)
+    listed = listed_items(items + extra)
     tagged = vision.tag_items(listed, state, cfg, secrets.llm_api_key, untracked=True)
     if tagged:
         log.info(f"上榜商品主图识别 {tagged} 张")
@@ -630,7 +637,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     trait["appearance"] = merge_appearance(trait, trait["vision"], cfg)
     # 各子类目的基本结构（衣帽架的挂钩、梳妆台的镜子……）：本期商品 + 月度名单商品里主图识别过的多数都有的，不算特色
     common = showcase.common_features(items + list(((disc or {}).get("products") or {}).values()), state, cfg)
-    for item in items:
+    for item in items + extra:
         rec = state["asins"].get(item["asin"]) or {}
         item["material"], item["material_source"] = materials.best(rec, item["title"])
         item["look"] = vision.of(state, item["asin"]).get("summary") or ""
@@ -835,7 +842,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        prev_run=prev_run, coverage=coverage,
                        today=today, events=result.get("events"), monthly=result.get("monthly_status"),
                        monthly_judged=result.get("monthly_judged"),
-                       retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows))
+                       retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows),
+                       ocean_extra=result.get("ocean_extra"))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     scrub_history_keys(cfg, site, master, (state.get("reports") or [])[:-1])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
