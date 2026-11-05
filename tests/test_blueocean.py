@@ -82,6 +82,41 @@ def test_niche_products_are_found_by_their_targeted_design(cfg):
     assert blueocean.scan(state_with(_market(), date(2026, 10, 20)), TODAY, cfg) == ({}, {})
 
 
+def test_too_small_or_too_simple_niche_products_are_not_blue_ocean(cfg):
+    """圈子再小，太小、结构太简单的也不算：包装不到 30 磅又没有升降 / 翻转 / 折叠 / 翻板 / 暗格这类机构的；
+    书架 / 置物架类（标题或主图），不到 50 磅、不是超大件、没有柜门也没有机构的（带个抽屉也还是书架）。
+    只按重量或只按结构都不行：42 磅的玩具架要去掉，45 磅带枪支暗格的床头柜、结构简单但不小的蒙氏地床要保留。
+    太小、结构太简单的不进候选，但算进这一类的个数。"""
+    def pkg(weight, dims=(30.0, 14.0, 6.0)):
+        return {"dims": list(dims), "weight": weight}
+    rows = [
+        row("SPACEAID", title="SpaceAid 4-Tier Scalloped Bookshelf, Montessori Bookcase for Toddlers", pkg=pkg(19.6)),
+        row("DRAWER", title="3-Tier Montessori Scalloped Kids Bookshelf with Drawer", pkg=pkg(18.2)),
+        row("OOOK", title="OOOK Montessori Bookshelf and Toy Storage Organizer with Book Rack", pkg=pkg(42.3)),
+        row("FLOORBED", title="Twin Montessori Floor Bed with Rails", pkg=pkg(44.0, (76.0, 16.0, 6.0))),
+        row("OVERBED", title="Overbed Bedside Table with Wheels, Pneumatic Adjustable Height", pkg=pkg(21.4)),
+        row("GUN", title="Night Stand with Gun Drawer, Charging Bedside Table", pkg=pkg(38.5)),
+        row("RECSTAND", title="Record Player Stand, Turntable Stand Holds up to 160 Albums", pkg=pkg(27.0)),
+        row("FLIP", title="Record Player Stand with Flip-Down Record Shelf, Walnut", pkg=pkg(27.7)),
+        row("CONSOLE", title="Large Record Player Stand with 2 Fluted Cabinets, Open Storage", pkg=pkg(41.8, (50.0, 18.0, 5.0))),
+        row("NOPKG", title="Montessori Toy Shelf, 2 Tier"),
+    ]
+    st = state_with(rows)
+    cands, niches = blueocean.scan(st, TODAY, cfg)
+    assert sorted(cands) == ["CONSOLE", "FLIP", "FLOORBED", "GUN", "NOPKG", "OVERBED"]
+    assert niches["蒙氏幼儿"]["n"] == 5 and niches["蒙氏幼儿"]["simple"] == 3 and niches["黑胶唱片"]["simple"] == 1
+    c = blueocean.settings(cfg)
+    assert blueocean.too_simple(st["universe"]["rows"]["SPACEAID"], "", c) == "太小"
+    assert blueocean.too_simple(st["universe"]["rows"]["OOOK"], "", c) == "结构太简单"
+    # 主图描述也算：标题看不出来是书架、主图是开放格的，同样是书架类；主图看到柜门的不算结构太简单
+    shelf = row("S2", title="Wooden Storage Cabinet for Kids Room", pkg=pkg(40.0))
+    assert blueocean.too_simple(shelf, "原木色低矮开放格柜，上层分格收纳", c) == "结构太简单"
+    assert blueocean.too_simple(shelf, "原木色柜体，下层两扇柜门封闭储物，上层开放格", c) is None
+    note = render._ocean_note({"ocean": {"candidates": 6, "daily": 0, "monthly": 0, "list_only": 6, "missed": {},
+                                         "niches": niches}})
+    assert "太小、结构太简单的 4 个不算" in note
+
+
 def _item(asin, **kw):
     base = {"asin": asin, "parent": None, "label": "watch", "label_cn": "观察", "daily": True, "spark": [1.0] * 30,
             "stale": False, "relist": None, "fading": False, "tags": [], "age_days": 200, "rising": None,

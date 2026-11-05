@@ -690,8 +690,10 @@ def _ocean_note(cov: dict) -> str:
         return ""
     missed = "、".join(f"{k} {v}" for k, v in sorted((o.get("missed") or {}).items(), key=lambda kv: -kv[1]))
     big = [k for k, v in (o.get("niches") or {}).items() if not v.get("small")]
+    simple = sum(int(v.get("simple") or 0) for v in (o.get("niches") or {}).values())
     return (f"名单上符合 {o['candidates']} 个：有日数据 {o.get('daily', 0)} 个、月度补判 {o.get('monthly', 0)} 个、"
             f"只有名单数据 {o.get('list_only', 0)} 个" + (f"（没列：{missed}）" if missed else "")
+            + (f"；太小、结构太简单的 {simple} 个不算" if simple else "")
             + (f"；{'、'.join(big)} 圈子太大，不算" if big else "") + "。")
 
 
@@ -1248,7 +1250,9 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                f"近 28 天还有近 6 个月日均的 {h['min_recent_ratio']:.0%}。按近 6 个月月均排。",
         "fake": f"异常分 ≥{f['suspect_score']}（留评率过高、评论暴增、评分跳升、短时脉冲等累计），只是提示，需人工核实。按异常分排。",
         "ocean": (f"标题写明是给特定人群 / 用途专门设计的（缝纫、卧床护理、黑胶唱片、蒙氏幼儿……，词表在 config.yaml），"
-                  f"近 30 天量够全市场门槛，这一类全市场不超过 {o['max_products']} 个。同一类排在一起，商品照样留在原板块。"
+                  f"近 30 天量够全市场门槛，这一类全市场不超过 {o['max_products']} 个；太小、结构太简单的不算"
+                  f"（包装不到 {o['tiny_weight']:g} 磅又没有升降折叠这类机构的，不到 {o['simple_weight']:g} 磅的开放书架、置物架）。"
+                  "同一类排在一起，商品照样留在原板块。"
                   if universe else "本期没翻成全市场名单，不判蓝海产品。"),
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
         "all": "本期拉了日数据的全部商品。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
@@ -1279,7 +1283,7 @@ def _method(cfg: dict, repo_url: str = "") -> str:
     ob = blueocean.settings(cfg)
     if ob["enabled"]:
         rows.append(("蓝海产品", f"针对特定小圈子人群 / 用途专门设计的（缝纫机桌、卧床的人用的床边桌、黑胶唱片机柜……），"
-                              f"卖得够量，而且这一类全市场不超过 {ob['max_products']} 个：和常规款不同，做的卖家少"))
+                              f"卖得够量，这一类全市场不超过 {ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
     if sc.get("enabled", True):
         rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构，"
                             "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列"),

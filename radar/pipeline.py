@@ -579,10 +579,7 @@ def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: 
     """报告、钉钉、本期要点列出的商品（detect.showcase.curate）：各板块和增长商品去掉简单款、合并相近款；
     gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。
     common：各子类目的基本结构（showcase.common_features）。"""
-    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot")}
-    # 蓝海产品不按简单款去掉：针对特定人群 / 用途的设计本身就是它的特色（蒙氏玩具架主图上只看得到开放格）；相近款照样合并
-    show = {**((cfg["report"].get("showcase") or {})), "hide_plain": False}
-    out["ocean"] = showcase.curate(sec["ocean"], state, {**cfg, "report": {**cfg["report"], "showcase": show}}, common)
+    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot", "ocean")}
     out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg, common)
     c = (cfg["report"].get("showcase") or {})
     ranked = sorted(out["growth"]["shown"], key=lambda i: -round(analyze.increment(i)))

@@ -105,7 +105,7 @@ DEFAULTS: dict = {
             "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,
         },
-        "blue_ocean": {"enabled": True, "max_products": 50, "niches": []},  # 细分人群 / 用途词表在 config.yaml
+        "blue_ocean": {"enabled": True, "max_products": 50, "tiny_weight": 30, "simple_weight": 50, "niches": []},  # 细分人群 / 用途词表在 config.yaml
         "fake": {
             "suspect_score": 3, "high_score": 5, "review_rate_mult": 3,
             "review_rate_floor": 6, "min_new_reviews": 10, "new_listing_days": 90,
