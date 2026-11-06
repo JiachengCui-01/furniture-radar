@@ -29,9 +29,10 @@ def _vocab() -> str:
 
 
 PROMPT = f"""你是家具设计分析师。看这张亚马逊家具商品主图，只输出一个 JSON 对象，不要任何其他文字：
-{{"风格":[],"材质":[],"造型":[],"工艺":[],"颜色":[],"功能卖点":[],"外观要点":""}}
+{{"风格":[],"材质":[],"造型":[],"工艺":[],"颜色":[],"主色":"","功能卖点":[],"外观要点":""}}
 要求：
 - 每个数组 0~4 项，优先使用下面词表里的说法，词表里没有的再用 2~6 个字的中文自拟；
+- “颜色”按占画面面积从大到小排；“主色”只写一个：这件家具本体占面积最大的颜色（拉手、金属腿、床垫、摆件这些小面积的颜色不算），用颜色词表里的说法；
 - 只写图片里看得出来的，看不清就留空，不要猜；“功能卖点”只写图里看得见的（抽屉、灯带、镜子、轮子、挂钩、插座口等）；
 - “外观要点”用一句话（不超过 40 字）说清这件家具最抓眼的外观/工艺设计。
 词表：
@@ -74,7 +75,11 @@ def _parse(text: str) -> dict | None:
         if isinstance(values, str):
             values = [values]
         tags[dim] = [str(v).strip() for v in values if str(v).strip()][:4]
-    return {"tags": tags, "summary": str(data.get("外观要点") or "").strip()[:60]}
+    main = str(data.get("主色") or "").strip()
+    out = {"tags": tags, "summary": str(data.get("外观要点") or "").strip()[:60]}
+    if main:
+        out["main_color"] = main[:8]
+    return out
 
 
 def _describe(client: httpx.Client, cfg: dict, api_key: str, image_url: str) -> dict | None:
@@ -130,10 +135,47 @@ def _describe_with_retry(client: httpx.Client, cfg: dict, api_key: str, image_ur
 EXTRA_KEY = "vision_extra"  # 不在追踪里的商品（开发方向对比用的同子类目头部商品）的识别结果，按 ASIN 存
 
 
+def _color_names(label: str) -> list[str]:
+    """颜色标签在外观要点里可能的写法：“灰褐/做旧灰” → 灰褐、做旧灰；“原木色” → 原木色、原木、木色。"""
+    out = []
+    for part in re.split(r"[/、]", label):
+        part = part.strip()
+        if part:
+            out.append(part)
+            if part.endswith("色") and len(part) > 2:
+                out += [part[:-1], part[-2:]]
+    return out
+
+
+def main_color(v: dict) -> str | None:
+    """主色：识别结果里写了“主色”（本体占面积最大的颜色）就用它；以前的结果没有这一项，取外观要点里最先说到的那个颜色标签，
+    都没说到的取第一个。报告里“颜色”只按主色归类：原木色柜子配黑色滑轨的不算黑色（11-06 用户反馈：点“黑色”出来原木色的柜子）。"""
+    colors = list(dict.fromkeys((v.get("tags") or {}).get("颜色") or []))
+    if v.get("main_color"):
+        return v["main_color"]
+    if len(colors) <= 1:
+        return colors[0] if colors else None
+    look = v.get("summary") or ""
+    hits = [(min(look.find(n) for n in _color_names(c) if n in look), k, c)
+            for k, c in enumerate(colors) if any(n in look for n in _color_names(c))]
+    return min(hits)[2] if hits else colors[0]
+
+
+MAIN_ONLY = ("颜色",)  # 只按最主要的那一个归类的维度（一件家具只有一个主体颜色；造型、工艺、功能可以同时有几个）
+
+
+def normalized(v: dict) -> dict:
+    """识别结果里 MAIN_ONLY 的维度只留主色（main_color），其余照旧。报告、统计、开发方向都读这个（of、summarize）。"""
+    if not v or not v.get("tags"):
+        return v or {}
+    main = main_color(v)
+    return {**v, "tags": {**v["tags"], "颜色": [main] if main else []}}
+
+
 def of(state: dict, asin: str) -> dict:
-    """一个商品的主图识别结果：追踪商品存在 state["asins"] 里，其余存在 state[EXTRA_KEY] 里。没有返回 {}。"""
+    """一个商品的主图识别结果（颜色只留主色，见 normalized）：追踪商品存在 state["asins"] 里，其余存在 state[EXTRA_KEY] 里。没有返回 {}。"""
     rec = (state.get("asins") or {}).get(asin) or {}
-    return rec.get("vision") or ((state.get(EXTRA_KEY) or {}).get(asin) or {}).get("vision") or {}
+    return normalized(rec.get("vision") or ((state.get(EXTRA_KEY) or {}).get(asin) or {}).get("vision") or {})
 
 
 def prune_extra(state: dict, keep: set[str]) -> None:
@@ -199,7 +241,7 @@ def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim:
         for item in items:
             vision = (state["asins"].get(item["asin"]) or {}).get("vision")
             if vision:
-                out.append((item, vision))
+                out.append((item, normalized(vision)))
         return out
 
     f_tagged, r_tagged = tags_of(focus), tags_of(reference)

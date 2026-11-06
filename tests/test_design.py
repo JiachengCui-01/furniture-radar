@@ -701,3 +701,20 @@ def test_trend_tiles_cover_every_dimension_with_market_value(cfg):
     assert "暂不总结" in render._trend_tiles({"note": "本期增长商品太少（少于 3 个），暂不总结共性特点"}, cfg, [], [])
     assert 'data-tags="凹槽竖纹|材质:实木"' in render.card({**f1, "tags": [], "fake": {"score": 0, "signals": []},
                                                           "monthly": [], "spark": []}, "rising")
+
+
+def test_colors_count_only_the_main_color(cfg):
+    """颜色只按主色归类（一件家具只有一个主体颜色）：识别结果写了“主色”就用它；以前的结果没有这一项，取外观要点里最先说到的颜色。
+    原木色柜子配黑色滑轨不算黑色——统计、配图、点“黑色”看商品都按这个（11-06 用户反馈）。造型、工艺这些照样可以有几个。"""
+    st = {"asins": {
+        "M": {"vision": {"image": "x", "tags": {"颜色": ["原木色", "黑色"], "工艺": ["凹槽竖纹", "黑色金属件"]},
+                         "summary": "原木色马厩门配黑色金属滑轨，跨马桶置物设计。"}},
+        "D": {"vision": {"image": "y", "tags": {"颜色": ["黑色", "棕色"]}, "summary": "黑色金属框架配深色木纹台面",
+                         "main_color": "棕色"}}}}
+    assert vision.of(st, "M")["tags"]["颜色"] == ["原木色"] and vision.of(st, "M")["tags"]["工艺"] == ["凹槽竖纹", "黑色金属件"]
+    assert vision.of(st, "D")["tags"]["颜色"] == ["棕色"]
+    assert st["asins"]["M"]["vision"]["tags"]["颜色"] == ["原木色", "黑色"]  # 存下的识别结果原样不动
+    rows = vision.summarize([{"asin": "M"}, {"asin": "D"}], [], st)["dimensions"]["颜色"]
+    assert "黑色" not in [r["label"] for r in rows]
+    assert "“主色”只写一个" in vision.PROMPT
+    assert vision._parse('{"颜色":["白色","黑色"],"主色":"白色","外观要点":"白色柜"}')["main_color"] == "白色"
