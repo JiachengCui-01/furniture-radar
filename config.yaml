@@ -18,7 +18,7 @@ scope:
       label: 办公家具
   rollup_pages: 2                    # 子类目按销售额取前 N×50 个（范围收窄后需要看得更深）
   min_node_products: 800             # 子类目商品数低于此值不单独追踪
-  max_nodes: 30                      # 最多追踪多少个子类目
+  max_nodes: 45                      # 最多追踪多少个子类目（2026-11-06 用户要品类更丰富：30 → 45，家具 / 办公家具里再多选够格的子类目）
   # 子类目自己的英文名（最后一级）要匹配“保留”且不匹配“剔除”才会追踪
   include_label_regex: '(?i)\bbeds?\b|bed frames?|headboard|desk|workstation|dresser|\bchests?\b|bookcase|shel(f|ves|ving)|nightstand|night stand|tables?\b|console|\btv\b|media|entertainment|cabinet|storage|pantr|buffet|sideboard|credenza|hutch|vanit|bench|rack|island|armoire|wardrobe|shoe|hall tree|filing|etagere'
   exclude_label_regex: '(?i)sofas|couch|loveseat|sectional|futon|mattress|box spring|ottoman|bean bag|chair|stool|recliner|seating|canop|gazebo|pergola|tent|divider|screen|folding|adjustable base|massage|inflatable|air bed|light|lamp|umbrella|cushion|pillow|cover|replacement|parts|hardware|decor|cart|display|laborator|science'
@@ -80,9 +80,28 @@ scope:
     "490876011": 图纸柜                 # Flat File Cabinets
   room_nodes: ["681151011", "1069112"]  # 用途不固定的子类目：商品短称后面加标题里最先说到的房间（浴室、厨房、车库……）
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
-  extra_nodes: []
-  #  - path: "1055398:1063306:1063318:3733551"
-  #    label: 沙发
+  # 2026-11-06 用户要蓝海覆盖桌游桌、爬宠箱这类兴趣爱好品类：这些在家具以外的根类目，用 search-category 查到的子类目 ID
+  # （查了 17 次）。商品照样过范围条件（小件、塑料、配件等读的时候剔除），所以台球、巧粉、卡套这类小配件不会进来。
+  # 爬宠箱没有单独的子类目，只能取整个“爬行和两栖动物用品”（加热灯、装饰多是小件，剔除后剩下饲养箱、箱柜）
+  extra_nodes:
+    - path: "2619533011:2975446011:205727370011:2975459011"
+      label: 鱼缸柜                        # Pet Supplies > Fish & Aquatic Pets > Aquarium Accessories > Aquarium Stands
+    - path: "2619533011:2975504011"
+      label: 爬宠用品（含饲养箱）          # Pet Supplies > Reptiles & Amphibians
+    - path: "3375251:10971181011:706808011:7427858011"
+      label: 街机和桌游                    # Sports & Outdoors > Leisure Sports & Game Room > Arcade & Table Games
+    - path: "3375251:10971181011:706808011:3397051:7427857011:3397171"
+      label: 台球桌                        # … > Billiards & Pool > Tables & Accessories > Tables
+    - path: "3375251:10971181011:706808011:3397051:3397261"
+      label: 台球杆架                      # … > Billiards & Pool > Cue Racks
+    - path: "3375251:706813011:13364359011:13364369011:3413341"
+      label: 枪支弹药收纳柜                # Hunting & Fishing > Shooting > Gun Accessories, Maintenance & Storage > Gun & Ammunition Storage & Safes
+    - path: "165793011:19431275011:19431291011"
+      label: 收藏品展示收纳                # Toys & Games > Collectible Toys > Collectible Display & Storage（手办、乐高、卡牌）
+    - path: "3375251:2358921011:374791011"
+      label: 纪念品展示柜                  # Sports & Outdoors > Memorabilia Display & Storage > Display Cases
+    - path: "2617941011:2237594011"
+      label: 手工收纳                      # Arts, Crafts & Sewing > Organization, Storage & Transport（缝纫、手工收纳柜、手工桌）
 
 # ---------------- 发现 ----------------
 # 卖家精灵的商品榜单有两种：传月份 = 已结束月份的月末快照（月度名单，每月查一次）；

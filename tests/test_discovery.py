@@ -358,8 +358,12 @@ def test_old_scope_fingerprint_is_migrated_not_treated_as_a_scope_change(cfg):
     """exclude_product_regex 以前算在监控范围的指纹里：改了布艺抽屉的写法，下一期就当成换了范围（重新发现、与上期对比空着）。
     现在它也是读的时候过滤的；存下的旧指纹对得上现在的范围时换成新的，范围真的改了的照常算换了范围。"""
     import copy
+    from radar.config import load_config
     key = discovery.scope_key(cfg)
-    assert key == "c52dfbad76e3"  # 改了监控范围（子类目、发现参数）这个值会变：同时检查 LEGACY_SCOPE_KEYS 还对不对
+    assert key == "c52dfbad76e3"  # 测试用的范围（conftest：扩之前的 30 个子类目、没有爱好类目）
+    # 线上的范围：2026-11-06 用户要品类更丰富，最多 45 个子类目 + 9 个兴趣爱好类目，指纹变了（下一期重新发现一次、与上期对比空一期）。
+    # 改了监控范围（子类目、发现参数）这个值会变：同时检查 LEGACY_SCOPE_KEYS 还对不对
+    assert discovery.scope_key(load_config()) == "69ce869dbab0"
     other = copy.deepcopy(cfg)
     other["scope"]["exclude_product_regex"] = "(?i)plastic"
     assert discovery.scope_key(other) == key  # 商品级条件不算进指纹

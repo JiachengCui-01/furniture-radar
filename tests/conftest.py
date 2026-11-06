@@ -36,6 +36,10 @@ def cfg():
     out["schedule"]["min_days_between_runs"] = 3
     # 测试里每期的预算按 per_run / bootstrap_run 定（线上按本月剩下几期平均分，见 test_budget_is_split_evenly_over_the_runs_left）
     out["budget"]["split"] = "fixed"
+    # 监控范围按 2026-11-06 扩之前的算（最多 30 个子类目、没有额外的爱好类目）：合成世界和真实响应样例里只有家具 / 办公家具的子类目。
+    # 线上的范围见 test_old_scope_fingerprint_is_migrated_not_treated_as_a_scope_change
+    out["scope"]["max_nodes"] = 30
+    out["scope"]["extra_nodes"] = []
     return out
 
 
