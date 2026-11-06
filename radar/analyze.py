@@ -10,8 +10,8 @@ from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text
-from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, low_rating,
-                           momentum, rating_floor, relist_ramp, relist_text, relisted, surge_candidates)
+from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, launch_potential, low_rating,
+                           momentum, new_days, rating_floor, relist_ramp, relist_text, relisted, surge_candidates)
 from .series import Daily, baseline_average, closed_months, mean, median
 
 def display_name(brand: str, title: str) -> str:
@@ -142,8 +142,14 @@ def latest_data_date(dailies: list[Daily]) -> date | None:
 def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dict, st: dict, th: dict,
                   stale: bool, relist: dict | None = None, age: int | None = None, tide: float | None = None) -> dict:
     """突然爆火（及断货恢复 / 新品起量 / 形态不稳）、潜力、上升中、回落：都在同一份日数据上判断。
-    relist：老品换链接（rules.relisted）——上架天数不代表商品是新的，不算潜力、新品爆发、新品起量。
-    age：上架天数。“从零起量”的只有上架 ≤ new_listing_max_age_days 天的叫新品爆发 / 新品起量，
+    突然爆火和潜力按上架天数分开（new_days = thresholds.potential.max_age_days），两边不重叠：
+      突然爆火 = 上架超过 new_days 天（之前已经卖了一段时间），近 1~2 周销量突然涨上来；
+      潜力 = 上架 ≤ new_days 天（近期新上架）就卖得好：上架 ≥ min_age_days 天、近 28 天和月销都在涨（rules.evaluate_potential），
+             或者近 1~2 周就达到了突然爆火的门槛（新品爆发 / 新品起量快，launch_potential）。
+      以前两边按形态分：11-02 突然爆火 22 个里 13 个才上架 11~87 天（对比期只有几天在卖的开卖起量），
+      潜力里 7 个已经上架 122~180 天。
+    relist：老品换链接（rules.relisted）——上架天数不代表商品是新的，不算潜力、新品爆发、新品起量；上架不到 new_days 天的也不算突然爆火。
+    age：上架天数。“从零起量”的只有上架 ≤ new_days 天的叫新品爆发 / 新品起量（算潜力），
          更老的叫老链接重新起量（停了很久又开始卖，不是新品；回测：之后照样在涨，所以照常算爆火，只是名字不同）。
     tide：所在子类目的大盘倍数（universe.node_tide）。大于 1 时突然爆火、潜力、上升中的增长倍数先除以它再比门槛（跑赢大盘）。
           突然爆火原来不用（以为 BSR 排名提升一倍本来就是和市场比的），但 12 月整个子类目的排名会一起往上走：
@@ -151,7 +157,8 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
           从零起量的（新品爆发 / 老链接重新起量）没有对比期的倍数，不扣。"""
     oos = th.get("out_of_stock_bsr")
     candidates = surge_candidates(d, idx, th["surge"], oos) if idx is not None else []
-    max_new = th["surge"].get("new_listing_max_age_days")
+    max_new = new_days(th)
+    young = age is not None and age <= max_new
     sc = th["surge"]
     need_new = max(sc["new_listing_min_daily"], sc["new_listing_node_share"] * (st.get("threshold") or 0) / 30)
     tide_lost = []
@@ -191,9 +198,15 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         elif reason == "tide":
             tide_lost.append(("突然爆火", candidate["sales_ratio"], need_surge))
     revived = bool((surge or new_ramp or {}).get("from_zero") and max_new is not None and (age is None or age > max_new))
+    # 近期新上架的不算突然爆火：达到了爆火门槛的算潜力（新品爆发 / 新品起量快）
+    launch = None
+    if surge is not None and young:
+        launch, surge = surge, None
     # 断货恢复：对比期多半断货、更早之前卖得和现在差不多，“涨”只是恢复供货——不算爆火，也不算潜力 / 上升中
     potential = (evaluate_potential(rec, d, as_of, th["potential"], oos, int(th.get("out_of_stock_zero_run") or 0))
                  if idx is not None and not relist and not restock else None)
+    if potential is None and launch is not None and not relist:
+        potential = launch_potential(launch, rec, d, idx, age, th["potential"])
     if stale:  # 日数据停更（下架/断货/数据延迟）时不做“正在爆/正在涨”的判断，也不留判定过程里的标签（断货恢复、形态、随大盘）
         surge = potential = None
         new_ramp = restock = unshaped = None
@@ -251,7 +264,7 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
             stalled = {"lost": lost, "last7": last7, "base": base, "tide": t}
     return {"surge": surge, "restock": restock, "new_ramp": new_ramp, "unshaped": unshaped,
             "potential": potential, "rising": rising, "mom": mom, "faded": faded, "revived": revived, "tided": tided,
-            "stalled": stalled}
+            "stalled": stalled, "young": young}
 
 
 def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict, today: date, *,
@@ -333,11 +346,12 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         excl = "去掉大促日后，" if d is not None and any(idx - 27 <= i <= idx for i in d.masked) else ""
         tags.append(f"最近回落（{excl}{'；'.join(why)}）")
     if unshaped and not faded:
-        tags.append("短时脉冲（不算爆火）" if unshaped.get("pulse") else "上涨形态不稳定（不算爆火）")
+        miss = "不算新品起量快" if g["young"] else "不算爆火"  # 近期新上架的本来就不算突然爆火：没成的是潜力的第二条路
+        tags.append(f"短时脉冲（{miss}）" if unshaped.get("pulse") else f"上涨形态不稳定（{miss}）")
     if restock:
         tags.append("断货恢复")
-    if new_ramp:
-        tags.append("老链接重新起量（未达爆火门槛）" if g["revived"] else "新品起量（未达爆火门槛）")
+    if new_ramp and label != "potential":
+        tags.append("老链接重新起量（未达爆火门槛）" if g["revived"] else "新品起量（未达潜力门槛）")
     if deal_lift:
         tags.append("大促拉动（去掉大促日后不达标）")
     if g["tided"] and label not in ("surge", "potential") and not rising:
@@ -362,7 +376,9 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         tags.append("长期头部")  # 符合持续热销条件，但本期归入了别的板块
     if potential and label not in ("potential",):
         tags.append("潜力")
-    if potential and potential.get("growth") is None:
+    if potential and potential.get("launch"):  # 潜力的第二条路：近期新上架、近 1~2 周就达到了突然爆火的门槛
+        tags.append("新品爆发" if potential["from_zero"] else f"新品起量快（{potential['launch']}）")
+    elif potential and potential.get("growth") is None:
         tags.append("月度增长尚未验证（完整月份不足）")
     if label == "fake" and surge:
         tags.insert(0, "假爆火嫌疑")
@@ -378,19 +394,19 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if baseline_unknown:
         tags.append("对比数据不足（之前 28 天的基准无法确认，增量不计入合计）")
         if label == "watch" and not rising and not stale and not relist and age is not None \
-                and 0 <= age <= th["surge"].get("new_listing_max_age_days", 180):
+                and 0 <= age <= new_days(th):
             recent = _avg(d, idx, 7)
             if recent is not None and recent >= th["surge"]["new_listing_min_daily"]:
-                tags.append("新品起量（对比数据不足，暂不确认爆火）")
+                tags.append("新品起量（对比数据不足，暂不确认潜力）")
     if relist and prev_in is not None:
         # 之前 28 天在卖不到 short_base_days 天：开发方向的增量按 0（之前那几天零星卖几件，现在的销量几乎都是从老链接转过来的）
         relist = {**relist, "base_short": prev_in < short}
-    # 上架超过 new_listing_max_age_days 天、之前 28 天在卖不到 short_base_days 天的老链接：增量也按 0（zero_increment_reason），
+    # 上架超过 dormant_min_age_days 天、之前 28 天在卖不到 short_base_days 天的老链接：增量也按 0（zero_increment_reason），
     # 现在的销量多是断货很久后恢复，不是新增的需求（例：2019 年上架的书桌全年几乎无货，10 月起每天 115 件，按全额增量排到爆火第 2）。
     # 回放 2025-11~2026-09 每周：这样的占增长判定的 1.9%，6 周进了钉钉的爆火前 3（3 周第 1），7 周改变了前 5 个开发方向；
     # 之后 28 天 91% 保持住，所以只改增量、不改标签
-    max_new = th["surge"].get("new_listing_max_age_days")
-    dormant = bool(max_new is not None and age is not None and age > max_new and prev_in is not None and prev_in < short)
+    old_age = th.get("dormant_min_age_days")
+    dormant = bool(old_age is not None and age is not None and age > old_age and prev_in is not None and prev_in < short)
     # 没超过之前的水平：增长商品现在的水平（突然爆火用近 7/14 天日均，潜力 / 上升中用近 28 天日均）没超过对比期之前 recovery_days 天里
     # 卖到过的（earlier_level），是跌下去又涨回来，增量也按 0（zero_increment_reason），标签不变。
     # 回放 2025-11~2026-09 每周（往前看 56 天）：这样的占增长判定的 22%（上升中 510 / 2051、突然爆火 109 / 552、潜力 7 / 308）、正增量的 13%，

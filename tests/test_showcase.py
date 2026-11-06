@@ -83,8 +83,9 @@ def test_gallery_takes_one_per_sub_category_by_default():
     assert [i["asin"] for i in showcase.gallery(rows, 10, 2)] == ["A0", "A1", "A2", "A3", "A4", "A5"]
 
 
-def test_popup_says_how_many_were_left_out_and_lists_plain_ones_folded():
-    """小窗顶部写判定了几个、列出几个；简单款折叠在底部；卡片上带相近款的缩略图和特色。"""
+def test_popup_says_how_many_were_left_out_and_does_not_show_plain_ones():
+    """小窗顶部写判定了几个、列出几个；简单款只写个数，不放图和品名（以前折叠在底部，点开还是看得到 IULULU 八格书架这种）；
+    卡片上带相近款的缩略图和特色。"""
     def item(asin, **kw):
         base = _item(asin, f"{asin} Coffee Table")
         base.update({"label_cn": "突然爆火", "price": 60.0, "rating": 4.5, "ratings": 100, "age_days": 80, "tags": [],
@@ -99,8 +100,36 @@ def test_popup_says_how_many_were_left_out_and_lists_plain_ones_folded():
     html = render._section_pop("surge", "突然爆火", "说明。", cur, 3)
     assert "判定 3 个，列出 1 个（简单款 1 个没列，相近款 1 个记在相似的卡片上）" in html
     assert html.count('<article class="card"') == 1 and "相近款 1 个：" in html and "<i>升降台面</i>" in html
-    assert '<details class="skip"><summary>另有 1 个简单款没列出' in html and "P1 Coffee Table" in html
+    assert "P1" not in html and "<details" not in html
     assert "._AC_SL300_.jpg" in html  # 卡片主图按需缩小
+
+
+def test_plain_items_are_not_shown_in_changes_table_or_direction_rows():
+    """与上期对比、全部追踪商品表、开发方向一行的缩略图和价格点也不放简单款：个数照算，写明几个没列。"""
+    def item(asin, plain, **kw):
+        base = _item(asin, f"{asin} 8-Cube Bookcase")
+        base.update({"plain": plain, "brand": asin, "label": "surge", "label_cn": "突然爆火", "price": 49.99, "bsr": 100,
+                     "rating": 4.3, "ratings": 28, "tags": [], "fake": {"score": 0}, "recent_avg28": 5.0, "source": "",
+                     "node_cn": "书架", "node_name": "Bookcases", "image": f"https://m.media-amazon.com/images/I/{asin}.jpg"})
+        base.update(kw)
+        return base
+
+    keep, simple, moved = item("KEEP1", False), item("PLAIN1", True), item("MOVED1", True)
+    by_asin = {i["asin"]: i for i in (keep, simple, moved)}
+    diff = {"still": [], "new": {"surge": ["KEEP1", "PLAIN1", "MOVED1"]}, "moved_from": {"MOVED1": "potential"},
+            "recheck": {"total": 2, "held": [], "lost": {"KEEP1": "surge", "PLAIN1": "surge"}, "gone": []}}
+    text = render._changes(diff, by_asin)
+    assert "新进入「突然爆火」<b>3</b>" in text and "（简单款 2 个没列）" in text and "蓝框" not in text
+    assert "KEEP1" in text and "PLAIN1" not in text and "MOVED1" not in text
+    assert "不再是 2 个：" in text and "（简单款 1 个没列）" in text
+    table = render._all_table([keep, simple])
+    assert "KEEP1" in table and "PLAIN1" not in table
+    row = render._board_row(0, {"node": "书架", "n": 2, "sales": {"increment": 100.0, "monthly": 500.0}, "materials": [],
+                                "features": {dim: {"more": [], "base": []} for dim in render.directions.DIMENSIONS}},
+                            None, [simple, keep], [], render.charts.price_domain([49.99]), 100.0)
+    assert "KEEP1" in row and "PLAIN1" not in row
+    dots = render._price_dots([simple, keep])
+    assert "PLAIN1" not in dots[0][2] and "简单款" in dots[0][2] and "KEEP1" in dots[1][2]
 
 
 def test_structure_most_of_a_sub_category_has_is_not_a_feature():

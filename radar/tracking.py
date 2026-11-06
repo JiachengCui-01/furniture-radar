@@ -204,7 +204,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
             break
         add(p["asin"], "top", core_max)
 
-    # 蓝海产品（detect/blueocean.py，全市场名单里针对特定人群 / 用途、圈子小的）：每期都拉日数据（走势图、异常信号核对），按近 30 天销售额
+    # 蓝海产品（detect/blueocean.py，全市场名单里针对特定人群 / 用途、圈子小、近期新上架的）：每期都拉日数据（走势图、异常信号核对），按近 30 天销售额
     ocean_cap = min(size, len(order) + int(pcfg.get("ocean_max", 0)))
     for ev in sorted(blueocean.candidates(state, today, cfg).values(), key=lambda e: -e["revenue"]):
         if len(order) >= ocean_cap:

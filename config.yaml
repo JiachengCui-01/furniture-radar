@@ -103,7 +103,7 @@ pool:
   watch_runs: 1
   watch_max: 300
   # 蓝海产品（radar/detect/blueocean.py）：每期都拉日数据（卡片上才有走势图、才能核对异常信号），最多 N 个，按近 30 天销售额。
-  # 11-01 全市场名单上 35 个（评分达标、不是太小结构太简单的），那期追踪池里本来只有 4 个，所以每期约多 31 次调用
+  # 11-02 全市场名单上 4 个（评分达标、近期新上架、不是太小结构太简单的），那期追踪池里本来只有 1 个，所以每期约多 3 次调用
   ocean_max: 40
   # 头部名额 30（2026-10-29 起，以前 60）：29 个子类目各取月销量第一。每月 2,000 次时日数据名额紧，头部有月度名单补判
   # （不拉日数据也判持续热销），省下来给初筛出来的商品。11-01 彩排：初筛多拉 40 个，抓到的增长商品 47% → 50%（按月增量 48% → 51%）；
@@ -224,9 +224,11 @@ thresholds:
   # 对比期（之前 28 天）只算在卖的日子；在卖不到 N 天的（刚开卖、断过货）照样判，卡片上写明“对比期只有 X 天在卖”。
   # 回测（2025-11~2026-09 每周回放）：对比期 1~13 天的潜力之后 28 天 67~72% 保持住、上升中 78~88%，
   # 对比期完整的潜力 74%、上升中 72%，并不更差，所以不排除，只写明。
-  # 增量（开发方向、爆火 / 潜力排序）也用它：老品换链接、上架超过 surge.new_listing_max_age_days 天的老链接，之前 28 天在卖不到 N 天的增量按 0
+  # 增量（开发方向、爆火 / 潜力排序）也用它：老品换链接、上架超过 dormant_min_age_days 天的老链接，之前 28 天在卖不到 N 天的增量按 0
   #（多是断货很久后恢复、销量从老链接转过来；回放 45 周：这样的老链接 6 周进了钉钉的爆火前 3，7 周改变了前 5 个开发方向）
   short_base_days: 14
+  # 上面说的“老链接”（算增量用）= 上架超过 N 天。和潜力 / 突然爆火的分界（potential.max_age_days）分开设：这条是按 180 天回测的
+  dormant_min_age_days: 180
   # 没超过之前的水平：增长商品现在的水平（突然爆火用近 7/14 天日均，潜力 / 上升中用近 28 天日均）没超过对比期之前 N 天里
   # 卖到过的（连续 28 天、其中在卖 ≥ short_base_days 天的日均最高的一段），是跌下去又涨回来：增量（开发方向、爆火 / 潜力排序）按 0，
   # 卡片和钉钉写明“没超过 X~Y 的水平”，标签不变（例：梳妆台 8 月日均 105 件、9 月 54 件、10 月 97 件，上升中、月增量 $18 万，
@@ -275,10 +277,10 @@ thresholds:
     restock_ratio: 0.5               # 对比期有明确零销量或 BSR 达断货线、且更早时日均 ≥ 现在的 0.5 倍 → 断货恢复；缺失本身不算断货
     new_listing_min_daily: 30        # 新品从零起量要算“爆火”：日均 ≥ 30 件，
     new_listing_node_share: 0.25     #   且 ≥ 所在子类目 Top20 水平日均的 25%；不够的只标“新品起量”
-    # 从零起量的只有上架 ≤ N 天的叫“新品爆发 / 新品起量”；更老的叫“老链接重新起量”（停了很久又开始卖，不是新品），
-    # 门槛一样，照常算爆火。回测：上架超过 1 年却被叫成新品的有 11 个商品、18 次（例：上架 559 天、之前停了 115 天）；
+    # 突然爆火要上架超过 potential.max_age_days 天（之前已经卖了一段时间）；更新的达到这些门槛算潜力（新品爆发 / 新品起量快）。
+    # 从零起量的：上架 ≤ 那个天数的叫“新品爆发”（算潜力），更老的叫“老链接重新起量”（停了很久又开始卖，不是新品），照常算爆火。
+    # 回测：上架超过 1 年却被叫成新品的有 11 个商品、18 次（例：上架 559 天、之前停了 115 天）；
     # 它们之后 28 天 61% 保持住，和真新品的 65% 差不多，所以只改名字、不排除
-    new_listing_max_age_days: 180
   hot:                               # 真正持续热销
     # 按真实自然月取最近 4 / 6 / 3 月，缺月不拿旧月份补；月趋势保留缺月的时间位置。
     # 近期销量必须能计算，不能把缺失当成“近期未掉下来”；月度名单补判使用同样的条件。
@@ -372,14 +374,19 @@ thresholds:
     lift_min_days: 2
     lift_lookback: 10
     lift_max_bsr: 300000
-  potential:                         # 潜力
+  potential:                         # 潜力 = 近期新上架（上架 ≤ max_age_days 天）就卖得好，两条路满足一条：
+    #   ① 上架 ≥ min_age_days 天，近 28 天和近 7 天都比之前 28 天涨、月销在涨（下面几项）；
+    #   ② 近 1~2 周就达到了突然爆火的门槛（排名升一倍、日均 ≥2 倍且 ≥3 件、稳在高位 / 仍在上涨，或从零起量到日均 ≥30 件的新品爆发）。
+    # 上架不到 max_age_days 天的不算突然爆火，超过的不算潜力：两个板块按上架天数分开，不重叠。蓝海产品的“近期新上架”也用它。
+    # 11-05 用户：“突然爆火的一定要是之前已经在卖了一段时间、近期销量突然上涨的，潜力要是近期新上架就卖得好的”。
+    # 以前 180 天、按形态分：11-02 突然爆火 22 个里 13 个才上架 11~87 天（对比期只有几天在卖的开卖起量），潜力里 7 个已经上架 122~180 天
     min_age_days: 30
-    max_age_days: 180
+    max_age_days: 90
     min_monthly_growth: 0.15         # 完整月份的月销量环比增长 ≥15%
     min_recent_ratio: 1.2            # 近 28 天日均 ≥ 再之前 28 天日均的 1.2 倍；近 7 天（不是大促日的 7 天）日均也要 ≥ 1.2 倍
     max_ratings: 300                 # 评分要求见上面的 min_rating
     min_daily_sales: 2
-  # 蓝海产品（radar/detect/blueocean.py）：给某个特定小圈子人群 / 用途专门设计的家具，和普通常规款不同、针对性强。四条都满足：
+  # 蓝海产品（radar/detect/blueocean.py）：给某个特定小圈子人群 / 用途专门设计的家具，和普通常规款不同、针对性强。六条都满足：
   #   ① 标题里写明了下面 niches 词表的某一类（每类一个正则，按顺序取第一类）；
   #   ② 在本期全市场名单里（近 30 天 ≥300 件或 ≥4 万美元），在监控范围内、不是小件；
   #   ③ 圈子小：这一类在全市场名单里够门槛的商品（同一父体算一个）≤ max_products 个，多了就是大众品类
@@ -391,16 +398,26 @@ thresholds:
   #      不是超大件（三边在 59 × 33 × 33 英寸以内），没有柜门也没有上面这些机构（书架下面带个抽屉也还是书架）。没有包装数据的不算。
   #      11-02：蒙氏幼儿 40 个里 21 个是这样（儿童书架、玩具架、小号幼儿床，只剩 15 张地床），黑胶唱片 9 个里 5 个（14~27 磅的开放唱片架）；
   #      卧床护理的床边桌 15~25 磅，但都写了升降、翻转或折叠，保留。只按重量切不行：OOOK 玩具架 42 磅，和带枪支暗格的床头柜（38~46 磅）、
-  #      缝纫桌（45~49 磅）一样重；只按结构切也不行：蒙氏地床结构也简单，但它不小
+  #      缝纫桌（45~49 磅）一样重；只按结构切也不行：蒙氏地床结构也简单，但它不小；
+  #   ⑥ 近期新上架、月售够：上架 ≤ potential.max_age_days 天（和潜力产品同一个数），近 30 天销量 ≥ min_units 件。
+  #      只卡候选，③ 的个数照样算老款（老款也是竞品）；上架日期不知道的不算。候选只来自全市场名单（≥300 件或 ≥4 万美元），
+  #      所以月售 50~300 件、销售额不到 4 万美元的新品现在看不到。11-02：评分达标的 74 个里上架不到 90 天的只有 4 个（蒙氏地床 2、床边桌 2）
   # 词表只认写明专门用途的说法。11-01 全市场名单里逐个看过标题（6 类 71 个，都是这一类专门的设计）；试过、去掉的写法：
   #   drum table（鼓形是造型）、birdcage（壁炉款式）、concealed（隐藏式床）、for classroom / teacher（适用场景的罗列，标的是普通书架、会议桌）、
   #   只写 overbed 的 C 形沙发边几（卧床护理要同时写了轮子、可升降或医院用）。
+  # 桌游牌桌、街机电玩、台球游戏室（11-05 加）：只要是给具体小众场景、爱好专门设计的都算，不只是小孩、老人用的。这三类多在家具以外的根类目
+  #   （台球桌、飞镖柜、桌上足球在 Sports & Outdoors 的 Leisure Sports & Game Room，街机在玩具 / 电玩），现在监控的 28 个子类目里一个也没有：
+  #   词先按常见写法定（没对着真实标题核对过），要看到得另加子类目。影碟收藏、讲台展会、商用更衣柜、餐饮后厨是 11-02 名单里逐个看过标题加的：
+  #   CD / DVD 塔架 7 个、员工更衣柜 4 个、商用不锈钢备餐台 3 个、展会讲台桌 1 个，都超过 90 天或结构太简单，这期一个也没进候选。
+  #   没加：车库工具柜（一般家庭都要，22 个，不算小众场景）、coffee bar（38 个，大众款）、dorm / classroom 这类适用场景的罗列；
+  #   讲台要写明 lectern / pulpit / podium stand 这类说法：把 Podium 和 Teachers、Office 列在一起的电脑推车不算
   # 宠物、美甲沙龙、乐器、绘画、宗教、3D 打印这几类现在的监控范围里还没有够门槛的商品（多在宠物用品、美容、乐器等别的根类目），先留着词
   blue_ocean:
     enabled: true
     max_products: 50
     tiny_weight: 30
     simple_weight: 50
+    min_units: 50                    # 近期新上架 = 上架 ≤ potential.max_age_days 天（和潜力产品同一个数）
     niches:
       - {name: 缝纫手工, regex: '\bsewing (?:machine )?(?:tables?|desks?|cabinets?|stations?|storage)\b|\bquilting (?:tables?|desks?)\b|\bcraft (?:tables?|desks?|stations?|cabinets?)\b|\bscrapbooking\b'}
       - {name: 卧床护理, regex: '^(?=.*\b(?:wheels?|rolling|casters?|adjustable|hospital)\b).*\bover ?bed\b|\bhospital (?:bed )?tables?\b|\bfor (?:the )?(?:elderly|seniors)\b|\bwheelchair (?:accessible|friendly)\b'}
@@ -408,6 +425,13 @@ thresholds:
       - {name: 蒙氏幼儿, regex: '\bmontessori\b|\bchanging tables?\b|\btoddler (?:beds?|bookshelf|bookshelves|bookcases?|shelf|tables?)\b|\bnursery dressers?\b'}
       - {name: 枪支暗格, regex: '\bgun (?:drawers?|safes?|cabinets?|compartments?|storage|racks?)\b|\bhidden gun\b|\bconcealment (?:furniture|shelf|shelves|tables?|nightstands?|cabinets?|beds?)\b|\bfirearms?\b'}
       - {name: 店铺前台, regex: '\breception (?:desks?|counters?)\b|\bfront desk\b|\bcheckout counters?\b'}
+      - {name: 桌游牌桌, regex: '\b(?:board ?games?|tabletop games?|game|poker|casino|blackjack|mahjong|chess|puzzle|jigsaw puzzle) tables?\b|\bboard game (?:storage|shel(?:f|ves)|cabinets?|organizers?)\b|\bgame toppers?\b|\bpuzzle (?:boards?|desks?) with drawers\b'}
+      - {name: 街机电玩, regex: '\barcade (?:cabinets?|machines?|stands?|tables?|consoles?)\b|\bbartop arcade\b|\bpinball\b|\b(?:video )?gam(?:e|ing) consoles? (?:shel(?:f|ves)|stands?|cabinets?|storage|racks?|towers?)\b|\bvideo game (?:storage|shel(?:f|ves)|cabinets?|racks?)\b'}
+      - {name: 台球游戏室, regex: '\b(?:pool|billiards?|snooker) tables?\b|\bbilliards?\b|\bcue (?:racks?|stands?|holders?|cabinets?)\b|\bdart ?board (?:cabinets?|backboards?|stands?)\b|\bfoosball\b|\bair hockey\b|\b(?:ping pong|table tennis) tables?\b|\bshuffleboard\b'}
+      - {name: 影碟收藏, regex: '\b(?:cd|dvd|blu-?ray)s? (?:media )?(?:storage|towers?|racks?|shel(?:f|ves)|cabinets?|holders?)\b|\bmedia towers?\b'}
+      - {name: 讲台展会, regex: '\blecterns?\b|\bpulpits?\b|\bpodiums? (?:stands?|desks?)\b|\b(?:church|speech|presentation|conference|school) podiums?\b|\btrade ?show (?:podiums?|counters?|booths?|tables?)\b'}
+      - {name: 商用更衣柜, regex: '\blockers? for employees?\b|\bemployees? (?:storage )?lockers?\b|\bstaff lockers?\b|\blocker room\b'}
+      - {name: 餐饮后厨, regex: '\bfood prep tables?\b|\bprep (?:&|and) work tables?\b|\btables? for prep\b|\bcommercial (?:kitchen|prep) (?:tables?|workstations?|work ?tables?)\b|\bstainless steel (?:prep|work) tables?\b'}
       - {name: 宠物, regex: '\blitter box (?:enclosures?|furniture|cabinets?|tables?)\b|\bdog crate (?:furniture|tables?|end tables?)\b|\b(?:dog|cat|pet) (?:kennel|crate) furniture\b|\bcat washroom\b|\baquarium stands?\b|\bfish tank stands?\b|\breptile\b|\bterrarium stands?\b'}
       - {name: 美甲沙龙, regex: '\bnail (?:tables?|desks?|stations?)\b|\bmanicure (?:tables?|desks?|stations?)\b|\bsalon (?:stations?|desks?|cabinets?|furniture)\b|\bbarber (?:stations?|cabinets?)\b|\blash (?:beds?|tables?)\b'}
       - {name: 乐器音乐, regex: '\bstudio desks?\b|\bproducer desks?\b|\bmusic (?:studio|production) desks?\b|\bpiano bench|\bkeyboard (?:stands?|desks?)\b|\bguitar (?:stands?|cabinets?|storage)\b'}

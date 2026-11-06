@@ -152,7 +152,8 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         for item in ocean[:max_items]:
             o = item["ocean"]
             also = ocean_group(item)
-            lines.append(item_line(item, f" {o['niche']}（全市场{o['n']}个），近30天{money_text(o['revenue'])}"
+            age = f"上架{item['age_days']}天，" if item.get("age_days") is not None else ""
+            lines.append(item_line(item, f" {o['niche']}（全市场{o['n']}个），{age}近30天{money_text(o['revenue'])}"
                                          + (f"，也在{also}" if also else "")))
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]

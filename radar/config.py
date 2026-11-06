@@ -76,13 +76,13 @@ DEFAULTS: dict = {
         "min_rating": 4.0,
         "few_ratings": 100,
         "few_ratings_min_rating": 4.2,
-        "short_base_days": 14, "recovery_days": 56, "revision_min_items": 30, "revision_min_change": 0.02,
+        "short_base_days": 14, "dormant_min_age_days": 180, "recovery_days": 56, "revision_min_items": 30, "revision_min_change": 0.02,
         "surge": {
             "windows": [7, 14], "base_days": 28, "bsr_ratio": 0.5, "sales_ratio": 2.0,
             "min_daily_sales": 3, "sustained_mult": 1.5, "sustained_days": 5, "steady_band": 0.15,
             "climb_ratio": 1.15,
             "pulse_share": 0.6, "price_drop": 0.15, "restock_ratio": 0.5,
-            "new_listing_min_daily": 30, "new_listing_node_share": 0.25, "new_listing_max_age_days": 180,
+            "new_listing_min_daily": 30, "new_listing_node_share": 0.25,
         },
         "hot": {
             "rank_in_node": 20, "lookback_months": 4, "months_required": 3,
@@ -102,10 +102,11 @@ DEFAULTS: dict = {
         "relist": {"max_age_days": 180, "review_share": 0.5, "review_share_fast": 0.15, "fast_share": 0.5,
                    "fast_min_daily": 5, "step_pre_share": 0.1, "ramp_days": 7},
         "potential": {
-            "min_age_days": 30, "max_age_days": 180, "min_monthly_growth": 0.15,
+            "min_age_days": 30, "max_age_days": 90, "min_monthly_growth": 0.15,
             "min_recent_ratio": 1.2, "max_ratings": 300, "min_daily_sales": 2,
         },
-        "blue_ocean": {"enabled": True, "max_products": 50, "tiny_weight": 30, "simple_weight": 50, "niches": []},  # 细分人群 / 用途词表在 config.yaml
+        "blue_ocean": {"enabled": True, "max_products": 50, "tiny_weight": 30, "simple_weight": 50,
+                       "min_units": 50, "niches": []},  # 细分人群 / 用途词表在 config.yaml
         "fake": {
             "suspect_score": 3, "high_score": 5, "review_rate_mult": 3,
             "review_rate_floor": 6, "min_new_reviews": 10, "new_listing_days": 90,

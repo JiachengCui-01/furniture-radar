@@ -46,6 +46,7 @@ def test_hot_requires_recent_sales_even_when_bsr_is_fresh(cfg):
 def test_potential_uses_recent_calendar_months_and_preserves_gaps(cfg):
     rec = _rec([10] * 92 + [15] * 28, 4.5, available=(END - timedelta(days=170)).isoformat(), ratings=40)
     rec["months"] = [["2026-06", 144, 14400, 100], ["2026-07", 100, 10000, 100], ["2026-09", 144, 14400, 100]]
+    cfg["thresholds"]["potential"]["max_age_days"] = 180  # 这里只测缺月：上架 170 天才有 6、7、9 月（默认 90 天以上的不算潜力）
     item = analyze.evaluate("MONTH_GAP", rec, None, {}, cfg, END)
     assert item["label"] == "potential" and 0.19 < item["potential"]["growth"] < 0.21
 
@@ -74,7 +75,8 @@ def test_from_zero_pulse_is_not_a_surge_even_for_revived_old_links(cfg, age, pea
     rec["series"]["bsr"][:113] = [None] * 113
     item = analyze.evaluate("PULSE", rec, None, {}, cfg, END)
     assert item["label"] == "watch" and not item["surge"] and not item["rising"]
-    assert "短时脉冲（不算爆火）" in item["tags"]
+    # 上架 60 天的本来就不算突然爆火：没成的是潜力的第二条路（新品起量快）
+    assert ("短时脉冲（不算新品起量快）" if age <= 90 else "短时脉冲（不算爆火）") in item["tags"]
     assert not any(t.startswith(("新品起量", "老链接重新起量")) for t in item["tags"])
 
 
@@ -82,4 +84,6 @@ def test_sustained_from_zero_launch_still_qualifies(cfg):
     rec = _rec([0] * 113 + [40] * 7, 4.5, available=(END - timedelta(days=60)).isoformat(), ratings=0)
     rec["series"]["bsr"][:113] = [None] * 113
     item = analyze.evaluate("LAUNCH", rec, None, {}, cfg, END)
-    assert item["label"] == "surge" and item["surge"]["kind"] == "新品爆发"
+    # 上架 60 天：近期新上架就卖得好，算潜力（新品爆发），不算突然爆火
+    assert item["label"] == "potential" and item["surge"] is None and item["potential"]["launch"] == "新品爆发"
+    assert "新品爆发" in item["tags"]

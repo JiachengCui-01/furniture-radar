@@ -209,7 +209,7 @@ def test_volatile_or_collapsing_seller_is_not_hot(cfg):
 def test_potential(cfg):
     sales = [round(1.2 * 2.718 ** (i / 38), 1) for i in range(115)]
     d = make(sales)
-    rec = {"available": (END - timedelta(days=114)).isoformat(),
+    rec = {"available": (END - timedelta(days=89)).isoformat(),  # 潜力 = 上架 ≤90 天
            "obs": [{"ratings": 30, "rating": 4.5}],
            "months": _months([90, 200, 420])}
     p = evaluate_potential(rec, d, END, cfg["thresholds"]["potential"])
@@ -241,14 +241,14 @@ def test_potential_past_its_peak_is_dropped(cfg):
     但最近在回落，不应算潜力。"""
     sales = [0] * 85 + [1, 2, 5, 11, 13, 19, 21, 19, 20, 13, 12, 13, 17, 16, 17, 21, 15, 16, 14, 15, 18,
                         19, 21, 17, 13, 11, 9, 9, 9, 7, 7, 5, 6, 5, 4]
-    rec = _rec(sales, 4.3, available=(END - timedelta(days=115)).isoformat(), ratings=52)
+    rec = _rec(sales, 4.3, available=(END - timedelta(days=89)).isoformat(), ratings=52)
     rec["months"] = _months([3, 379])
     assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
     item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
     assert item["label"] == "watch" and not item["potential"] and not item["rising"]
     assert item["tags"][0] == "最近回落（最近3天日均 5.0 件，再之前3天 6.3 件，近4周最高的3天 19.3 件；近7天中位数 6 件，再之前7天 13 件）"
     growing = _rec([round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)], 4.5,
-                   available=(END - timedelta(days=114)).isoformat(), ratings=150)
+                   available=(END - timedelta(days=89)).isoformat(), ratings=150)
     growing["months"] = _months([90, 200, 420])
     assert analyze.analyze({"asins": {"B2": growing}}, None, ["B2"], cfg, END)["items"][0]["label"] == "potential"
 
@@ -319,7 +319,7 @@ def test_fading_means_past_the_peak_and_still_going_down(cfg):
 
 def test_low_rated_potential_is_dropped(cfg):
     potential = [round(1.2 * 2.718 ** (i / 38), 1) for i in range(120)]
-    rec = _rec(potential, 3.6, available=(END - timedelta(days=114)).isoformat(), ratings=30)
+    rec = _rec(potential, 3.6, available=(END - timedelta(days=89)).isoformat(), ratings=30)
     rec["months"] = _months([90, 200, 420])
     assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
     item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
@@ -562,7 +562,8 @@ def test_rising_must_beat_the_node_tide(cfg):
 
 def test_surge_must_beat_the_node_tide_but_new_launches_do_not(cfg):
     """突然爆火也要跑赢大盘：销量 ×2.5、子类目整体 ×1.5 时扣除后 ×1.67，不到 2 倍，不算爆火（够上升中的照样算上升中），
-    标“随大盘”；整体 ×1.2 时扣除后 ×2.08 照常算。从零起量的（之前 28 天几乎没卖）没有倍数，不扣。"""
+    标“随大盘”；整体 ×1.2 时扣除后 ×2.08 照常算。从零起量的（之前 28 天几乎没卖）没有倍数，不扣
+    （上架 20 天的从零起量是近期新上架：算潜力的新品爆发，不算突然爆火）。"""
     from radar.analyze import _judge_growth
 
     th = cfg["thresholds"]
@@ -578,7 +579,7 @@ def test_surge_must_beat_the_node_tide_but_new_launches_do_not(cfg):
     d0 = Daily.from_record({"start": "2026-06-01", "bsr": [None] * 80 + [3000] * 14, "sales": fresh,
                             "price": [50] * len(fresh)})
     g0 = _judge_growth(d0, idx, d0.as_of(), {}, {"threshold": 900}, th, False, age=20, tide=2.0)
-    assert g0["surge"] and g0["surge"]["kind"] == "新品爆发"
+    assert g0["surge"] is None and g0["potential"]["launch"] == "新品爆发" and g0["potential"]["from_zero"]
 
 
 def test_new_listings_first_reviews_may_be_vine(cfg):
@@ -828,17 +829,18 @@ def test_relisted_listing_is_not_potential_or_a_new_listing_surge(cfg):
     ramp = [round(0.6 * 2.718 ** (i / 38), 1) for i in range(115)]
     new = [0] * 113 + [60] * 7
     state = {"asins": {
-        "P1": {**_rec(ramp, 4.5, available=(END - timedelta(days=114)).isoformat(), ratings=250),
+        "P1": {**_rec(ramp, 4.5, available=(END - timedelta(days=89)).isoformat(), ratings=250),
                "months": _months([45, 100, 210])},
-        "P2": {**_rec(ramp, 4.5, available=(END - timedelta(days=114)).isoformat(), ratings=20),
+        "P2": {**_rec(ramp, 4.5, available=(END - timedelta(days=89)).isoformat(), ratings=20),
                "months": _months([45, 100, 210])},
         "N1": _rec(new, 4.6, available=(END - timedelta(days=6)).isoformat(), ratings=300),
         "N2": _rec(new, 4.6, available=(END - timedelta(days=6)).isoformat(), ratings=0),
     }}
     by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]}
     assert by["P2"]["label"] == "potential" and by["P1"]["label"] != "potential" and by["P1"]["potential"] is None
-    assert by["P1"]["relist"]["share"] >= 0.5 and any(t.startswith("老品换链接（上架 114 天已有 250 条评论") for t in by["P1"]["tags"])
-    assert by["N2"]["label"] == "surge" and by["N2"]["surge"]["kind"] == "新品爆发"
+    assert by["P1"]["relist"]["share"] >= 0.5 and any(t.startswith("老品换链接（上架 89 天已有 250 条评论") for t in by["P1"]["tags"])
+    # 上架 6 天就从零起量到日均 60 件：近期新上架就卖得好，算潜力（新品爆发），不算突然爆火
+    assert by["N2"]["label"] == "potential" and by["N2"]["potential"]["launch"] == "新品爆发" and by["N2"]["surge"] is None
     assert by["N1"]["label"] != "surge" and not any(t.startswith("新品起量") for t in by["N1"]["tags"])
 
 
@@ -951,20 +953,46 @@ def test_hot_needs_steady_months_without_any_seasonal_adjustment(cfg):
 
 
 def test_old_listing_starting_from_zero_is_not_called_new(cfg):
-    """从零起量的：上架 ≤180 天的叫新品爆发；更老的叫老链接重新起量（停了很久又开始卖，不是新品），门槛一样、照常算爆火。
+    """从零起量的：上架 ≤90 天的叫新品爆发，算潜力；更老的叫老链接重新起量（停了很久又开始卖，不是新品），门槛一样、照常算爆火。
     回测：上架超过 1 年却被叫成新品的 11 个商品，之后 28 天 61% 保持住，和真新品的 65% 差不多。"""
     jump = [0] * 113 + [60] * 7
     state = {"asins": {
         "N": _rec(jump, 4.6, available=(END - timedelta(days=60)).isoformat(), ratings=0),
         "O": _rec(jump, 4.6, available=(END - timedelta(days=700)).isoformat(), ratings=0),
+        "M": _rec(jump, 4.6, available=(END - timedelta(days=120)).isoformat(), ratings=0),  # 上架 120 天：已经不算近期新上架
         "S": _rec([0] * 113 + [8] * 7, 4.6, available=(END - timedelta(days=700)).isoformat(), ratings=0),
     }}
     by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]}
-    assert by["N"]["label"] == "surge" and by["N"]["surge"]["kind"] == "新品爆发" and by["N"]["tags"][0] == "新品爆发"
+    assert by["N"]["label"] == "potential" and by["N"]["potential"]["launch"] == "新品爆发" and "新品爆发" in by["N"]["tags"]
+    assert by["M"]["label"] == "surge" and by["M"]["surge"]["kind"] == "老链接重新起量"
     assert by["O"]["label"] == "surge" and by["O"]["surge"]["kind"] == "老链接重新起量"
     assert by["O"]["tags"][0] == "老链接重新起量（上架 700 天，之前 28 天几乎没卖，不是新品）"
     assert by["S"]["label"] != "surge" and "老链接重新起量（未达爆火门槛）" in by["S"]["tags"]
     assert not any(t.startswith("新品") for t in by["O"]["tags"] + by["S"]["tags"])
+
+
+def test_surge_and_potential_are_split_by_listing_age(cfg):
+    """突然爆火 = 之前已经卖了一段时间（上架超过 potential.max_age_days = 90 天）、近期销量突然涨上来的；
+    潜力 = 近期新上架（≤90 天）就卖得好的。同一条销量曲线：上架 120 天的是突然爆火，上架 20 天的是潜力（新品起量快），
+    上架不到 90 天的老品换链接两边都不算。以前按形态分：11-02 突然爆火里有上架 11 天的床架（对比期只有 4 天在卖）。"""
+    from radar.report import render
+    jump = [14] * 113 + [25, 28, 30, 33, 36, 38, 40]
+    state = {"asins": {
+        "OLD": _rec(jump, 4.5, available=(END - timedelta(days=120)).isoformat(), ratings=80),
+        "NEW": _rec(jump, 4.5, available=(END - timedelta(days=20)).isoformat(), ratings=5),
+        "RELIST": _rec(jump, 4.5, available=(END - timedelta(days=20)).isoformat(), ratings=3000),
+    }}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]}
+    assert by["OLD"]["label"] == "surge" and by["OLD"]["surge"]["kind"] == "仍在上涨" and by["OLD"]["potential"] is None
+    new = by["NEW"]
+    assert new["label"] == "potential" and new["surge"] is None and new["potential"]["launch"] == "仍在上涨"
+    assert "新品起量快（仍在上涨）" in new["tags"] and not any(t.startswith("月度增长尚未验证") for t in new["tags"])
+    card = render.card(new, "potential")
+    assert "日均 前28天→近7天" in card and "×" in card and render.growth_text(new).startswith("近7天日均 ×")
+    assert by["RELIST"]["relist"] and by["RELIST"]["label"] not in ("surge", "potential")
+    hints = render.section_hints(cfg)
+    assert hints["surge"].startswith("上架超过 90 天（之前已经卖了一段时间）")
+    assert hints["potential"].startswith("上架 ≤90 天（近期新上架）就卖得好")
 
 
 def test_short_comparison_period_is_written_on_the_card(cfg):
@@ -1008,7 +1036,7 @@ def test_relisted_listing_compared_with_its_first_week_is_noted(cfg):
     """老品换链接、对比期还包括它开卖第一周的爆火 / 上升中照样判，但写明起量里可能有老链接转过来的流量
     （回测：这样的之后 28 天 84% 保持住，其他增长商品 71%，所以不排除）。"""
     sales = [0] * 90 + [5, 5, 6, 6, 7, 8, 9] + [20] * 16 + [60] * 7  # 开卖 30 天，最近一周跳到 60
-    available = (END - timedelta(days=29)).isoformat()
+    available = (END - timedelta(days=120)).isoformat()  # 上架 120 天才开卖（上架不到 90 天的不算突然爆火）
     state = {"asins": {"R": _rec(sales, 4.5, available=available, ratings=1500),
                        "N": _rec(sales, 4.5, available=available, ratings=10)}}
     by = {i["asin"]: i for i in analyze.analyze(state, None, ["R", "N"], cfg, END)["items"]}
@@ -1232,7 +1260,7 @@ def test_rising_and_potential_need_the_last_7_days_too(cfg):
     tided = analyze.evaluate("B1", rec, None, {}, cfg, END, tide=1.2)
     assert "近 7 天没涨够（日均 14.0 件，是之前 28 天日均 10.0 件的 ×1.40，扣掉大盘 ×1.20 后 ×1.16，不到 1.3 倍，不算上升中）" in tided["tags"]
     # 潜力：新品近 28 天 ×2.0，近 7 天回到对比期的 4 件；潜力和上升中都不算
-    young = dict(available=(END - timedelta(days=100)).isoformat(), ratings=50)
+    young = dict(available=(END - timedelta(days=80)).isoformat(), ratings=50)
     gone = item([3] * 64 + [4] * 28 + [12] * 14 + [4] * 14, **young)
     assert gone["label"] == "watch" and not gone["potential"] and not gone["rising"]
     assert "近 7 天没涨够（日均 4.0 件，是之前 28 天日均 4.0 件的 ×1.00，不到 1.2 倍，不算潜力、上升中）" in gone["tags"]

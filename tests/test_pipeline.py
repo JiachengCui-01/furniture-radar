@@ -113,7 +113,9 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
         mom = momentum(d, full.index_of(full.as_of()), th["momentum"])
         if item["label"] in ("surge", "potential"):
             assert not mom["fading"], item["asin"]
+        new_days = th["potential"]["max_age_days"]  # 突然爆火 / 潜力按上架天数分开，两边不重叠
         if item["label"] == "surge":
+            assert item["age_days"] is not None and item["age_days"] > new_days, item["asin"]
             g = item["surge"]
             assert g["recent_avg"] >= s["min_daily_sales"] and (g["from_zero"] or g["sales_ratio"] >= s["sales_ratio"])
             kind = g["kind"]
@@ -124,8 +126,7 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
                 assert g["week_ratio"] >= s["climb_ratio"] and g["last3_ratio"] > 1
             else:
                 assert kind in ("新品爆发", "老链接重新起量") and g["from_zero"] and not item["relist"]
-                old = item["age_days"] is None or item["age_days"] > s["new_listing_max_age_days"]
-                assert (kind == "老链接重新起量") == old  # 上架 ≤180 天的才叫新品
+                assert kind == "老链接重新起量"  # 上架 ≤90 天的从零起量叫新品爆发，算潜力
             assert "持续热销" not in item["tags"]  # 同时符合热销条件的写“长期头部”，不和“突然爆火”矛盾
         shown = item["surge"] if item["label"] == "surge" else item["potential"] if item["label"] == "potential" else None
         if shown is not None:  # 对比期在卖不到 14 天的写明天数（新品爆发本来就是之前没卖，不写）
@@ -134,8 +135,12 @@ def test_every_listed_item_matches_its_definition(world_run, master_key, cfg):
         if item["label"] == "potential":
             p = item["potential"]
             assert not item["relist"]  # 老品换链接不算潜力
-            assert th["potential"]["min_age_days"] <= p["age_days"] <= th["potential"]["max_age_days"]
-            assert p["recent_ratio"] >= th["potential"]["min_recent_ratio"]
+            assert p["age_days"] <= new_days
+            if p.get("launch"):  # 第二条路：近 1~2 周就达到突然爆火的门槛
+                assert p["recent_avg"] >= s["min_daily_sales"] and (p["from_zero"] or p["sales_ratio"] >= s["sales_ratio"])
+            else:
+                assert th["potential"]["min_age_days"] <= p["age_days"]
+                assert p["recent_ratio"] >= th["potential"]["min_recent_ratio"]
         if item["label"] == "hot":
             h = item["hot"]
             assert h["months_hit"] >= th["hot"]["months_required"] and h["cv"] <= th["hot"]["max_cv"]

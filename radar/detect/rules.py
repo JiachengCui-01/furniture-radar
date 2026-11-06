@@ -303,6 +303,32 @@ def evaluate_hot(months: list, d: Daily | None, as_of: date | None, node_thresho
     }
 
 
+def new_days(th: dict) -> int:
+    """近期新上架 = 上架 ≤ N 天（thresholds.potential.max_age_days）：只能是潜力，不能是突然爆火；突然爆火要上架超过 N 天。
+    从零起量的叫新品爆发还是老链接重新起量、蓝海产品的“近期新上架”也用它（一处改，几处跟着变）。"""
+    return int(th["potential"]["max_age_days"])
+
+
+def launch_potential(launch: dict, rec: dict, d: Daily, idx: int, age: int, cfg: dict) -> dict | None:
+    """潜力的第二条路：上架 ≤ max_age_days 天，近 1~2 周就达到了突然爆火的门槛（launch = 达标的爆火窗口：
+    排名升一倍、日均 ≥2 倍且 ≥3 件、稳在高位 / 仍在上涨；或从零起量到日均 ≥ 新品门槛的新品爆发）。不看上架满 min_age_days 天、
+    不看月环比（新品还没有完整月份），评论 < max_ratings 条照样要满足。"""
+    obs = (rec.get("obs") or [{}])[-1]
+    ratings, rating = obs.get("ratings"), obs.get("rating")
+    if ratings is not None and ratings >= cfg["max_ratings"]:
+        return None
+    avg28 = mean(d.window("sales", idx, 28))
+    return {
+        "age_days": age, "launch": launch.get("kind") or "新品爆发", "window": launch["window"],
+        "base_days": launch.get("base_days"), "base_avg": launch["base_avg"], "recent_avg": launch["recent_avg"],
+        "sales_ratio": launch.get("sales_ratio"), "from_zero": bool(launch.get("from_zero")),
+        "base_bsr": launch.get("base_bsr"), "recent_bsr": launch.get("recent_bsr"), "base_in": launch.get("base_in"),
+        "price_driven": bool(launch.get("price_driven")),
+        "growth": None, "recent_ratio": None, "avg28": None if avg28 is None else round(avg28, 2),
+        "ratings": ratings, "rating": rating,
+    }
+
+
 def evaluate_potential(rec: dict, d: Daily, as_of: date, cfg: dict, oos_bsr: float | None = None,
                        zero_run: int = 0) -> dict | None:
     available = clock.parse_day(rec.get("available"))

@@ -100,7 +100,7 @@ class Product:
                      "fake_new": 0.0, "review_burst": rng.uniform(10, 14), "merge": rng.uniform(12, 16),
                      "declining": rng.uniform(30, 40), "noise": rng.lognormvariate(1.0, 0.7),
                      "upholstered": rng.uniform(30, 40)}[kind]
-        age = {"potential": 115, "fake_new": 70, "seasonal": 800}.get(kind, rng.randint(250, 900))  # 随机数照样抽
+        age = {"potential": 85, "fake_new": 70, "seasonal": 800}.get(kind, rng.randint(250, 900))  # 随机数照样抽；潜力 = 上架 ≤90 天
         self.available = today - timedelta(days=age)
         self.variations = {"merge": 3, "fake_new": 2, "review_burst": 2}.get(kind, rng.choice([1, 2, 3, 6, 12]))
         self.review_rate = {"fake_new": 0.16}.get(kind, rng.uniform(0.01, 0.025))

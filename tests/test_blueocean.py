@@ -11,7 +11,7 @@ TODAY = date(2026, 11, 1)
 NODE_A, NODE_B = "1:2:3", "1:2:4"
 
 
-def row(asin, *, node=NODE_A, revenue=50_000, ratings=1000, available="2024-01-01", brand=None, rating=4.5,
+def row(asin, *, node=NODE_A, revenue=50_000, ratings=1000, available="2026-09-01", brand=None, rating=4.5,
         title="Wood Nightstand with Drawers", pkg=None, name="Nightstands"):
     out = {"asin": asin, "parent": None, "node": node, "node_name": name, "node_cn": "床头柜", "title": title,
            "brand": f"B{asin}" if brand is None else brand, "price": 150.0, "revenue": revenue, "units": 400,
@@ -82,6 +82,39 @@ def test_niche_products_are_found_by_their_targeted_design(cfg):
     assert blueocean.scan(state_with(_market(), date(2026, 10, 20)), TODAY, cfg) == ({}, {})
 
 
+def test_niche_vocabulary_covers_hobby_and_commercial_scenes(cfg):
+    """不只是小孩、老人用的：桌游、街机、台球这类具体小众爱好，影碟收藏、讲台、员工更衣柜、商用备餐台这类专门场景也算。
+    只认写明专门用途的说法：普通折叠牌桌、电竞桌、写着 Podium 的电脑推车、更衣柜里放的置物架、车库工具柜、coffee bar 都不算。"""
+    niches = blueocean.settings(cfg)["niches"]
+    cases = {
+        "Board Game Table with Vault and Removable Topper, Solid Wood Dining Table": "桌游牌桌",
+        "10 Player Oval Poker Table with Cup Holders and Padded Rail": "桌游牌桌",
+        "Wooden Puzzle Table with Drawers and Cover, 1500 Piece Jigsaw": "桌游牌桌",
+        "Bartop Arcade Cabinet Kit for 19\" Monitor, MDF": "街机电玩",
+        "HOOBRO Game Console Shelf, 4-Tier Video Gaming Consoles Stand with Outlet": "街机电玩",
+        "7 FT Pool Table with Table Tennis Top, Billiard Accessories Included": "台球游戏室",
+        "Wall Mounted Billiard Cue Rack, Holds 6 Cues": "台球游戏室",
+        "Dartboard Cabinet Set with LED Light, Solid Wood": "台球游戏室",
+        "VEVOR Media Storage Cabinet, CD Rack Tower, 34 Compartments Rotating": "影碟收藏",
+        "Church Podium Stand, Wooden Lectern with Shelf": "讲台展会",
+        "VEVOR Folding Portable Bar Tradeshow Podium Table for Exhibition": "讲台展会",
+        "Metal Lockers for Employees with 12 Doors and Hooks": "商用更衣柜",
+        "IKIMI 3 Doors Metal Storage Locker for Employee, 72\" Sports Staff Lockers": "商用更衣柜",
+        "Stainless Steel Table for Prep & Work, 24x48 Inches, Commercial Heavy Duty": "餐饮后厨",
+        "VEVOR Stainless Steel Work Table, Food Prep Table, Commercial Kitchen Workstation": "餐饮后厨",
+        "Folding Card Table, Black, Padded Vinyl Top": None,
+        "GTPLAYER Gaming Desk 55 Inch with LED Lights": None,
+        "Mount-It! Mobile Computer Cart, Rolling Laptop Stand for Teachers, Office, Classroom, Podium, Keyboard Tray": None,
+        "Locker Organizer Shelf Stackable Extra Locker Shelf for School Locker": None,
+        "75\" Tall Wheeled Garage Storage Cabinet, Rolling Metal Tool Cabinets": None,
+        "Coffee Bar Cabinet with Storage, Farmhouse Buffet Sideboard": None,
+        "Outdoor Poolside Side Table, Weather Resistant": None,
+        "TV Media Console Table for 65 Inch TV": None,
+    }
+    for title, want in cases.items():
+        assert blueocean.niche_of(title, niches) == want, title
+
+
 def test_too_small_or_too_simple_niche_products_are_not_blue_ocean(cfg):
     """圈子再小，太小、结构太简单的也不算：包装不到 30 磅又没有升降 / 翻转 / 折叠 / 翻板 / 暗格这类机构的；
     书架 / 置物架类（标题或主图），不到 50 磅、不是超大件、没有柜门也没有机构的（带个抽屉也还是书架）。
@@ -117,6 +150,30 @@ def test_too_small_or_too_simple_niche_products_are_not_blue_ocean(cfg):
     assert "太小、结构太简单的 4 个不算" in note
 
 
+def test_blue_ocean_products_must_be_new_listings_selling_enough(cfg):
+    """⑥ 和潜力产品同一个“新品”口径：上架 ≤90 天（thresholds.potential.max_age_days），近 30 天 ≥50 件。老款、月售不够的不进候选，但算进这一类的个数（也是竞品）；
+    上架日期不知道的判断不了，不算。11-02：评分达标的 74 个里上架不到 90 天的只有 4 个（GTPLAYER 小升降桌 298~401 天、
+    Bellemave 老款地床 880~1056 天都去掉）。"""
+    rows = [
+        row("NEW", title="Twin Montessori Floor Bed with Rails", available="2026-09-01"),             # 61 天
+        row("EDGE", title="Full Montessori Floor Bed with Fence", available="2026-08-03"),            # 90 天
+        row("OLD", title="Queen Montessori Floor Bed with Slats", available="2026-08-02"),            # 91 天
+        row("NODATE", title="Montessori Floor Bed Frame, Twin", available=None),
+        row("FEW", title="L-Shaped Reception Desk with Counter", available="2026-09-15", revenue=44_000),
+    ]
+    rows[-1]["units"] = 36  # 卖得贵，销售额够全市场门槛，件数不够 50
+    st = state_with(rows)
+    cands, niches = blueocean.scan(st, TODAY, cfg)
+    assert sorted(cands) == ["EDGE", "NEW"]
+    assert niches["蒙氏幼儿"]["n"] == 4 and niches["蒙氏幼儿"]["old"] == 2 and niches["店铺前台"]["few"] == 1
+    note = render._ocean_note({"ocean": {"candidates": 2, "daily": 0, "monthly": 0, "list_only": 2, "missed": {},
+                                         "niches": niches}})
+    assert "不是近期新上架的 2 个不算" in note and "月售不够的 1 个不算" in note
+    assert "<b>蒙氏幼儿</b> 4 个 · 符合 2 个" in render._niche_row({"ocean": {"niches": niches}})
+    hint = render.section_hints(cfg)["ocean"]
+    assert "上架 ≤90 天、近 30 天 ≥50 件，而且在全市场名单里（近 30 天 ≥300 件或 ≥4 万美元）" in hint
+
+
 def _item(asin, **kw):
     base = {"asin": asin, "parent": None, "label": "watch", "label_cn": "观察", "daily": True, "spark": [1.0] * 30,
             "stale": False, "relist": None, "fading": False, "tags": [], "age_days": 200, "rising": None,
@@ -150,7 +207,7 @@ def test_blue_ocean_list_checks_daily_data_when_it_has_it(cfg):
     note = render._ocean_note(cov)
     assert note.startswith("名单上符合 6 个：有日数据 3 个、月度补判 1 个、只有名单数据 2 个") and "异常信号 1" in note
     pop = render._ocean_pop({"shown": sec["ocean"]}, "x", 4, cov)
-    assert '<b>黑胶唱片</b> 5 个 · $30 万/月 · 5 个品牌' in pop and 'data-group="细分"' in pop
+    assert '<b>黑胶唱片</b> 5 个 · 符合 5 个 · $30 万/月 · 5 个品牌' in pop and 'data-group="细分"' in pop
     hint = render.section_hints(cfg)["ocean"]
     assert "特定人群 / 用途" in hint and f"不超过 {cfg['thresholds']['blue_ocean']['max_products']} 个" in hint
     assert render.section_hints(cfg, universe=False)["ocean"] == "本期没翻成全市场名单，不判蓝海产品。"
@@ -167,12 +224,12 @@ def test_pool_pulls_daily_data_for_blue_ocean_products(cfg):
 
 
 def test_dingtalk_lists_blue_ocean_products(cfg):
-    item = _item("A", label="potential", ocean={"asin": "A", "niche": "黑胶唱片", "n": 9, "revenue": 79_000.0,
-                                                "niche_revenue": 390_000.0})
+    item = _item("A", label="potential", age_days=95, ocean={"asin": "A", "niche": "黑胶唱片", "n": 9, "revenue": 79_000.0,
+                                                             "niche_revenue": 390_000.0})
     ctx = {"title": "家具爆品雷达", "report_id": "2026-11-02", "as_of": "2026-11-01", "cfg": cfg,
            "sections": {"surge": [], "potential": [], "hot": [], "fake": [], "ocean": [item],
                         "counts": {"surge": 0, "potential": 0, "hot": 0, "fake": 0, "ocean": 1, "total": 1}},
            "diff": {"first": True}, "traits": {}}
     text = dingtalk.build_text(ctx)
     assert "🌊 蓝海 1" in text and "**🌊 蓝海产品**" in text
-    assert "黑胶唱片（全市场9个），近30天$8 万，也在潜力" in text
+    assert "黑胶唱片（全市场9个），上架95天，近30天$8 万，也在潜力" in text

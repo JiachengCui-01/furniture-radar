@@ -260,9 +260,6 @@ a.th.big{width:58px;height:58px}
 .hov line{stroke:var(--muted);stroke-width:1;vector-effect:non-scaling-stroke}
 .hov circle{fill:var(--spark);stroke:var(--card);stroke-width:2}
 .hov text{fill:var(--text);font-size:11px;font-weight:600}
-details.skip{margin:12px 0 0;font-size:13px;border-top:1px dashed var(--line);padding-top:8px}
-details.skip summary{color:var(--muted);cursor:pointer}
-.mini{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:500}
@@ -498,7 +495,7 @@ def _tag_class(tag: str) -> str:
     if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定", "拉动", "还会被改",
                               "变体变多", "数据可能有误", "没有日数据", "没涨够")):
         return "warn"
-    if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith("上升中"):
+    if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith(("上升中", "新品起量快")):
         return "good"
     if any(k in tag for k in ("大促", "头部", "变体", "换链接", "老链接", "对比期", "随大盘")):
         return "info"
@@ -580,12 +577,15 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
     if kind == "fake":
         level = "高度疑似" if item["fake"]["level"] == "high" else "疑似"
         kv.append(f'<span class="pill"><span class="score">异常分 {item["fake"]["score"]}</span>{level}</span>')
-    if kind == "surge" or (kind == "fake" and s):
-        ratio = f" ×{s['sales_ratio']:.1f}" if s.get("sales_ratio") else " 从零起量"
-        kv.append(_pill(f"日均 前{s.get('base_days', 28)}天→近{s['window']}天",
-                        f"{fmt_num(s['base_avg'])}→<b>{fmt_num(s['recent_avg'])}</b>{ratio}"))
-        if s.get("base_bsr") and s.get("recent_bsr"):
-            kv.append(_pill("BSR", f"{fmt_int(s['base_bsr'])}→<b>{fmt_int(s['recent_bsr'])}</b>"))
+    # 突然爆火，和潜力的第二条路（近期新上架、近 1~2 周就达到爆火门槛）：写前后日均和排名
+    jump = s if kind == "surge" or (kind == "fake" and s) else \
+        (item.get("potential") if kind == "potential" and (item.get("potential") or {}).get("launch") else None)
+    if jump:
+        ratio = f" ×{jump['sales_ratio']:.1f}" if jump.get("sales_ratio") else " 从零起量"
+        kv.append(_pill(f"日均 前{jump.get('base_days') or 28}天→近{jump['window']}天",
+                        f"{fmt_num(jump['base_avg'])}→<b>{fmt_num(jump['recent_avg'])}</b>{ratio}"))
+        if jump.get("base_bsr") and jump.get("recent_bsr"):
+            kv.append(_pill("BSR", f"{fmt_int(jump['base_bsr'])}→<b>{fmt_int(jump['recent_bsr'])}</b>"))
     if kind == "potential" and item.get("potential"):
         p = item["potential"]
         if p.get("growth") is not None:
@@ -633,17 +633,6 @@ def _pop_src(key: str, title: str, color: str, inner: str) -> str:
     return f'<div class="pop-src" id="pop-{key}" data-title="{esc(title)}" data-c="{color}" hidden>{inner}</div>'
 
 
-def _skipped(cur: dict) -> str:
-    """小窗底部：没列出的简单款（折叠，点开才看得到）。"""
-    plain = cur.get("plain") or []
-    if not plain:
-        return ""
-    mini = "".join(f'<span class="simrow">{thumb(i)}<a href="{amazon(i["asin"])}" {LINK}>{esc(short_name(i, 34))}</a></span>'
-                   for i in plain)
-    return (f'<details class="skip"><summary>另有 {len(plain)} 个简单款没列出（主图和标题都没有任何特色）</summary>'
-            f'<div class="mini">{mini}</div></details>')
-
-
 def _count_text(cur: dict, total: int) -> str:
     shown = len(cur.get("shown") or [])
     folded = sum(len(v) for v in (cur.get("similar") or {}).values())
@@ -661,7 +650,7 @@ def _section_pop(kind: str, title: str, hint: str, cur: dict, total: int) -> str
     body = "".join(card(i, kind, similar=similar.get(i["asin"], [])) for i in cur["shown"]) \
         or '<div class="empty">本期没有符合条件的商品。</div>'
     return _pop_src(kind, title, LABEL_COLOR[kind],
-                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p><div class="cards" data-tools>{body}</div>{_skipped(cur)}')
+                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p><div class="cards" data-tools>{body}</div>')
 
 
 def _growth_pop(cur: dict, hint: str, total: int) -> str:
@@ -672,7 +661,7 @@ def _growth_pop(cur: dict, hint: str, total: int) -> str:
         cards.append(card(i, kind, GROUP_CN[kind], similar=similar.get(i["asin"], [])))
     body = "".join(cards) or '<div class="empty">本期没有增长商品。</div>'
     return _pop_src("growth", "增长商品", "potential",
-                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p><div class="cards" data-tools>{body}</div>{_skipped(cur)}')
+                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p><div class="cards" data-tools>{body}</div>')
 
 
 def ocean_group(item: dict) -> str:
@@ -686,25 +675,28 @@ def ocean_group(item: dict) -> str:
 def _ocean_note(cov: dict) -> str:
     """全市场名单上符合的几个，其中有日数据的、只有名单数据的几个，核对没通过的原因（数据说明里也有这一行）。"""
     o = cov.get("ocean") or {}
-    if not o.get("candidates"):
+    if not o.get("candidates") and not o.get("niches"):
         return ""
     missed = "、".join(f"{k} {v}" for k, v in sorted((o.get("missed") or {}).items(), key=lambda kv: -kv[1]))
     big = [k for k, v in (o.get("niches") or {}).items() if not v.get("small")]
-    simple = sum(int(v.get("simple") or 0) for v in (o.get("niches") or {}).values())
+    total = lambda key: sum(int(v.get(key) or 0) for v in (o.get("niches") or {}).values())  # noqa: E731
+    simple, old, few = total("simple"), total("old"), total("few")
     return (f"名单上符合 {o['candidates']} 个：有日数据 {o.get('daily', 0)} 个、月度补判 {o.get('monthly', 0)} 个、"
             f"只有名单数据 {o.get('list_only', 0)} 个" + (f"（没列：{missed}）" if missed else "")
+            + (f"；不是近期新上架的 {old} 个不算" if old else "") + (f"；月售不够的 {few} 个不算" if few else "")
             + (f"；太小、结构太简单的 {simple} 个不算" if simple else "")
             + (f"；{'、'.join(big)} 圈子太大，不算" if big else "") + "。")
 
 
 def _niche_row(cov: dict) -> str:
-    """小窗顶部：每一类在全市场名单里有几个够门槛的商品、合计月销售额、几个品牌（圈子有多大）。"""
+    """小窗顶部：每一类在全市场名单里有几个够门槛的商品（老款也算）、其中符合的几个、合计月销售额、几个品牌（圈子有多大）。"""
     niches = (cov.get("ocean") or {}).get("niches") or {}
     rows = sorted(((k, v) for k, v in niches.items() if v.get("small")), key=lambda kv: -kv[1]["revenue"])
     if not rows:
         return ""
     return '<div class="nich">' + "".join(
-        f'<span title="{esc("、".join(v["nodes"]))}"><b>{esc(k)}</b> {v["n"]} 个 · {esc(directions.money_text(v["revenue"]))}/月'
+        f'<span title="{esc("、".join(v["nodes"]))}"><b>{esc(k)}</b> {v["n"]} 个 · 符合 {v.get("picked", 0)} 个'
+        f' · {esc(directions.money_text(v["revenue"]))}/月'
         f' · {v["brands"]} 个品牌</span>' for k, v in rows) + "</div>"
 
 
@@ -713,12 +705,17 @@ def _ocean_pop(cur: dict, hint: str, total: int, cov: dict) -> str:
     body = "".join(card(i, "ocean", ocean_group(i), similar=similar.get(i["asin"], [])) for i in cur["shown"])         or '<div class="empty">本期没有符合条件的商品。</div>'
     return _pop_src("ocean", "蓝海产品", "ocean",
                     f'<p class="hint">{esc(hint)} {esc(_ocean_note(cov))}{esc(_count_text(cur, total))}</p>{_niche_row(cov)}'
-                    f'<div class="cards" data-tools data-group="细分">{body}</div>{_skipped(cur)}')
+                    f'<div class="cards" data-tools data-group="细分">{body}</div>')
 
 
 def growth_text(item: dict) -> str:
-    """潜力商品的增长：月环比过大（新品首月很少）时直接写月销量，比百分比直观。"""
+    """潜力商品的增长：月环比过大（新品首月很少）时直接写月销量，比百分比直观。
+    第二条路（近 1~2 周就达到爆火门槛）写近 7 / 14 天日均是之前的几倍，从零起量的写日均。"""
     p = item.get("potential") or {}
+    if p.get("launch"):
+        if p.get("sales_ratio"):
+            return f"近{p['window']}天日均 ×{p['sales_ratio']:.1f}"
+        return f"新品爆发 日均 {p['recent_avg']:.0f} 件"
     months = [m for m in item.get("monthly") or [] if m[1]]
     if p.get("growth") is not None and p["growth"] > 2 and len(months) >= 2:
         return f"月销 {months[-2][1]:,.0f} → {months[-1][1]:,.0f} 件"
@@ -999,8 +996,9 @@ def _kind_dots(rows: list[dict]) -> str:
 
 
 def _price_dots(rows: list[dict]) -> list[tuple[float, str, str]]:
+    """价格分布的点：全部增长商品（价格是市场证据）；简单款只画点、不写品名。"""
     return [(float(i["price"]), growth_kind(i) or "rising",
-             f"{fmt_price(i['price'])} · {GROUP_CN[growth_kind(i) or 'rising']} · {short_name(i, 40)}")
+             f"{fmt_price(i['price'])} · {GROUP_CN[growth_kind(i) or 'rising']} · {'简单款' if i.get('plain') else short_name(i, 40)}")
             for i in rows if i.get("price")]
 
 
@@ -1027,7 +1025,7 @@ def _row_feats(d: dict) -> str:
 def _board_row(k: int, d: dict, m: dict | None, rows: list[dict], shown: list[dict], dom, inc_max: float) -> str:
     sales = d.get("sales") or {}
     inc = sales.get("increment") or 0
-    pics = (shown or rows)[:4]
+    pics = (shown or [i for i in rows if not i.get("plain")])[:4]  # 简单款不放图（统计照样算它）
     collage = (f'<span class="bpic n{max(1, len(pics))}">' + "".join(_img(i, 100) for i in pics) + "</span>")
     width = 100 * max(0, inc) / inc_max if inc_max > 0 else 0
     inc_tip = (f"月销售额约 {directions.money_text(sales.get('monthly'))}，比之前 28 天多约 {directions.money_text(inc)}"
@@ -1159,6 +1157,9 @@ def _changes(diff: dict, by_asin: dict) -> str:
     names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号"}
     moved_from = diff.get("moved_from") or {}
 
+    def plain(asin: str) -> bool:
+        return bool((by_asin.get(asin) or {}).get("plain"))
+
     def link(asin: str) -> str:
         item = by_asin.get(asin)
         if item:
@@ -1174,13 +1175,15 @@ def _changes(diff: dict, by_asin: dict) -> str:
         return f'<a class="{cls}" href="{amazon(item["asin"])}" {LINK} title="{esc(short_name(item, 80) + was)}">{_img(item, 100)}</a>'
 
     def line(head: str, asins: list[str], k: int = 14) -> str:
-        # 有特色的排前面：简单款也算进个数，但不占前几张图
-        ordered = sorted(asins, key=lambda a: bool((by_asin.get(a) or {}).get("plain")))
-        moved = sum(1 for a in asins if a in moved_from)
-        extra = f'<span class="more">+{len(asins) - k}</span>' if len(asins) > k else ""
-        note = f'<span class="more">（{moved} 个上期在别的板块，蓝框）</span>' if moved else ""
+        # 简单款算进个数，但不放图（报告里哪里都不列简单款，detect.showcase）
+        shown = [a for a in asins if not plain(a)]
+        moved = sum(1 for a in shown if a in moved_from)
+        extra = f'<span class="more">+{len(shown) - k}</span>' if len(shown) > k else ""
+        notes = ([f"简单款 {len(asins) - len(shown)} 个没列"] if len(shown) < len(asins) else []) \
+            + ([f"{moved} 个上期在别的板块，蓝框"] if moved else [])
+        note = f'<span class="more">（{"；".join(notes)}）</span>' if notes else ""
         return (f'<div class="crow"><span class="ck">{esc(head.strip())}<b>{len(asins)}</b></span>'
-                f'<span class="cth">{"".join(pic(a) for a in ordered[:k])}{extra}{note}</span></div>')
+                f'<span class="cth">{"".join(pic(a) for a in shown[:k])}{extra}{note}</span></div>')
 
     parts = [line("依旧爆火 ", diff["still"])] if diff.get("still") else []
     rc = diff.get("recheck")
@@ -1189,9 +1192,12 @@ def _changes(diff: dict, by_asin: dict) -> str:
         lost = list(rc["lost"].items())
         text = (f"<li>上期提示了大促后数据待修订：上期的 {rc['total']} 个增长商品（突然爆火 / 潜力 / 上升中），"
                 f"本期仍是增长商品 {len(rc['held'])} 个，不再是 {len(lost)} 个")
-        if lost:
-            text += "：" + " ".join(f'{link(a)}<span class="sub">（上期{kinds[k]}）</span>' for a, k in lost[:10]) \
-                + ("…" if len(lost) > 10 else "")
+        named = [(a, k) for a, k in lost if not plain(a)]
+        if named:
+            text += "：" + " ".join(f'{link(a)}<span class="sub">（上期{kinds[k]}）</span>' for a, k in named[:10]) \
+                + ("…" if len(named) > 10 else "")
+        if len(named) < len(lost):
+            text += f"（简单款 {len(lost) - len(named)} 个没列）"
         if rc.get("gone"):
             text += f"；另有 {len(rc['gone'])} 个本期没追踪"
         recheck = f'<ul class="chg">{text}</li></ul>'
@@ -1215,9 +1221,10 @@ def _changes(diff: dict, by_asin: dict) -> str:
 
 
 def _all_table(items: list[dict]) -> str:
+    """全部追踪商品表：简单款不列（报告里哪里都不放简单款的图和品名，detect.showcase）。"""
     order = {"fake": 0, "surge": 1, "potential": 2, "hot": 3, "watch": 4, "low": 5}
     rows = []
-    for i in sorted(items, key=lambda x: (order[x["label"]], -(x.get("recent_avg28") or 0))):
+    for i in sorted((x for x in items if not x.get("plain")), key=lambda x: (order[x["label"]], -(x.get("recent_avg28") or 0))):
         rows.append(
             f"<tr><td><a href=\"{amazon(i['asin'])}\" {LINK}>"
             f"{esc(i['asin'])}</a></td><td>{esc(i['brand'])}</td><td>{esc(i['node_cn'] or i['node_name'])}</td>"
@@ -1242,20 +1249,25 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
     tide = "，子类目整体在涨时先扣掉大盘" if (th.get("tide") or {}).get("enabled", True) else ""
     scope = "" if universe else "（本期全市场名单没翻成，候选退回月度名单和近 30 天榜单）"
     return {
-        "surge": f"近 {windows} 天对比之前 {s['base_days']} 天：排名升一倍以上、日均 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件{tide}；"
-                 f"稳在高位 / 仍在上涨 / 新品爆发，没有回落、不是短时脉冲。按月增量排。{scope}",
-        "potential": f"上架 {p['min_age_days']}~{p['max_age_days']} 天、评论 <{p['max_ratings']} 条：近 28 天和近 7 天日均都 ≥ 之前 28 天的 "
-                     f"{p['min_recent_ratio']} 倍{tide}、≥{p['min_daily_sales']} 件，近 3 个完整月月销平均每月涨 ≥{p['min_monthly_growth']:.0%}。按月增量排。{scope}",
+        "surge": f"上架超过 {p['max_age_days']} 天（之前已经卖了一段时间），近 {windows} 天销量突然涨上来：对比之前 {s['base_days']} 天，"
+                 f"排名升一倍以上、日均 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件{tide}；"
+                 f"稳在高位 / 仍在上涨 / 老链接重新起量，没有回落、不是短时脉冲。更新的达到这些算潜力。按月增量排。{scope}",
+        "potential": f"上架 ≤{p['max_age_days']} 天（近期新上架）就卖得好、评论 <{p['max_ratings']} 条，满足一条：① 上架 ≥{p['min_age_days']} 天，"
+                     f"近 28 天和近 7 天日均都 ≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}、≥{p['min_daily_sales']} 件，"
+                     f"近 3 个完整月月销平均每月涨 ≥{p['min_monthly_growth']:.0%}；② 近 {windows} 天就达到突然爆火的门槛"
+                     f"（新品爆发 / 新品起量快）。按月增量排。{scope}",
         "hot": f"近 {h['lookback_months']} 个月里 ≥{h['months_required']} 个月达到子类目第 {h['rank_in_node']} 名的月销量，波动小、没在跌，"
                f"近 28 天还有近 6 个月日均的 {h['min_recent_ratio']:.0%}。按近 6 个月月均排。",
         "fake": f"异常分 ≥{f['suspect_score']}（留评率过高、评论暴增、评分跳升、短时脉冲等累计），只是提示，需人工核实。按异常分排。",
-        "ocean": (f"标题写明是给特定人群 / 用途专门设计的（缝纫、卧床护理、黑胶唱片、蒙氏幼儿……，词表在 config.yaml），"
-                  f"近 30 天量够全市场门槛，这一类全市场不超过 {o['max_products']} 个；太小、结构太简单的不算"
+        "ocean": (f"标题写明是给特定人群 / 用途 / 场景专门设计的（缝纫、卧床护理、黑胶唱片、桌游、街机、台球、员工更衣柜……，词表在 config.yaml），"
+                  f"上架 ≤{o['max_age_days']} 天、近 30 天 ≥{o['min_units']:g} 件，而且在全市场名单里（近 30 天 "
+                  f"≥{int(cfg['pool']['opportunity_min_units'])} 件或 ≥{float(cfg['pool']['opportunity_min_revenue']) / 1e4:g} 万美元），"
+                  f"这一类全市场不超过 {o['max_products']} 个（老款也算）；太小、结构太简单的不算"
                   f"（包装不到 {o['tiny_weight']:g} 磅又没有升降折叠这类机构的，不到 {o['simple_weight']:g} 磅的开放书架、置物架）。"
                   "同一类排在一起，商品照样留在原板块。"
                   if universe else "本期没翻成全市场名单，不判蓝海产品。"),
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
-        "all": "本期拉了日数据的全部商品。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
+        "all": "本期拉了日数据的全部商品，简单款不列。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
     }
 
 
@@ -1282,11 +1294,12 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                             "衣帽架整个子类目不追踪"))
     ob = blueocean.settings(cfg)
     if ob["enabled"]:
-        rows.append(("蓝海产品", f"针对特定小圈子人群 / 用途专门设计的（缝纫机桌、卧床的人用的床边桌、黑胶唱片机柜……），"
-                              f"卖得够量，这一类全市场不超过 {ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
+        rows.append(("蓝海产品", f"针对特定小圈子人群 / 用途 / 场景专门设计的（缝纫机桌、卧床的人用的床边桌、黑胶唱片机柜、桌游桌、街机柜、台球桌……），"
+                              f"近期新上架（≤{ob['max_age_days']} 天）、月售 ≥{ob['min_units']:g} 件、卖得够量，这一类全市场不超过 "
+                              f"{ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
     if sc.get("enabled", True):
         rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构，"
-                            "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列"),
+                            "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列：报告里哪里都不放它的图和品名，只写个数"),
                  ("相近款", f"同子类目里和已列出的一款主图特征、标题用词平均 ≥{float(sc.get('similar_min', 0.5)):.0%} 相同的，"
                             "只列排在前面的那款，其余记在它的卡片上")]
     link = f'<a href="{esc(repo_url)}" {LINK}>{GLOSSARY_README}</a>' if repo_url else GLOSSARY_README
@@ -1349,7 +1362,7 @@ def _facts(ctx: dict, counts: dict, cur: dict) -> list[tuple[str, str]]:
                                                                        ("ocean", "蓝海产品")) if k in cur]
     if any(n != total for _l, n, total in listed):
         out.append(("列出", "、".join(f"{label} {n}/{total}" for label, n, total in listed)
-                    + "（其余是简单款或相近款，见各小窗底部 / 卡片上）"))
+                    + "（其余是简单款或相近款：简单款不列，相近款记在相似的卡片上）"))
     if counts.get("low"):
         out.append(("评分不达标", f"{counts['low']} 个，没上榜"))
     note = _ocean_note(cov)
@@ -1411,12 +1424,15 @@ def render(ctx: dict) -> str:
     cur = _curated(ctx)
     by_asin = {i["asin"]: i for i in ctx["items"]}
     pool = cur["growth"]["shown"]
+    tracked = [i for i in ctx["items"] if i.get("daily", True)]
+    n_plain = sum(1 for i in tracked if i.get("plain"))  # 全部追踪商品表不列简单款（_all_table），标题写个数
     hints = section_hints(cfg, universe=bool(ctx["coverage"].get("universe")))
+    young = cfg["thresholds"]["potential"]["max_age_days"]  # 突然爆火 / 潜力按上架天数分开（rules.new_days）
     kpi = "".join([
-        _kpi("surge", "突然爆火", "近 1~2 周销量和排名翻倍", cur["surge"]["shown"], counts["surge"]),
-        _kpi("potential", "潜力产品", "新品，近 28 天和月销都在涨", cur["potential"]["shown"], counts["potential"]),
+        _kpi("surge", "突然爆火", f"上架超 {young} 天，近 1~2 周销量突然翻倍", cur["surge"]["shown"], counts["surge"]),
+        _kpi("potential", "潜力产品", f"上架 ≤{young} 天的新品就卖得好", cur["potential"]["shown"], counts["potential"]),
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
-        _kpi("ocean", "蓝海产品", "给特定人群 / 用途专门设计的", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
+        _kpi("ocean", "蓝海产品", "给特定人群 / 场景专门设计的", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
     ])
     facts = _facts(ctx, counts, cur)
@@ -1431,8 +1447,9 @@ def render(ctx: dict) -> str:
         _ocean_pop(cur["ocean"], hints["ocean"], counts.get("ocean", 0), ctx["coverage"]),
         _section_pop("fake", "异常信号", hints["fake"], {"shown": sec["fake"]}, counts["fake"]),
         _growth_pop(cur["growth"], hints["growth"], len(ctx.get("focus") or [])),
-        _pop_src("all", f"全部追踪商品（{counts['total']} 个）", "muted",
-                 f'<p class="hint">{esc(hints["all"])}</p>{_all_table([i for i in ctx["items"] if i.get("daily", True)])}'),
+        _pop_src("all", f"全部追踪商品（{counts['total']} 个" + (f"，简单款 {n_plain} 个不列" if n_plain
+                                                               else "") + "）", "muted",
+                 f'<p class="hint">{esc(hints["all"])}</p>{_all_table(tracked)}'),
     ])
     main_facts = [f for f in facts if f[0] in FACTS_SHOWN]
     rest = [f for f in facts if f[0] not in FACTS_SHOWN]
