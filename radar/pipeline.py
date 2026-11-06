@@ -605,7 +605,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
                  items: list[dict], *, report_id: str, run_seq: int, generated_at: str,
                  prev_run: dict | None, coverage: dict, today, events: dict | None = None,
                  monthly: dict | None = None, monthly_judged: list[str] | None = None, retro: dict | None = None,
-                 ocean_extra: list[dict] | None = None) -> dict:
+                 ocean_extra: list[dict] | None = None, scope_key: str | None = None) -> dict:
     """板块、外观与工艺特征、与上期对比、文字简报 → 渲染 → 加密写入 reports/<id>.html。返回报告上下文。
     events：本期识别出的大促日（analyze.analyze 的结果），写进“数据说明”；
     retro：上期没追踪的商品回看上期那天的判定（previous_view），“与上期对比”用；
@@ -668,7 +668,9 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "sections": sec,
         "curated": curated_lists(items, sec, state, cfg, common),
         "traits": trait,
-        "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == discovery.scope_key(cfg)
+        # scope_key：这期数据是在哪个监控范围下拉的（正常运行 = 现在的配置；重新生成 = 那期自己记的，见 rerender）
+        "scope_key": scope_key or discovery.scope_key(cfg),
+        "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == (scope_key or discovery.scope_key(cfg))
                                 else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)},
                                 retro=retro, growth=growth_map(items)),
         "monthly": monthly or {},
@@ -788,7 +790,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
         # 下期“与上期对比”用：本期提示了大促后数据待修订（events.bsr_lift）时，下期写明这些增长商品哪些仍成立（diff.compare）
         "growth": growth_map(ctx["items"]), "lift": bool((ctx.get("events") or {}).get("lift")),
         "monthly_judged": ctx.get("monthly_judged") or [],
-        "scope_key": discovery.scope_key(cfg),
+        "scope_key": ctx.get("scope_key") or discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         # tides：下一期回看这期没追踪的商品时，按这期的品类大盘扣（previous_view）
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
@@ -847,7 +849,10 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
                        today=today, events=result.get("events"), monthly=result.get("monthly_status"),
                        monthly_judged=result.get("monthly_judged"),
                        retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows),
-                       ocean_extra=result.get("ocean_extra"))
+                       ocean_extra=result.get("ocean_extra"),
+                       # 那期是在哪个监控范围下拉的数据就记哪个：配置里的范围改了以后重新生成，不能把新范围的指纹记到旧数据上
+                       # （下一期会以为上期已经是新范围，跨范围做“与上期对比”），这期的“与上期对比”也照旧（11-06 扩范围后发现）
+                       scope_key=last.get("scope_key") or discovery.scope_key(cfg))
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     scrub_history_keys(cfg, site, master, (state.get("reports") or [])[:-1])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}

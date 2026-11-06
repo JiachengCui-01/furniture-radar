@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from radar import crypto, pipeline, store
+from radar import crypto, discovery, pipeline, store
 from radar.cli import TRACK_ALL, _decrypt_page
 from radar.config import Secrets
 from radar.demo import SyntheticWorld
@@ -386,6 +386,32 @@ def test_scope_change_rediscovers_without_cross_scope_diff(cfg, master_key, tmp_
     assert "market_research" in world.calls[before:]
     plain = _decrypt_page((tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8"), master)
     assert "监控范围刚调整" in plain
+
+
+def test_rerender_after_a_scope_change_keeps_the_runs_own_scope(cfg, master_key, tmp_path):
+    """配置里的监控范围改了以后重新生成上一期：那期的运行记录还记它自己的范围（下一期照样重新发现、不跨范围对比），
+    这期的“与上期对比”也照旧（11-06 扩范围后重新生成，差点把新范围的指纹记到旧数据上）。"""
+    import copy
+
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key)
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
+    world.advance(3)
+    second = pipeline.run(cfg, secrets, tmp_path, transport=world, now=START + timedelta(days=3))
+    master = crypto.parse_master_key(master_key)
+    before = store.load(tmp_path, master)
+    old_key = before["runs"][-1]["scope_key"]
+    path = tmp_path / "reports" / f"{second.report_id}.html"
+    assert "监控范围刚调整" not in _decrypt_page(path.read_text(encoding="utf-8"), master)
+
+    wider = copy.deepcopy(cfg)
+    wider["scope"]["max_nodes"] = 45
+    assert discovery.scope_key(wider) != old_key
+    pipeline.rerender(wider, secrets, tmp_path)
+    after = store.load(tmp_path, master)
+    assert after["runs"][-1]["scope_key"] == old_key and after["discovery"]["scope_key"] == old_key
+    assert "监控范围刚调整" not in _decrypt_page(path.read_text(encoding="utf-8"), master)
+    assert pipeline.needs_discovery(after, wider, (START + timedelta(days=6)).date())  # 下一期照样按新范围重新发现
 
 
 def test_send_last_refuses_a_link_that_cannot_open(world_run, cfg, monkeypatch):
