@@ -1,10 +1,10 @@
-"""蓝海产品：为某个特定小圈子人群 / 用途 / 场景专门设计的家具——缝纫机桌、卧床的人用的床边桌、黑胶唱片机柜、蒙氏地床、
-带枪支暗格的床头柜、店铺前台、桌游桌、街机柜、台球桌、员工更衣柜、商用备餐台……不只是给小孩、老人的，只要是具体小众场景、
-爱好专门用的都算。和普通常规款不同，针对性强，买的人圈子小、做的卖家也少。
+"""蓝海产品：和某个小众兴趣爱好直接相关的家具 / 收纳——桌游桌、拼图桌、爬宠箱和鱼缸柜、唱片机柜、手办 / 乐高展示柜、缝纫手工桌、
+绘画桌、音乐工作台、街机柜、台球桌、枪柜、钓竿架、雪茄柜……（2026-11-06 用户重新界定：人群 / 场景 / 商用的——蒙氏地床、
+卧床护理的床边桌、店铺前台、员工更衣柜、商用备餐台——不算）。玩这个爱好的人才买，圈子小、做的卖家也少。
 
 蓝海产品 = 下面六条都满足（thresholds.blue_ocean）：
-  ① 针对特定人群 / 用途：标题里写明了 niches 词表里的某一类（每类一个正则，见 config.yaml；只认写明专门用途的说法，
-     例：“record player stand”算黑胶唱片，“drum table”是鼓形造型不算；“for classroom”这类适用场景的罗列不算）；
+  ① 兴趣爱好专用：标题里写明了 niches 词表里的某一类（每类一个正则，见 config.yaml；只认写明专门用途的说法，
+     例：“record player stand”算黑胶影音收藏，“drum table”是鼓形造型不算；“for classroom”这类适用场景的罗列不算）；
   ② 有需求：在本期全市场名单里（近 30 天 ≥300 件或 ≥4 万美元），在监控范围内、不是小件；
   ③ 圈子小：这一类在本期全市场名单里够门槛的商品（同一父体算一个）不超过 max_products 个——多了就是大众品类
      （11-01：写着 gaming 的 114 个、standing desk 的 194 个，即使加进词表也不算）；
@@ -33,7 +33,7 @@ from .design import known_brand_key
 from .rules import low_rating, new_days
 
 DATA_MISMATCH = "名单和日数据对不上"
-# 活动机构：有它的小件不算“结构太简单”（卧床护理的床边桌靠升降、翻转，缝纫桌靠折叠，唱片柜的翻板，枪支暗格）
+# 活动机构：有它的小件不算“结构太简单”（缝纫桌靠折叠，唱片柜的翻板，拼图桌的翻盖，枪支暗格）
 MECHANISM = re.compile(r"\b(?:height[- ]adjustable|adjustable[- ]height|adjustable(?! shel| storage)|pneumatic|standing desk|sit[- ]stand|"
                        r"tilt(?:able|ing)?|fold(?:ing|able|s)?|fold[- ](?:out|away|down)|flip[- ]?(?:down|up|top)|lift[- ]?top|"
                        r"murphy|wall bed|convertible|extendable|gun drawer|hidden (?:compartment|storage)|secret compartment|swivel|rotating)\b",

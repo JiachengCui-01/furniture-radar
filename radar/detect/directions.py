@@ -218,13 +218,15 @@ def compute(focus: list[dict], state: dict, appearance: dict | None, cfg: dict, 
         if not any(f["more"] or f["base"] for f in features.values()) \
                 and not any(m["label"] not in VAGUE_MATERIALS for m in materials):
             continue  # 没有任何共同的主材质或特征：画不出产品画像，换下一个子类目
+        inc = round(sum(increment(i) for i in rows))
+        if inc <= 0:
+            continue  # 只给有增长的子类目画像：增长商品的增量都按 0 算（换链接、对比数据不足……）或没多卖的不算
         prices = [float(i["price"]) for i in rows if i.get("price")]
         refs = ref_candidates(rows)  # 势头顺序；有异常信号的不当参考，两个参考来自不同品牌
         out.append({
             "node": node, "n": n, "n_brands": nb, "need": need,
             "n_surge": sum(1 for i in rows if i["label"] == "surge"),
-            "sales": {"monthly": round(sum(monthly_sales(i) for i in rows)),
-                      "increment": round(sum(increment(i) for i in rows))},
+            "sales": {"monthly": round(sum(monthly_sales(i) for i in rows)), "increment": inc},
             "materials": materials,
             "features": features,
             "compare": {"mode": mode, "n_head": len(sample), "n_head_all": len(hs),
@@ -267,6 +269,8 @@ def overview(items: list[dict], focus: list[dict], shown: list[dict], disc: dict
             status = None
         elif not g:
             status = "没有增长商品"
+        elif round(sum(increment(i) for i in g)) <= 0:
+            status = "月增量不是正数"
         elif len(g) < min_items:
             status = f"增长商品不到 {min_items} 个"
         elif nb < min_brands:
@@ -282,6 +286,28 @@ def overview(items: list[dict], focus: list[dict], shown: list[dict], disc: dict
                      "tide": tide, "shown": status is None, "status": status})
     rows.sort(key=lambda r: (-r["increment"], -r["n_brands"], -r["n"], -r["n_surge"], -r["n_tracked"]))
     return rows
+
+
+def highlight(dirs: list[dict], cfg: dict) -> list[dict]:
+    """本期要点、钉钉里放的开发方向（个数每期不同）：月增量为正的方向按增量从大到小，取到累计占全部方向月增量的
+    thresholds.directions.highlight_share 为止（至少 1 个，最多 highlight_max 个）。增量集中在少数品类时就少放几个。"""
+    c = cfg["thresholds"]["directions"]
+    share, cap = float(c.get("highlight_share", 0.8)), int(c.get("highlight_max", 10))
+    rows = [d for d in dirs if ((d.get("sales") or {}).get("increment") or 0) > 0]
+    total = sum(d["sales"]["increment"] for d in rows)
+    out, acc = [], 0.0
+    for d in rows:
+        if len(out) >= cap or (out and acc >= share * total - 1e-6):
+            break
+        out.append(d)
+        acc += d["sales"]["increment"]
+    return out
+
+
+def highlight_share(shown: list[dict], dirs: list[dict]) -> float:
+    """shown 的月增量占全部方向月增量的多少（本期要点小标题写“本期月增量的 x% 来自这 N 个品类”）。"""
+    total = sum(max(0, (d.get("sales") or {}).get("increment") or 0) for d in dirs)
+    return sum(d["sales"]["increment"] for d in shown) / total if total else 0.0
 
 
 def skipped_big(overview_rows: list[dict], shown: list[dict]) -> list[dict]:

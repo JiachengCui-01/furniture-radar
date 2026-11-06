@@ -46,6 +46,39 @@ scope:
   # 67%~87% 的销售额是小件，剔除小件后只剩八九个大号的衣帽树，也还是衣帽架。
   # 茶几（45%~60%）、音响架（31%~45%）一半左右是小件，只剔除小件、子类目保留（剩下的是带抽屉、柜体的大号边几）
   exclude_node_regex: '(?i)\bcoat racks?\b'
+  # 子类目中文名（子类目 ID → 名字），盖掉卖家精灵自带的翻译：它把 Storage Cabinets 叫“门厅收纳柜”（里面多是浴室、厨房、车库柜），
+  # End Tables 叫“茶几”而 Coffee Tables 叫“咖啡桌”，Flat File Cabinets 叫“十抽文件柜”……2026-11-06 对照英文名和商品标题逐个核过。
+  # 读的时候改（discovery.rename_nodes），不算进监控范围的指纹；新发现的子类目不在表里时用卖家精灵的名字
+  node_names:
+    "3248801011": 床架                 # Bed Frames
+    "3248804011": 床                   # Beds（高架床、壁床、带床头的整床）
+    "3248802011": 床头板               # Headboards
+    "3733261": 五斗柜、抽屉柜           # Dressers
+    "3733251": 床头柜                   # Nightstands
+    "3733291": 梳妆台、梳妆凳           # Vanities & Vanity Benches
+    "3733671": 电脑桌、书桌             # Home Office Desks
+    "10824421": 书架                    # Bookcases
+    "3733641": 边几、角几               # End Tables
+    "3733631": 茶几                     # Coffee Tables
+    "3733651": 玄关桌、沙发桌           # Sofa & Console Tables
+    "14109851": 电视柜                  # Television Stands & Entertainment Centers
+    "509304": 影音架、唱片机架          # Audio-Visual Shelving
+    "681151011": 收纳柜                 # Storage Cabinets（浴室、厨房、客厅、车库都有，短称后面写标题里的房间）
+    "3734121": 储物凳、换鞋凳           # Storage Benches
+    "16187580011": 厨房储物柜           # Pantries
+    "3733831": 餐边柜                   # Buffets & Sideboards
+    "3733811": 餐桌                     # Dining Room Tables
+    "8521399011": 餐桌长凳              # Table Benches
+    "23691554011": 移动厨房岛台         # Mobile Storage Islands
+    "3250051011": 吧台桌                # Bar Tables
+    "3733381": 儿童书架、收纳柜         # Kids' Bookcases, Cabinets & Shelves
+    "3733361": 儿童床架、床头板         # Kids' Bed Frames, Headboards & Footboards
+    "1069234": 电脑工作台               # Computer Workstations（多是电动升降桌、L 形桌）
+    "1069222": 办公桌、会议桌           # Office Tables
+    "1069112": 办公收纳柜、置物架       # Office Shelving & Storage
+    "490922011": 抽屉文件柜             # Chest File Cabinets
+    "490876011": 图纸柜                 # Flat File Cabinets
+  room_nodes: ["681151011", "1069112"]  # 用途不固定的子类目：商品短称后面加标题里最先说到的房间（浴室、厨房、车库……）
   # 额外固定追踪的类目（用 python -m radar search-category 关键词 查 nodeIdPath）
   extra_nodes: []
   #  - path: "1055398:1063306:1063318:3733551"
@@ -417,27 +450,29 @@ thresholds:
     max_products: 50
     tiny_weight: 30
     simple_weight: 50
-    min_units: 50                    # 近期新上架 = 上架 ≤ potential.max_age_days 天（和潜力产品同一个数）
+    min_units: 50                    # 近期新上架、月售够：上架 ≤ max_age_days 天、近 30 天 ≥ min_units 件
+    max_age_days: 365                # 2026-11-06 用户定：爱好类商品放宽到一年内上架（≤90 天时 11-02 的 21 个爱好类商品一个也不剩）
+    # 兴趣爱好专用的家具 / 收纳（2026-11-06 用户重新界定：要和某个小众爱好直接相关，像桌游桌、爬宠箱；
+    # 蒙氏地床、卧床护理的床边桌、店铺前台、员工更衣柜、商用备餐台、美甲台、讲台这类人群 / 场景 / 商用的不算）。
+    # 每类一个正则，只认标题里写明专门用途的说法。监控范围（家具、办公家具的子类目）里找得到的主要是唱片机柜、游戏机架、
+    # 带枪支暗格的床头柜、缝纫桌；桌游桌、爬宠箱、鱼缸柜、台球桌这些在别的类目，要另外加子类目才查得到
     niches:
-      - {name: 缝纫手工, regex: '\bsewing (?:machine )?(?:tables?|desks?|cabinets?|stations?|storage)\b|\bquilting (?:tables?|desks?)\b|\bcraft (?:tables?|desks?|stations?|cabinets?)\b|\bscrapbooking\b'}
-      - {name: 卧床护理, regex: '^(?=.*\b(?:wheels?|rolling|casters?|adjustable|hospital)\b).*\bover ?bed\b|\bhospital (?:bed )?tables?\b|\bfor (?:the )?(?:elderly|seniors)\b|\bwheelchair (?:accessible|friendly)\b'}
-      - {name: 黑胶唱片, regex: '\brecord player (?:stands?|tables?|cabinets?|consoles?)\b|\bturntable (?:stands?|tables?|cabinets?|consoles?)\b|\bvinyl (?:record )?(?:storage|stands?|cabinets?|holders?|shelf|shelves)\b|\brecord (?:storage|cabinets?)\b'}
-      - {name: 蒙氏幼儿, regex: '\bmontessori\b|\bchanging tables?\b|\btoddler (?:beds?|bookshelf|bookshelves|bookcases?|shelf|tables?)\b|\bnursery dressers?\b'}
-      - {name: 枪支暗格, regex: '\bgun (?:drawers?|safes?|cabinets?|compartments?|storage|racks?)\b|\bhidden gun\b|\bconcealment (?:furniture|shelf|shelves|tables?|nightstands?|cabinets?|beds?)\b|\bfirearms?\b'}
-      - {name: 店铺前台, regex: '\breception (?:desks?|counters?)\b|\bfront desk\b|\bcheckout counters?\b'}
-      - {name: 桌游牌桌, regex: '\b(?:board ?games?|tabletop games?|game|poker|casino|blackjack|mahjong|chess|puzzle|jigsaw puzzle) tables?\b|\bboard game (?:storage|shel(?:f|ves)|cabinets?|organizers?)\b|\bgame toppers?\b|\bpuzzle (?:boards?|desks?) with drawers\b'}
-      - {name: 街机电玩, regex: '\barcade (?:cabinets?|machines?|stands?|tables?|consoles?)\b|\bbartop arcade\b|\bpinball\b|\b(?:video )?gam(?:e|ing) consoles? (?:shel(?:f|ves)|stands?|cabinets?|storage|racks?|towers?)\b|\bvideo game (?:storage|shel(?:f|ves)|cabinets?|racks?)\b'}
+      - {name: 桌游拼图, regex: '\b(?:board ?games?|tabletop games?|game|poker|casino|blackjack|mahjong|chess|puzzle|jigsaw(?: puzzle)?) tables?\b|\bboard game (?:storage|shel(?:f|ves)|cabinets?|organizers?)\b|\bgame toppers?\b|\bpuzzle (?:boards?|desks?|storage|cabinets?|organizers?)\b|\bdungeons? (?:and|&) dragons\b|\bwarhammer\b'}
+      - {name: 爬宠水族, regex: '\breptiles?\b|\bterrariums?\b|\bvivariums?\b|\b(?:aquarium|fish tank|turtle tank|reptile tank) (?:stands?|cabinets?)\b|\b\d+ gallons? (?:fish |aquarium )?tank stands?\b|\bbird ?cage stands?\b|\b(?:hamster|rabbit|guinea pig|chinchilla) (?:cages?|hutch(?:es)?) (?:furniture|stands?|cabinets?)\b'}
+      - {name: 黑胶影音收藏, regex: '\brecord player (?:stands?|tables?|cabinets?|consoles?)\b|\bturntable (?:stands?|tables?|cabinets?|consoles?)\b|\bvinyl (?:record )?(?:storage|stands?|cabinets?|holders?|shelf|shelves|display)\b|\brecord (?:storage|cabinets?|holders?)\b|\b(?:cd|dvd|blu-?ray)s? (?:media )?(?:storage|towers?|racks?|shel(?:f|ves)|cabinets?|holders?)\b|\bmedia towers?\b'}
+      - {name: 手办模型收藏, regex: '\b(?:lego|figures?|figurines?|funko|collectibles?|action figures?|model (?:cars?|trains?)|diecast|sneakers?|trading cards?|pokemon|memorabilia|trophy|trophies)\b[^.]*\b(?:display|cabinets?|cases?|shel(?:f|ves))\b|\bmodel train tables?\b'}  # curio cabinet 不算：多是普通玻璃门书柜
+      - {name: 缝纫手工, regex: '\bsewing (?:machine )?(?:tables?|desks?|cabinets?|stations?|storage)\b|\bquilting (?:tables?|desks?)\b|\bcraft (?:tables?|desks?|stations?|cabinets?|storage)\b|\bscrapbook(?:ing)?\b|\byarn (?:storage|cabinets?)\b|\bcricut\b|\bembroidery\b'}
+      - {name: 绘画设计, regex: '\bdrafting (?:tables?|desks?)\b|\bdrawing (?:tables?|desks?)\b|\bartist (?:desks?|tables?|storage)\b|\bart (?:desks?|tables?|supply storage|storage cabinets?)\b|\beasels?\b'}
+      - {name: 乐器音乐, regex: '\b(?:music |recording )?studio desks?\b|\bproducer desks?\b|\bmusic (?:production )?desks?\b|\bpiano (?:bench(?:es)?|desks?)\b|\bkeyboard (?:stands?|desks?)\b|\bguitar (?:stands?|cabinets?|storage|display|racks?)\b|\bdj (?:booth|desks?|tables?)\b|\bsheet music (?:storage|cabinets?)\b'}
+      - {name: 电玩街机, regex: '\barcade (?:cabinets?|machines?|stands?|tables?|consoles?)\b|\bbartop arcade\b|\bpinball\b|\b(?:video )?gam(?:e|ing) consoles? (?:shel(?:f|ves)|stands?|cabinets?|storage|racks?|towers?)\b|\bvideo game (?:storage|shel(?:f|ves)|cabinets?|racks?)\b|\bsim racing\b|\bracing (?:cockpit|simulator)\b'}
       - {name: 台球游戏室, regex: '\b(?:pool|billiards?|snooker) tables?\b|\bbilliards?\b|\bcue (?:racks?|stands?|holders?|cabinets?)\b|\bdart ?board (?:cabinets?|backboards?|stands?)\b|\bfoosball\b|\bair hockey\b|\b(?:ping pong|table tennis) tables?\b|\bshuffleboard\b'}
-      - {name: 影碟收藏, regex: '\b(?:cd|dvd|blu-?ray)s? (?:media )?(?:storage|towers?|racks?|shel(?:f|ves)|cabinets?|holders?)\b|\bmedia towers?\b'}
-      - {name: 讲台展会, regex: '\blecterns?\b|\bpulpits?\b|\bpodiums? (?:stands?|desks?)\b|\b(?:church|speech|presentation|conference|school) podiums?\b|\btrade ?show (?:podiums?|counters?|booths?|tables?)\b'}
-      - {name: 商用更衣柜, regex: '\blockers? for employees?\b|\bemployees? (?:storage )?lockers?\b|\bstaff lockers?\b|\blocker room\b'}
-      - {name: 餐饮后厨, regex: '\bfood prep tables?\b|\bprep (?:&|and) work tables?\b|\btables? for prep\b|\bcommercial (?:kitchen|prep) (?:tables?|workstations?|work ?tables?)\b|\bstainless steel (?:prep|work) tables?\b'}
-      - {name: 宠物, regex: '\blitter box (?:enclosures?|furniture|cabinets?|tables?)\b|\bdog crate (?:furniture|tables?|end tables?)\b|\b(?:dog|cat|pet) (?:kennel|crate) furniture\b|\bcat washroom\b|\baquarium stands?\b|\bfish tank stands?\b|\breptile\b|\bterrarium stands?\b'}
-      - {name: 美甲沙龙, regex: '\bnail (?:tables?|desks?|stations?)\b|\bmanicure (?:tables?|desks?|stations?)\b|\bsalon (?:stations?|desks?|cabinets?|furniture)\b|\bbarber (?:stations?|cabinets?)\b|\blash (?:beds?|tables?)\b'}
-      - {name: 乐器音乐, regex: '\bstudio desks?\b|\bproducer desks?\b|\bmusic (?:studio|production) desks?\b|\bpiano bench|\bkeyboard (?:stands?|desks?)\b|\bguitar (?:stands?|cabinets?|storage)\b'}
-      - {name: 绘画设计, regex: '\bdrafting (?:tables?|desks?)\b|\bdrawing (?:tables?|desks?)\b|\bartist (?:desks?|tables?)\b'}
-      - {name: 宗教, regex: '\bhome altar\b|\baltar (?:tables?|cabinets?)\b|\bprayer (?:tables?|altar|stands?)\b'}
-      - {name: 3D打印, regex: '\b3d printer (?:tables?|stands?|cabinets?|enclosures?)\b'}
+      - {name: 狩猎射击, regex: '\bgun (?:drawers?|safes?|cabinets?|compartments?|storage|racks?)\b|\bhidden gun\b|\bconcealment (?:furniture|shelf|shelves|tables?|nightstands?|cabinets?|beds?)\b|\bfirearms?\b|\brifles?\b|\bbow (?:racks?|cabinets?)\b'}
+      - {name: 垂钓, regex: '\bfishing (?:rods?|poles?) (?:racks?|holders?|storage|cabinets?)\b|\brod (?:racks?|holders?) for fishing\b|\btackle (?:storage|cabinets?|stations?)\b'}
+      - {name: 运动健身骑行, regex: '\bgolf (?:bag )?(?:storage|organizers?|racks?|cabinets?)\b|\b(?:bike|bicycle) (?:storage|racks?|shel(?:f|ves)|stands?)\b|\bski (?:racks?|storage)\b|\bsurfboard (?:racks?|storage)\b|\bsports equipment (?:storage|organizers?|cabinets?)\b|\bball storage\b|\byoga mat (?:storage|holders?|racks?)\b|\bhome gym storage\b'}
+      - {name: 园艺植物, regex: '\bplant (?:stands?|shel(?:f|ves)|tables?|cabinets?) with grow lights?\b|\bgrow (?:light )?(?:shel(?:f|ves)|cabinets?|stands?)\b|\bgreenhouse cabinets?\b|\bpotting (?:bench(?:es)?|tables?)\b|\bbonsai\b'}
+      - {name: 雪茄酒类收藏, regex: '\bhumidors?\b|\bcigar (?:cabinets?|humidors?)\b|\bwhiske?y (?:cabinets?|display|shel(?:f|ves))\b|\bbourbon (?:cabinets?|display)\b'}
+      - {name: 3D打印摄影, regex: '\b3d printer (?:tables?|stands?|cabinets?|enclosures?)\b|\bcamera (?:dry )?cabinets?\b|\btelescopes? (?:cabinets?|storage)\b'}
+      - {name: 漫画阅读收藏, regex: '\bcomic (?:books? )?(?:storage|shel(?:f|ves)|cabinets?|bins?)\b|\bmanga (?:book ?)?(?:shel(?:f|ves)|cases?|storage)\b|\bbook nooks?\b'}
   fake:                              # 假爆火 / 异常信号评分
     suspect_score: 3                 # ≥3 分：疑似
     high_score: 5                    # ≥5 分：高度疑似
@@ -487,7 +522,9 @@ thresholds:
                                      #   的合计排序。只按品牌数排时，便宜、门槛低的品类排前面：实测 $35 的衣帽架排第一，$138 的梳妆台进不了前 5）。
                                      #   以前只列前 5 个：10-23 够格的 12 个子类目、前 5 个只占增长商品增量的 70%；
                                      #   11-01 彩排（全市场名单初筛后）够格的 24 个、前 5 个只占 53%
-    summary_max: 5                   # 本期要点和钉钉消息里只写增量最大的前几个（全部的在报告“开发方向依据”里）
+    summary_max: 5                   # 评论核查先查前几个开发方向的参考商品候选（verify.named）
+    highlight_share: 0.8             # 本期要点、钉钉里放的开发方向：按月增量从大到小，取到累计占全部方向月增量的 80% 为止
+    highlight_max: 10                #   最多几个（个数每期不同；只有月增量为正的子类目才有画像）
     feature_min_share: 0.5           # 基本款：品牌均占比至少一半且 ≥2 品牌支持；主材质仍要求至少一半品牌具备
     per_dim: 3                       # 每个维度每一档最多列几个特征
     # 两边先算每个已知品牌内部商品的特征占比，再对品牌等权平均。比头部多：均占比高 head_min_gap 且 ≥head_min_lift 倍（且 ≥2 品牌支持）。

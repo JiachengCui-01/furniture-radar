@@ -215,6 +215,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
     site = Path(site_dir)
     state = store.load(site, master)
     discovery.migrate_scope_keys(state, cfg)
+    discovery.rename_nodes(state, cfg)  # 子类目中文名按 scope.node_names 改（卖家精灵自带的翻译有的不对）
     now_utc = now or datetime.now(timezone.utc)
 
     due, why = is_due(state, cfg, now_utc)
@@ -384,6 +385,7 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
             log.warn(f"补充查询：{exc}，本期跳过，下期再补")
 
     # 4. 判定 + 核查 + 再判定
+    discovery.rename_nodes(state, cfg)  # 本期新拉的名单、新发现的子类目也用核过的中文名
     extra_rows = tracking.fresh_rows(state)
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, revision)
     # 上榜商品先看主图：报告只列有特色、不重复的（detect.showcase），评论抽查“点名”的也按列出的挑
@@ -641,6 +643,9 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         item["features"] = showcase.features(item, state, common)
         item["plain"] = showcase.is_plain(item, state, common)
         item["design"] = {dim: sorted(v) for dim, v in directions.design_of(item, state).items()}
+        # 主图上看得出的特征（只看主图识别）：报告里配图的地方按它挑，图上看不出的特征不配这张图
+        item["seen"] = {dim: sorted(set(v)) for dim, v in (vision.of(state, item["asin"]).get("tags") or {}).items() if v}
+        item["room"] = narrative.room_of(item["title"]) if discovery.room_node(item.get("node"), cfg) else ""
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
     trait["direction_overview"] = directions.overview(items, growth, trait["directions"], disc, cfg)
     trait["market"] = market.summarize(state, today, cfg)  # 开发方向一览的价格带、新品占比、头部评论（本期全市场名单，0 次调用）
@@ -801,6 +806,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     site = Path(site_dir)
     state = store.load(site, master)
     discovery.migrate_scope_keys(state, cfg)
+    discovery.rename_nodes(state, cfg)  # 子类目中文名按 scope.node_names 改（卖家精灵自带的翻译有的不对）
     if not state.get("runs"):
         log.warn("还没有任何报告，无法重新生成")
         return RunResult(skipped_reason="还没有报告")

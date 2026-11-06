@@ -153,7 +153,7 @@ text-decoration:none;color:inherit;background:var(--card)}
 .fx i{font-style:normal;font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line);color:var(--text);
 background:var(--chip);white-space:nowrap}
 /* 本期要点：图标卡片 */
-.digest{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:10px;margin-top:6px}
+.digest{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-top:6px}
 @media (max-width:860px){.digest{grid-template-columns:minmax(0,1fr)}}
 .dg{border:1px solid var(--line);border-radius:12px;padding:10px 12px 12px;min-width:0}
 .dg.wide{grid-column:1/-1}
@@ -167,28 +167,24 @@ color:var(--tc);background:var(--tb)}
 .tn-trend{--tc:var(--potential);--tb:rgba(43,138,62,.13)}.tn-idea{--tc:var(--idea);--tb:rgba(230,140,0,.15)}
 .tn-dir{--tc:var(--surge);--tb:rgba(232,89,12,.12)}.tn-risk{--tc:var(--fake);--tb:rgba(201,42,42,.11)}
 .tn-dim{--tc:var(--accent);--tb:rgba(28,109,208,.10)}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(165px,100%),1fr));gap:8px}
-.tl{background:var(--row);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;min-width:0}
-.tl-h{display:flex;align-items:center;gap:8px}
-.tl-h>span:not(.ib){flex:1;min-width:0;line-height:1.25}
-.tl-h em{display:block;font-style:normal;font-size:11.5px;color:var(--muted)}
-.tl-h b{font-size:14.5px;overflow-wrap:anywhere}
-.tl .gp{font-size:15px;color:var(--potential);font-variant-numeric:tabular-nums}
-.tl-h em .src{font-size:10px;padding:0 3px;line-height:1.4;border-radius:3px;margin-left:4px;vertical-align:1px}
-.tl-mat{grid-row:span 2}.mgs{display:flex;flex-direction:column;gap:7px;margin-top:2px}
-.mg>span{display:block;font-size:12px;margin-bottom:1px}.mg.on>span{font-weight:700}
-.pair{display:flex;flex-direction:column;gap:2px}
-.pb{display:grid;grid-template-columns:2.3em minmax(0,1fr) 2.7em;align-items:center;gap:5px;font-size:11px;color:var(--muted);
-font-variant-numeric:tabular-nums}
-.pb em{font-style:normal}.pb b{font-weight:600;color:var(--text);text-align:right}
-.pt{height:6px;background:var(--line);border-radius:3px;overflow:hidden}.pt i{display:block;height:100%;border-radius:3px}
-.pg{background:var(--potential)}.po{background:var(--muted);opacity:.6}
-.sw{display:inline-block;width:12px;height:6px;border-radius:3px;margin:0 3px 0 6px}
-.tl-f{display:flex;align-items:center;gap:6px;justify-content:space-between;min-height:26px}
-.tl-f .ths{display:flex;gap:3px;flex:none}.tl-f a.th{width:26px;height:26px;border-radius:5px}
-.alsos{display:flex;flex-wrap:wrap;gap:3px;justify-content:flex-end;font-size:11px;color:var(--muted);min-width:0}
-.alsos span{border:1px solid var(--line);border-radius:999px;padding:0 6px;background:var(--card);white-space:nowrap}
-.ideas{display:flex;flex-direction:column;gap:8px}
+.sw{display:inline-block;width:12px;height:6px;border-radius:3px;margin:0 3px 0 6px;background:var(--potential)}
+.sw.tk{width:2px;height:11px;background:var(--text);border-radius:1px;margin-left:8px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:8px}
+.tl{background:var(--row);border-radius:10px;padding:8px 8px 7px;display:flex;flex-direction:column;gap:1px;min-width:0}
+.tl-h{display:flex;align-items:center;gap:8px;margin:0 3px 4px}.tl-h b{font-size:14px}.tl-h .ib{width:26px;height:26px}
+.fr{display:grid;grid-template-columns:minmax(4.6em,1.15fr) minmax(56px,1.3fr) 5.6em 4.4em;gap:7px;align-items:center;
+font-size:12.5px;padding:3px 4px;border-radius:6px;font-variant-numeric:tabular-nums}
+.fr[data-pop]{cursor:pointer}.fr[data-pop]:hover,.fr[data-pop]:focus-visible{background:var(--card);outline:none;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.fl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fr.more .fl{font-weight:700}
+.up{font-style:normal;color:var(--potential);font-size:10px;margin-left:3px}.dn{font-style:normal;color:var(--fake);font-size:10px;margin-left:3px}
+.bl{position:relative;height:8px;background:var(--line);border-radius:4px}
+.bl i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--potential);opacity:.4}.fr.more .bl i{opacity:1}
+.bl b{position:absolute;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:var(--text);border-radius:1px}
+.nm{text-align:right;white-space:nowrap}.nm em{font-style:normal;color:var(--muted)}
+.mo{text-align:right;white-space:nowrap;font-weight:600}
+.tl-f{display:flex;align-items:center;gap:6px;margin:5px 4px 0}.tl-f .ths{display:flex;gap:3px}
+.tl-f a.th{width:30px;height:30px;border-radius:5px}.tl-f em{font-style:normal;font-size:11.5px;color:var(--muted)}
+.ideas{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:8px}
 .idea{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;align-items:center;background:var(--row);border-radius:10px;padding:7px}
 .ipic{display:block;width:64px;height:64px;border-radius:8px;overflow:hidden;background:var(--imgbg);border:1px solid var(--line)}
 .ipic img,.ipic .ph{width:100%;height:100%;object-fit:contain}
@@ -199,8 +195,8 @@ font-variant-numeric:tabular-nums}
 .inm{font-size:12px;text-decoration:none}
 .dtop{display:grid;grid-template-columns:repeat(var(--n,5),minmax(0,1fr));gap:8px}
 @media (max-width:860px){.dtop{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
-@media (max-width:560px){.tiles,.dtop{grid-template-columns:repeat(2,minmax(0,1fr))}.dg{padding:9px 9px 10px}
-.tl{padding:7px 8px}.tl-f .ths a:nth-child(n+3){display:none}.dg h3 .sub{margin-left:0;width:100%}}
+@media (max-width:560px){.dtop{grid-template-columns:repeat(2,minmax(0,1fr))}.dg{padding:9px 9px 10px}
+.dg h3 .sub{margin-left:0;width:100%}.fr{gap:5px;grid-template-columns:minmax(4.2em,1fr) minmax(44px,1fr) 5.2em 4.2em}}
 .dcard{position:relative;display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:10px;padding:8px;
 cursor:pointer;background:var(--card);min-width:0;-webkit-tap-highlight-color:transparent}
 .dcard:hover,.dcard:focus-visible{background:var(--row);outline:none;box-shadow:0 2px 10px rgba(0,0,0,.07)}
@@ -216,14 +212,19 @@ cursor:pointer;background:var(--card);min-width:0;-webkit-tap-highlight-color:tr
 .dc-f .more{border-color:var(--potential);font-weight:600}.dc-f .mat{background:var(--chip)}.dc-f .base{color:var(--muted)}
 .dc-p{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:12px;color:var(--muted);margin-top:auto;
 font-variant-numeric:tabular-nums}
-.dc-ref{display:inline-flex;align-items:center;gap:3px;margin-left:auto}
-.dc-ref img,.dc-ref .ph{width:24px;height:24px;object-fit:contain;border-radius:4px;background:var(--imgbg);border:1px solid var(--line)}
+.td{white-space:nowrap}.td.up{color:var(--potential);font-size:12px;margin:0}.td.dn{color:var(--fake);font-size:12px;margin:0}
 .dnote{display:flex;gap:6px;align-items:flex-start;font-size:12.5px;color:var(--muted);margin:8px 0 0}.dnote .ic{margin-top:2px}
-.dg-risk{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap}.dg-risk h3{margin:0}
-.rks{display:flex;flex-direction:column;gap:6px;flex:1;min-width:min(100%,320px)}
-.rkr{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px}
-.rkr .tag{font-size:12px}.rk-t{color:var(--muted);font-size:12.5px}
-.rk-ok{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;color:var(--muted);flex:1}.rk-ok .ic{color:var(--potential)}
+.rks{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr));gap:12px 20px;align-items:start}
+.rkh{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13.5px}
+.rkn{font-size:12px;font-weight:700;color:var(--fake);background:rgba(201,42,42,.10);border-radius:999px;padding:0 7px;font-variant-numeric:tabular-nums}
+.rk-t{color:var(--muted);font-size:12px;flex-basis:100%;margin-left:28px;line-height:1.35}
+.rki{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 28px;align-items:center}
+.rki a.th{width:30px;height:30px;border-radius:5px}.rki .ph{width:22px;height:22px;border-radius:4px;font-size:11px}
+.rk-more{margin:0;display:contents}.rk-more summary{font-size:12px;padding:0 4px}
+.rk-more[open]{display:flex;flex-wrap:wrap;gap:4px;width:100%}
+.rk-ok{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;color:var(--muted)}.rk-ok .ic{color:var(--potential)}
+.fchip{font:inherit;font-size:12.5px;border:1.5px solid var(--potential);background:var(--card);color:var(--text);border-radius:999px;
+padding:2px 10px;cursor:pointer}
 a.ref{display:inline-flex;align-items:center;gap:4px;vertical-align:middle;background:var(--chip);border-radius:6px;
 padding:1px 6px 1px 2px;margin:1px 0;text-decoration:none;color:var(--accent);font-size:.95em;line-height:1.4}
 a.ref img{width:22px;height:22px;object-fit:contain;background:var(--imgbg);border-radius:4px;flex:none}
@@ -443,12 +444,14 @@ var KIND={surge:'突然爆火',potential:'潜力',rising:'上升中'};
 function el(tag,cls,text){var x=document.createElement(tag);if(cls)x.className=cls;if(text!=null)x.textContent=text;return x;}
 function num(c,k){var v=c.getAttribute('data-'+k);return v===null||v===''?NaN:+v;}
 // 卡片多的小窗：按类别、子类目筛，按月增量 / 售价 / 上架天数 / 评分排（卡片上的 data-*，见 render.card）
-function tools(root){var box=root.querySelector('.cards[data-tools]');if(!box)return;
-var cards=[].slice.call(box.children);if(cards.length<6)return;
+function tools(root,f,ft){var box=root.querySelector('.cards[data-tools]');if(!box)return;
+var cards=[].slice.call(box.children);if(cards.length<6&&!f)return;
 var nodes={},kinds={},order=[],hasInc=false;
 cards.forEach(function(c,i){c.setAttribute('data-i',i);var n=c.getAttribute('data-node'),k=c.getAttribute('data-kind');
 if(n){if(!nodes[n]){nodes[n]=0;order.push(n);}nodes[n]++;}if(k)kinds[k]=(kinds[k]||0)+1;if(!isNaN(num(c,'inc')))hasInc=true;});
-var bar=el('div','tools'),st={k:'',n:'',s:''},cnt=el('span','cnt');
+var bar=el('div','tools'),st={k:'',n:'',s:'',f:f||''},cnt=el('span','cnt');
+if(st.f){var fc=el('button','fchip','只看'+(ft||st.f)+' ×');fc.type='button';bar.appendChild(fc);
+fc.addEventListener('click',function(){st.f='';fc.parentNode.removeChild(fc);apply();});}
 var kn=Object.keys(kinds);
 if(kn.length>1){var seg=el('span','seg');[''].concat(kn).forEach(function(k){var b=el('button',k?'':'on',k?(KIND[k]||k)+' '+kinds[k]:'全部');
 b.type='button';b.setAttribute('data-k',k);seg.appendChild(b);});bar.appendChild(seg);
@@ -464,20 +467,21 @@ bar.appendChild(so);bar.appendChild(cnt);box.parentNode.insertBefore(bar,box);
 function apply(){var key=st.s.replace('-',''),dir=st.s.charAt(0)==='-'?-1:1,shown=0;
 var list=cards.slice().sort(function(a,b){if(!key)return num(a,'i')-num(b,'i');var x=num(a,key),y=num(b,key);
 if(isNaN(x)&&isNaN(y))return num(a,'i')-num(b,'i');if(isNaN(x))return 1;if(isNaN(y))return -1;return (x-y)*dir||num(a,'i')-num(b,'i');});
-list.forEach(function(c){var ok=(!st.k||c.getAttribute('data-kind')===st.k)&&(!st.n||c.getAttribute('data-node')===st.n);
+list.forEach(function(c){var ok=(!st.k||c.getAttribute('data-kind')===st.k)&&(!st.n||c.getAttribute('data-node')===st.n)
+&&(!st.f||('|'+(c.getAttribute('data-tags')||'')+'|').indexOf('|'+st.f+'|')>=0);
 c.style.display=ok?'':'none';if(ok)shown++;box.appendChild(c);});cnt.textContent='显示 '+shown+' / '+cards.length;}
 apply();}
-function open(key){var src=document.getElementById('pop-'+key);if(!src)return false;
+function open(key,f,ft){var src=document.getElementById('pop-'+key);if(!src)return false;
 title.textContent=src.getAttribute('data-title');body.innerHTML=src.innerHTML;
 pop.querySelector('.pop-panel').style.setProperty('--c','var(--'+src.getAttribute('data-c')+')');
-pop.hidden=false;document.documentElement.className+=' noscroll';body.scrollTop=0;tools(body);return true;}
+pop.hidden=false;document.documentElement.className+=' noscroll';body.scrollTop=0;tools(body,f,ft);return true;}
 function close(){pop.hidden=true;document.documentElement.className=document.documentElement.className.replace(/\\s*noscroll/g,'');}
 document.addEventListener('click',function(e){var t=closest(e.target,'[data-pop]');
-if(t){if(open(t.getAttribute('data-pop')))e.preventDefault();return;}
+if(t){if(open(t.getAttribute('data-pop'),t.getAttribute('data-filter'),t.getAttribute('data-ftext')))e.preventDefault();return;}
 if(closest(e.target,'[data-close]'))close();});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'||e.keyCode===27){close();return;}
 var t=e.target;if((e.key==='Enter'||e.key===' ')&&t&&t.getAttribute&&t.getAttribute('role')==='button'&&t.getAttribute('data-pop')){
-e.preventDefault();open(t.getAttribute('data-pop'));}});
+e.preventDefault();open(t.getAttribute('data-pop'),t.getAttribute('data-filter'),t.getAttribute('data-ftext'));}});
 })();</script>"""
 
 # 悬停 / 点按显示读数：带 data-tip 的元素（图上的点、柱、条），小窗里也能用
@@ -502,8 +506,7 @@ rows.forEach(function(r){board.appendChild(r);});
 
 
 def _tag_class(tag: str) -> str:
-    if any(k in tag for k in ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定", "拉动", "还会被改",
-                              "变体变多", "数据可能有误", "没有日数据", "没涨够")):
+    if any(k in tag for k in narrative.WARN_WORDS):  # 红色标签每一个都归进本期要点风险提醒的某一类（narrative.risk_groups_of）
         return "warn"
     if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith(("上升中", "新品起量快")):
         return "good"
@@ -573,8 +576,11 @@ def _card_data(item: dict, kind: str) -> str:
     if kind in GROUP_CN and not item.get("baseline_unknown") and not increment_note(item).startswith("按 0"):
         inc = f"{directions.increment(item):.0f}"
     node = (item.get("ocean") or {}).get("niche") if kind == "ocean" else None
+    tags = sorted({x for v in (item.get("seen") or {}).values() for x in v}) + (
+        [f"材质:{item['material']}"] if item.get("material") else [])  # 本期要点的趋势卡点一行，小窗只看有这个特征的
     vals = {"node": node or item.get("node_cn") or item.get("node_name") or "", "kind": kind, "inc": inc,
-            "price": item.get("price"), "age": item.get("age_days"), "rating": item.get("rating")}
+            "price": item.get("price"), "age": item.get("age_days"), "rating": item.get("rating"),
+            "tags": "|".join(tags)}
     return "".join(f' data-{k}="{esc(v)}"' for k, v in vals.items() if v not in (None, ""))
 
 
@@ -961,6 +967,8 @@ def _direction_box(d: dict, pool: list[dict], head: bool = True) -> str:
 
 def _direction_overview(rows: list[dict], cfg: dict) -> str:
     """全部子类目一览（directions.overview）：每个子类目的追踪商品、增长商品、增量、品类大盘，有没有画像、没有的原因。"""
+    flat = [r for r in rows if not (r["n"] and r["increment"] > 0)]
+    rows = [r for r in rows if r["n"] and r["increment"] > 0]  # 只列有增长的子类目（没有增长的只写个数）
     if not rows:
         return ""
     has_tide = any(r["tide"] is not None for r in rows)
@@ -984,8 +992,9 @@ def _direction_overview(rows: list[dict], cfg: dict) -> str:
     head = ("<tr><th>子类目</th><th class=n>追踪商品</th><th>增长商品</th><th class=n>月销售额</th><th class=n>比之前 28 天多</th>"
             + ("<th class=n>品类大盘</th>" if has_tide else "") + "<th>画像</th></tr>")
     shown = sum(1 for r in rows if r["shown"])
-    summary = (f"全部 {len(rows)} 个子类目一览：{shown} 个有画像（见上表）"
-               + "".join(f"，{k} 个{reason}" for reason, k in sorted(reasons.items(), key=lambda x: -x[1])))
+    summary = (f"有增长的 {len(rows)} 个子类目一览：{shown} 个有画像（见上表）"
+               + "".join(f"，{k} 个{reason}" for reason, k in sorted(reasons.items(), key=lambda x: -x[1]))
+               + (f"；另 {len(flat)} 个子类目本期没有增长，不列" if flat else ""))
     return (f'<details class="rules"><summary>{esc(summary)}</summary>'
             f'<div class=tbl><table><thead>{head}</thead><tbody>{"".join(body)}</tbody></table></div></details>')
 
@@ -1119,7 +1128,7 @@ def _directions(tr: dict, cfg: dict, cur: dict, focus: list[dict]) -> tuple[str,
     rows = "".join(_board_row(k, d, mk.get(d["node"]), by_node.get(d["node"], []), shown_by.get(d["node"], []), dom, inc_max)
                    for k, d in enumerate(dirs))
     pops = "".join(_direction_pop(k, d, mk.get(d["node"]), by_node.get(d["node"], []), cur, pool) for k, d in enumerate(dirs))
-    rule = (f"增长商品 ≥{c['min_items']} 个、≥{c.get('min_brands', 1)} 个品牌的子类目，按月增量排；点表头换排序，点一行看画像、价格分布和商品。")
+    rule = (f"增长商品 ≥{c['min_items']} 个、≥{c.get('min_brands', 1)} 个品牌、月增量为正的子类目，按月增量排；点表头换排序，点一行看画像、价格分布和商品。")
     mc = cfg["report"].get("market") or {}
     legend = (f'<div class="kleg">{KIND_LEGEND}<span><i class="band"></i>全市场主力价格带（一半销售额，竖线 = 中位）</span>'
               f'<span>新品占比 = 上架 ≤{int(mc.get("new_days", 180))} 天的占销售额</span>'
@@ -1155,6 +1164,12 @@ ICONS = {  # 24×24 线条图标，颜色跟随所在徽章
     "功能卖点": '<path d="M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z"/>',
     "fake": '<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.3 7.5 9.5 4.3-1.2 7.5-4.9 7.5-9.5V6z"/><path d="M12 8.5v4.5M12 16v.1"/>',
     "price": '<path d="M3.5 12.5V4.5a1 1 0 0 1 1-1h8l8 8-9 9z"/><circle cx="8" cy="8" r="1.5"/>',
+    "scale": '<path d="M12 4v16M6 20h12M5 8h14"/><path d="M5 8l-2.5 6h5zM19 8l-2.5 6h5z"/>',
+    "link": '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    "down": '<path d="M3 7l6 6 4-4 8 8"/><path d="M15 17h6v-6"/>',
+    "waves": '<path d="M3 9c2-2 4-2 6 0s4 2 6 0 4-2 6 0M3 15c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/>',
+    "cal": '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
     "data": '<ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"/>'
             '<path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/>',
 }
@@ -1186,86 +1201,111 @@ def _best_track(f: dict, vision: dict) -> tuple | None:
     return tracks[0] if tracks else None
 
 
-def _pts(g: float, o: float | None) -> int | None:
-    """差几个百分点：按显示出来的两个整数百分比相减（不然会出现“29% · 对照 8%”旁边写 +22）。"""
-    return None if o is None else round(g * 100) - round(o * 100)
+def _money_sum(rows: list[dict], test) -> float:
+    """带这个特征的增长商品，月增量合计（口径同开发方向：analyze.increment，按 0 算的算 0）。"""
+    return sum(directions.increment(i) for i in rows if test(i))
 
 
-def _bars(g: float, o: float | None, other: str, tip: str) -> str:
-    """一对横条（0~100%）：上 = 增长商品，下 = 对照（other：主图比持续热销对照组写“对照”，标题比全部头部商品写“头部”）。"""
-    def row(name: str, v: float, cls: str) -> str:
-        return (f'<span class="pb"><em>{name}</em><span class="pt"><i class="{cls}" '
-                f'style="width:{100 * min(1.0, max(0.0, v)):.0f}%"></i></span><b>{v:.0%}</b></span>')
-    return (f'<div class="pair" data-tip="{esc(tip)}">{row("增长", g, "pg")}'
-            + (row(other, o, "po") if o is not None else "") + "</div>")
+def _feature_row(label: str, mark: str, g: float, o: float | None, other: str, tip: str, money: float,
+                 filt: str | None, ftext: str) -> str:
+    """趋势卡里的一行：特征名（▲ 比对照明显多 / ▼ 明显少）、子弹条（绿条 = 增长商品占比，竖线 = 对照）、两个百分比、月增量。
+    filt：点这一行弹出增长商品小窗、只看有这个特征的（没有能配图的商品时不可点）。"""
+    sign = {"more": '<i class="up">▲</i>', "less": '<i class="dn">▼</i>'}.get(mark, "")
+    tick = f'<b style="left:{100 * min(1.0, max(0.0, o)):.0f}%"></b>' if o is not None else ""
+    nums = f"{g:.0%}" + (f"<em>｜{o:.0%}</em>" if o is not None else "")
+    attrs = (f' role="button" tabindex="0" data-pop="growth" data-filter="{esc(filt)}" data-ftext="{esc(ftext)}"'
+             if filt else "")
+    money_tip = f"带「{label}」的增长商品，月增量合计 {directions.money_text(money)}"
+    return (f'<div class="fr {mark}"{attrs}><span class="fl">{esc(label)}{sign}</span>'
+            f'<span class="bl" data-tip="{esc(tip)}"><i style="width:{100 * min(1.0, max(0.0, g)):.0f}%"></i>{tick}</span>'
+            f'<span class="nm">{nums}</span><span class="mo" data-tip="{esc(money_tip)}">{esc(directions.money_text(money)) or "—"}</span></div>')
 
 
-def _trend_tile(dim: str, name: str, label: str, gap: int | None, body: str, foot: str = "", cls: str = "") -> str:
-    """一张趋势卡：维度图标 + 维度名（name 已是 HTML）+ 特征 + 差几个百分点，下面是横条和缩略图。"""
-    gp = f'<b class="gp" data-tip="比对照多 {gap} 个百分点">+{gap}</b>' if gap is not None else ""
-    return (f'<div class="tl{cls}"><div class="tl-h">{_badge(dim, "dim")}<span><em>{name}</em><b>{esc(label)}</b></span>'
-            f'{gp}</div>{body}' + (f'<div class="tl-f">{foot}</div>' if foot else "") + "</div>")
+def _mark(gap: float | None, min_gap: float) -> str:
+    """主材质：比对照组多 ≥ min_gap 标 ▲（more），少 ≥ min_gap 标 ▼（less）。"""
+    if gap is None:
+        return ""
+    return "more" if gap >= min_gap - 1e-9 else ("less" if gap <= -min_gap + 1e-9 else "")
 
 
-def _material_tile(m: dict, min_gap: float) -> str:
-    """主材质（占两格）：占比最大的几类各一对横条；标题写增长商品比对照组多得最多的那类（多 ≥ min_gap 才写 +N，
-    否则写占比最大的那类）。"""
+def _tile_examples(pool: list[dict], rows: list[tuple[str, callable]]) -> str:
+    """卡片底下的配图：第一条能配图的特征的商品主图（主图上看得出这个特征的才配），最多 4 张，图下写是哪个特征。"""
+    for label, test in rows:
+        picked = [i for i in pool if test(i)][:4]
+        if picked:
+            return (f'<div class="tl-f"><span class="ths">{"".join(thumb(i) for i in picked)}</span>'
+                    f'<em>{esc(label)}</em></div>')
+    return ""
+
+
+ROWS_PER_TILE = 4
+
+
+def _dim_tile(dim: str, groups: dict, vision: dict, min_gap: float, focus: list[dict], pool: list[dict]) -> str:
+    """一个维度一张卡：比对照多的（▲）在前，按差距；再是常见的，按增长商品占比；再是其余的（比对照少得多的标 ▼）。"""
+    ranked = []
+    for tier in ("more", "common", "also"):
+        rows = [(f, _best_track(f, vision)) for f in groups.get(tier) or []]
+        rows = [(f, t) for f, t in rows if t]
+        key = (lambda r: -(r[1][1] - (r[1][2] or 0))) if tier == "more" else (lambda r: -r[1][1])
+        ranked += [(tier, f, t) for f, t in sorted(rows, key=key)]
+    if not ranked:
+        return ""
+    lines, examples = [], []
+    for tier, f, (src, g, o, tip) in ranked[:ROWS_PER_TILE]:
+        label = f["label"]
+
+        def has(i, label=label, dim=dim):
+            return label in (i.get("design") or {}).get(dim, ())
+
+        def seen(i, label=label, dim=dim):
+            return label in (i.get("seen") or {}).get(dim, ())
+        _a, b = SRC_CN[src]
+        money = _money_sum(focus, has)
+        filt = label if any(seen(i) for i in pool) else None
+        mark = "more" if tier == "more" else ("less" if o is not None and g - o <= -min_gap else "")
+        lines.append(_feature_row(label, mark, g, o, b, tip, money, filt, f"主图上看得出「{label}」"))
+        examples.append((label, seen))
+    name = DIM_SHORT.get(dim, dim)
+    return (f'<div class="tl"><div class="tl-h">{_badge(dim if dim in ICONS else "工艺", "dim")}<b>{esc(name)}</b></div>'
+            f'{"".join(lines)}{_tile_examples(pool, examples)}</div>')
+
+
+def _material_tile(m: dict, min_gap: float, focus: list[dict], pool: list[dict]) -> str:
+    """主材质：占比前几的材质各一行（比对照组多 ≥ min_gap 标 ▲，少 ≥ min_gap 标 ▼），金额 = 这种材质的增长商品月增量。"""
     rows = [r for r in m.get("rows") or [] if r["count"] and r["label"] not in directions.VAGUE_MATERIALS]
     if not rows:
         return ""
     nr = m.get("n_reference")
-    best = max(rows, key=lambda r: r["share"] - r["reference_share"]) if nr else None
-    if best is None or best["share"] - best["reference_share"] < min_gap:
-        best, gap = max(rows, key=lambda r: r["share"]), None
-    else:
-        gap = _pts(best["share"], best["reference_share"])
-    shown = rows[:3] if best in rows[:3] else rows[:2] + [best]
-    groups = []
-    for r in shown:
+    lines = []
+    for r in rows[:ROWS_PER_TILE]:
+        o = r["reference_share"] if nr else None
         tip = f"{r['label']}：增长商品 {r['count']}/{m['n_focus']}（{r['share']:.0%}）" + (
-            f" · 对照组 {r['reference']}/{nr}（{r['reference_share']:.0%}）" if nr else "")
-        groups.append(f'<div class="mg{" on" if r is best else ""}"><span>{esc(r["label"])}</span>'
-                      f'{_bars(r["share"], r["reference_share"] if nr else None, "对照", tip)}</div>')
-    return _trend_tile("材质", "主材质", best["label"], gap, f'<div class="mgs">{"".join(groups)}</div>', cls=" tl-mat")
+            f" · 对照组 {r['reference']}/{nr}（{o:.0%}）" if nr else "")
+        money = _money_sum(focus, lambda i, label=r["label"]: i.get("material") == label)
+        filt = f"材质:{r['label']}" if any(i.get("material") == r["label"] for i in pool) else None
+        lines.append(_feature_row(re.sub(r"（.*?）", "", r["label"]), _mark(r["share"] - o if o is not None else None, min_gap),
+                                  r["share"], o, "对照", tip, money, filt, f"主材质是「{r['label']}」"))
+    return f'<div class="tl"><div class="tl-h">{_badge("材质", "dim")}<b>主材质</b></div>{"".join(lines)}</div>'
 
 
-SRC_TIP = {"img": "主图识别：增长势头靠前的 {f} 个 vs 持续热销对照组 {r} 个", "ttl": "标题：全部增长商品 vs 全部头部商品"}
-
-
-def _trend_tiles(tr: dict, cfg: dict, pool: list[dict]) -> str:
-    """外观与工艺趋势：主材质一张（占两格），风格 / 造型 / 工艺 / 颜色 / 功能各一张（这个维度“增长商品更多”的特征里
-    差距最大的，其余的写在右下角）。横条 = 增长商品、对照；缩略图 = 列出的增长商品里有这个特征的。"""
+def _trend_tiles(tr: dict, cfg: dict, focus: list[dict], pool: list[dict]) -> str:
+    """外观与工艺趋势：主材质、风格、造型、工艺、颜色、功能各一张卡，每张列几个特征（不只“更多”的那一个），
+    每个特征写增长商品 vs 对照的占比和带这个特征的增长商品月增量，点一行看商品。"""
     if tr.get("note"):
         return f'<p class="empty">{esc(tr["note"])}</p>'
     vision = tr.get("vision") or {}
     min_gap = float(cfg["thresholds"]["appearance"].get("image_min_gap", 0.1))
-    tiles = [_material_tile(tr.get("materials") or {}, min_gap)]
-    for dim, groups in (tr.get("appearance") or {}).items():
-        ranked = sorted(((narrative.feature_gap(f, vision), f) for f in groups.get("more") or [] if _tracks(f, vision)),
-                        key=lambda r: -r[0])
-        if not ranked:
-            continue
-        f = ranked[0][1]
-        src, g, o, tip = _best_track(f, vision)
-        a, b = SRC_CN[src]
-        src_tip = SRC_TIP[src].format(f=vision.get("n_focus") or 0, r=vision.get("n_reference") or 0)
-        name = f'{esc(DIM_SHORT.get(dim, dim))}<span class="src {src}" data-tip="{esc(src_tip)}">{a}</span>'
-        also = []
-        for _gx, x in ranked[1:3]:
-            _s, xg, xo, xtip = _best_track(x, vision)
-            pts = _pts(xg, xo)
-            also.append(f'<span data-tip="{esc(xtip)}">{esc(x["label"])}' + (f" +{pts}" if pts is not None else "") + "</span>")
-        thumbs = _examples(pool, lambda i, label=f["label"], dim=dim: label in (i.get("design") or {}).get(dim, ()), 3)
-        foot = thumbs + (f'<span class="alsos">{"".join(also)}</span>' if also else "")
-        tiles.append(_trend_tile(dim if dim in ICONS else "工艺", name, f["label"], _pts(g, o), _bars(g, o, b, tip), foot))
+    tiles = [_material_tile(tr.get("materials") or {}, min_gap, focus, pool)]
+    tiles += [_dim_tile(dim, groups, vision, min_gap, focus, pool) for dim, groups in (tr.get("appearance") or {}).items()]
     body = "".join(t for t in tiles if t)
     return f'<div class="tiles">{body}</div>' if body else '<p class="empty">增长商品没有明显偏多的外观 / 工艺特征。</p>'
 
 
 def _ideas(tips: list[dict], by_asin: dict) -> str:
-    """开发建议：参考商品的图 + 特征（绿框）+ 一句外观细节 + 商品链接（narrative.tips 已核对过）。"""
+    """开发建议：参考商品的主图 + 特征（主图上看得出的）+ 这张主图的外观描述里说到这些特征的句子 + 商品链接。"""
     if not tips:
-        return '<p class="empty">本期没有既能当参考、又有增长特征的爆火 / 潜力商品。</p>'
+        return '<p class="empty">本期没有既能当参考、主图上又看得出增长特征的爆火 / 潜力商品。</p>'
     out = []
     for t in tips:
         item = by_asin.get(t["asin"]) or {"asin": t["asin"], "brand": "", "title": t["name"], "image": ""}
@@ -1276,41 +1316,58 @@ def _ideas(tips: list[dict], by_asin: dict) -> str:
     return f'<div class="ideas">{"".join(out)}</div>'
 
 
-def _card_feats(d: dict, k: int = 3) -> str:
-    """开发方向卡片上的标签：主材质 + 比头部多的特征（按差距，最多 k 个）；没有比头部多的写基本款（灰，最多 2 个）。数字在悬停里。"""
+def _card_feats(d: dict, k: int = 3) -> tuple[str, list[str]]:
+    """开发方向卡片上的标签：主材质 + 比头部多的特征（按差距，最多 k 个）；没有比头部多的写基本款（灰，最多 2 个）。
+    返回（标签 HTML，比头部多的特征名——卡片配图按它挑）。"""
     out = [f'<span class="mat">{esc(m["label"])}</span>' for m in d["materials"][:1]
            if m["label"] not in directions.VAGUE_MATERIALS]
     more = sorted((f for dim in directions.DIMENSIONS for f in d["features"][dim]["more"]),
-                  key=lambda f: -((f.get("share") or 0) - (f.get("head_share") or 0)))
-    for f in more[:k]:
+                  key=lambda f: -((f.get("share") or 0) - (f.get("head_share") or 0)))[:k]
+    for f in more:
         tip = f"比同子类目头部多：增长商品品牌均占比 {f['share']:.0%}" + (
             f"，头部 {f['head_share']:.0%}" if f.get("head_share") is not None else "")
         out.append(f'<span class="more" data-tip="{esc(tip)}">{esc(f["label"])}</span>')
     if not more:
         base = [f for dim in directions.DIMENSIONS for f in d["features"][dim]["base"]][:2]
         out += [f'<span class="base" data-tip="品类多数都这样，不比头部多">{esc(f["label"])}</span>' for f in base]
-    return "".join(out)
+    return "".join(out), [f["label"] for f in more]
+
+
+def _tide_text(tide: float | None) -> str:
+    if tide is None:
+        return ""
+    pct = round((tide - 1) * 100)
+    cls = "up" if pct > 0 else ("dn" if pct < 0 else "")
+    tip = "品类大盘：这个子类目全市场名单商品近 30 天销量比约 30 天前的中位变化（已扣大促日）"
+    return f'<span class="td {cls}" data-tip="{esc(tip)}">大盘 {"+" if pct > 0 else ""}{pct}%</span>'
 
 
 def _dir_cards(tr: dict, cfg: dict, cur: dict, focus: list[dict], by_asin: dict) -> tuple[str, str]:
-    """开发方向前 summary_max 个（有画像的子类目里月增量最大的）：一张卡片一个子类目，点开就是下面一览同一个小窗（dir<k>）。
-    返回（卡片，小标题右边的字）。增量排得进、但画不出画像的子类目另起一行写出来。"""
+    """本期要点里的开发方向（directions.highlight：月增量为正的子类目按增量从大到小，取到累计占全部增量的 highlight_share，
+    个数每期不同）：一张卡片一个子类目，点开就是下面一览同一个小窗（dir<k>）。返回（卡片，小标题右边的字）。
+    卡片配图挑主图上看得出卡片上那几个特征的增长商品（看得出的越多越先）。"""
     dirs = tr.get("directions") or []
-    n = narrative.summary_limit(cfg)
-    top = dirs[:n]
+    top = directions.highlight(dirs, cfg)
     if not top:
-        return '<p class="empty">本期没有增长商品数达到门槛的子类目，暂不给开发方向。</p>', ""
+        return '<p class="empty">本期没有月增量为正、又画得出画像的子类目。</p>', ""
     by_node: dict[str, list[dict]] = {}
     for i in focus:
         by_node.setdefault(directions.node_of(i), []).append(i)
     shown_by: dict[str, list[dict]] = {}
     for i in cur["growth"]["shown"]:
         shown_by.setdefault(directions.node_of(i), []).append(i)
+    tides = {r["node"]: r.get("tide") for r in tr.get("direction_overview") or []}
     inc_max = max([(d.get("sales") or {}).get("increment") or 0 for d in top] + [0])
     cards = []
     for k, d in enumerate(top):
         rows = by_node.get(d["node"], [])
-        pics = (shown_by.get(d["node"]) or [i for i in rows if not i.get("plain")])[:4]  # 简单款不放图
+        chips, labels = _card_feats(d)
+        cands = shown_by.get(d["node"]) or [i for i in rows if not i.get("plain")]  # 简单款不放图
+
+        def score(i: dict, labels=labels) -> int:
+            seen = {x for v in (i.get("seen") or {}).values() for x in v}
+            return sum(1 for label in labels if label in seen)
+        pics = sorted(cands, key=lambda i: -score(i))[:4]
         collage = f'<span class="bpic n{max(1, len(pics))}">' + "".join(_img(i, 100) for i in pics) + "</span>"
         sales = d.get("sales") or {}
         inc = sales.get("increment") or 0
@@ -1322,53 +1379,72 @@ def _dir_cards(tr: dict, cfg: dict, cur: dict, focus: list[dict], by_asin: dict)
         if price:
             text = f"中位 ${price['median']:,.0f}" if price.get("median") is not None else directions.price_text(price)
             price_html = f'<span data-tip="增长商品售价 {esc(directions.price_text(price))}">{esc(text)}</span>'
-        ref = ""
-        if d["refs"]:
-            r = d["refs"][0]
-            item = by_asin.get(r["asin"]) or {"asin": r["asin"], "brand": r.get("brand"), "title": r["name"], "image": ""}
-            ref = (f'<span class="dc-ref" data-tip="{esc("参考：" + _clip(r["name"], 60) + ("。" + r["look"] if r.get("look") else ""))}">'
-                   f'参考{_img(item, 100)}</span>')
-        cards.append(f'<div class="dcard" role="button" tabindex="0" data-pop="dir{k}"><span class="rank">{k + 1}</span>'
+        cards.append(f'<div class="dcard" role="button" tabindex="0" data-pop="dir{dirs.index(d)}"><span class="rank">{k + 1}</span>'
                      f'<div class="dc-h">{collage}<span><b>{esc(d["node"])}</b><span class="kc">{_kind_dots(rows)}</span></span></div>'
                      f'<div class="dc-i" data-tip="{esc(inc_tip)}"><span class="ibar"><i style="width:{width:.0f}%"></i></span>'
-                     f'<b>{"+" if inc > 0 else ""}{esc(directions.money_text(inc))}</b></div>'
-                     f'<div class="dc-f">{_card_feats(d)}</div><div class="dc-p">{price_html}{ref}</div></div>')
+                     f'<b>+{esc(directions.money_text(inc))}</b></div>'
+                     f'<div class="dc-f">{chips}</div><div class="dc-p">{price_html}{_tide_text(tides.get(d["node"]))}</div></div>')
     skipped = directions.skipped_text(directions.skipped_big(tr.get("direction_overview") or [], top), len(top))
     note = f'<p class="dnote">{icon("info")}<span>{esc(skipped)}</span></p>' if skipped else ""
     legend = "".join(f'<i class="kd k-{key}"></i>{name}' for key, name in GROUP_CN.items())  # 卡片上 ●2 ●7 ●4 的颜色
-    cut = f"有画像的子类目里月增量最大的 {len(top)} 个 · " if len(dirs) > len(top) else ""
-    sub = f'{legend}<span class="dsep">·</span>{cut}<a href="#dirs">全部 {len(dirs)} 个 ›</a>'
-    return f'<div class="dtop" style="--n:{max(len(top), 4)}">{"".join(cards)}</div>{note}', sub
+    cut = (f"本期月增量的 {directions.highlight_share(top, dirs):.0%} 来自这 {len(top)} 个品类 · "
+           if len(dirs) > len(top) else "")
+    sub = f'{legend}<span class="dsep">·</span>{cut}<a href="#dirs">全部 {len(dirs)} 个有增长的品类 ›</a>'
+    return f'<div class="dtop" style="--n:{min(5, max(len(top), 4))}">{"".join(cards)}</div>{note}', sub
 
 
-def _risk_rows(rows: list[dict]) -> str:
-    """风险提醒（narrative.risks）：图标 + 类别 + 商品（图 + 品牌 + 子类目）+ 一句话；完整标签在悬停里。"""
-    if not rows:
-        return f'<p class="rk-ok">{icon("ok")}本期没有异常信号，也没有降价驱动或数据可能有误的爆火 / 潜力商品</p>'
+RISK_ICON = {"fake": "fake", "suspect": "fake", "price": "price", "data": "data", "base": "scale", "relist": "link", "deal": "clock",
+             "weak": "down", "tide": "waves", "monthly": "cal", "other": "risk"}
+WHERE_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "ocean": "蓝海产品", "growth": "增长商品", "fake": "异常信号"}
+RISK_CHIPS = 3  # 一类不超过几个商品时写品名，多了只放小图（悬停看品名、所在板块和标签）
+RISK_SHOW = 16  # 小图多于这么多时，其余的折叠
+
+
+def _risk_item(item: dict, where: str, tag: str, chip: bool) -> str:
+    tip = f"{narrative.cn_name(item)} · {WHERE_CN.get(where, where)} · {tag}"
+    img = (f'<img src="{esc(small_image(item["image"], 100))}" alt="" loading="lazy" referrerpolicy="no-referrer">'
+           if item.get("image") else f'<span class="ph">{esc((item.get("brand") or item["asin"])[:1].upper())}</span>')
+    if chip:
+        return f'<a class="ref" href="{amazon(item["asin"])}" {LINK} data-tip="{esc(tip)}">{img}{esc(narrative.cn_name(item))}</a>'
+    return f'<a class="th" href="{amazon(item["asin"])}" {LINK} data-tip="{esc(tip)}">{img}</a>'
+
+
+def _risk_rows(groups: list[dict]) -> str:
+    """风险提醒（narrative.risks）：一类一行——图标、类别、几个商品、一句话说明这类风险意味着什么，下面是这类的全部商品
+    （少的写品名，多的放小图；悬停看品名、所在板块和那条标签）。"""
+    if not groups:
+        return f'<p class="rk-ok">{icon("ok")}列出的商品都没有风险标签</p>'
     out = []
-    for r in rows:
-        item = r["item"]
-        img = (f'<img src="{esc(small_image(item["image"], 100))}" alt="" loading="lazy" referrerpolicy="no-referrer">'
-               if item.get("image") else "")
-        tip = f' data-tip="{esc(r["tag"])}"' if r["tag"] and r["tag"] != r["label"] else ""
-        out.append(f'<div class="rkr">{_badge(r["kind"], "risk", small=True)}<span class="tag warn"{tip}>{esc(r["label"])}</span>'
-                   f'<a class="ref" href="{amazon(item["asin"])}" {LINK} title="{esc(short_name(item, 80))}">{img}'
-                   f'{esc(narrative.cn_name(item))}</a><span class="rk-t">{esc(r["text"])}</span></div>')
+    for g in groups:
+        rows = g["items"]
+        chip = len(rows) <= RISK_CHIPS
+        items = [_risk_item(i, where, tag, chip) for i, where, tag in rows]
+        body = "".join(items[:RISK_SHOW])
+        if len(items) > RISK_SHOW:
+            body += f'<details class="rk-more"><summary>另 {len(items) - RISK_SHOW} 个</summary>{"".join(items[RISK_SHOW:])}</details>'
+        out.append(f'<div class="rkg"><div class="rkh">{_badge(RISK_ICON.get(g["kind"], "risk"), "risk", small=True)}'
+                   f'<b>{esc(g["label"])}</b><span class="rkn">{len(rows)}</span><span class="rk-t">{esc(g["text"])}</span></div>'
+                   f'<div class="rki{" chips" if chip else ""}">{body}</div></div>')
     return f'<div class="rks">{"".join(out)}</div>'
 
 
 def _digest(ctx: dict, cur: dict, by_asin: dict) -> str:
-    """本期要点：外观与工艺趋势（图标卡片）、开发建议（参考商品卡片）、开发方向（前几个子类目的卡片）、风险提醒（一行一个）。"""
+    """本期要点：外观与工艺趋势（每个维度一张卡）、开发方向（个数随本期增长变）、开发建议（参考商品卡片）、风险提醒（按类）。"""
     tr, cfg = ctx["traits"], ctx["cfg"]
     pool = cur["growth"]["shown"]
-    legend = ('<i class="sw pg"></i>增长商品<i class="sw po"></i>对照组 / 头部 · <a href="#traits">依据 ›</a>'
-              if not tr.get("note") else "")
-    cards, dir_sub = _dir_cards(tr, cfg, cur, ctx.get("focus") or [], by_asin)
+    focus = ctx.get("focus") or []
+    legend = ('<i class="sw pg"></i>增长商品占比<i class="sw tk"></i>对照组 / 头部<span class="dsep">·</span>▲ 明显更多 ▼ 明显更少'
+              '<span class="dsep">·</span>金额 = 带这个特征的增长商品月增量<span class="dsep">·</span>点一行看商品 · '
+              '<a href="#traits">依据 ›</a>' if not tr.get("note") else "")
+    cards, dir_sub = _dir_cards(tr, cfg, cur, focus, by_asin)
+    groups = narrative.risks(ctx)
+    n_risky = len({i["asin"] for g in groups for i, _w, _t in g["items"]})
     return ('<div class="digest">'
-            + _dg("trend", "trend", "外观与工艺趋势", _trend_tiles(tr, cfg, pool), legend, "dg-trend")
-            + _dg("idea", "idea", "开发建议", _ideas(ctx.get("tips") or [], by_asin), "设计手法 + 本期参考商品")
+            + _dg("trend", "trend", "外观与工艺趋势", _trend_tiles(tr, cfg, focus, pool), legend, "wide")
             + _dg("dir", "dir", "开发方向", cards, dir_sub, "wide")
-            + _dg("risk", "risk", "风险提醒", _risk_rows(narrative.risks(ctx)), "", "wide dg-risk")
+            + _dg("idea", "idea", "开发建议", _ideas(ctx.get("tips") or [], by_asin), "主图上看得出的增长特征 + 参考商品", "wide")
+            + _dg("risk", "risk", "风险提醒", _risk_rows(groups),
+                  f"列出的商品里 {n_risky} 个有风险标签，按类列全；悬停小图看品名和标签" if groups else "", "wide")
             + "</div>")
 
 
@@ -1505,7 +1581,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
         "hot": f"近 {h['lookback_months']} 个月里 ≥{h['months_required']} 个月达到子类目第 {h['rank_in_node']} 名的月销量，波动小、没在跌，"
                f"近 28 天还有近 6 个月日均的 {h['min_recent_ratio']:.0%}。按近 6 个月月均排。",
         "fake": f"异常分 ≥{f['suspect_score']}（留评率过高、评论暴增、评分跳升、短时脉冲等累计），只是提示，需人工核实。按异常分排。",
-        "ocean": (f"标题写明是给特定人群 / 用途 / 场景专门设计的（缝纫、卧床护理、黑胶唱片、桌游、街机、台球、员工更衣柜……，词表在 config.yaml），"
+        "ocean": (f"标题写明是某个小众兴趣爱好专用的（桌游拼图、爬宠水族、黑胶影音、手办模型、缝纫手工、乐器、街机、台球、枪柜、钓鱼……，词表在 config.yaml），"
                   f"上架 ≤{o['max_age_days']} 天、近 30 天 ≥{o['min_units']:g} 件，而且在全市场名单里（近 30 天 "
                   f"≥{int(cfg['pool']['opportunity_min_units'])} 件或 ≥{float(cfg['pool']['opportunity_min_revenue']) / 1e4:g} 万美元），"
                   f"这一类全市场不超过 {o['max_products']} 个（老款也算）；太小、结构太简单的不算"
@@ -1540,7 +1616,7 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                             "衣帽架整个子类目不追踪"))
     ob = blueocean.settings(cfg)
     if ob["enabled"]:
-        rows.append(("蓝海产品", f"针对特定小圈子人群 / 用途 / 场景专门设计的（缝纫机桌、卧床的人用的床边桌、黑胶唱片机柜、桌游桌、街机柜、台球桌……），"
+        rows.append(("蓝海产品", f"某个小众兴趣爱好专用的家具 / 收纳（桌游桌、爬宠箱、鱼缸柜、唱片机柜、手办展示柜、缝纫桌、街机柜、台球桌……），"
                               f"近期新上架（≤{ob['max_age_days']} 天）、月售 ≥{ob['min_units']:g} 件、卖得够量，这一类全市场不超过 "
                               f"{ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
     if sc.get("enabled", True):
@@ -1679,7 +1755,7 @@ def render(ctx: dict) -> str:
         _kpi("surge", "突然爆火", f"上架超 {young} 天，近 1~2 周销量突然翻倍", cur["surge"]["shown"], counts["surge"]),
         _kpi("potential", "潜力产品", f"上架 ≤{young} 天的新品就卖得好", cur["potential"]["shown"], counts["potential"]),
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
-        _kpi("ocean", "蓝海产品", "给特定人群 / 场景专门设计的", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
+        _kpi("ocean", "蓝海产品", "小众兴趣爱好专用的家具 / 收纳", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
     ])
     facts = _facts(ctx, counts, cur)

@@ -32,7 +32,7 @@ def clean_text(value) -> str:
 
 # 读的时候就过滤的商品级条件（keep_product / apply_product_filter）：改了不用重新发现，不算进监控范围的指纹
 READ_TIME_FILTERS = ("exclude_product_regex", "upholstered_material_regex", "upholstered_item_regex", "accessory_regex",
-                     "furniture_noun_regex", "small_item", "exclude_node_regex")
+                     "furniture_noun_regex", "small_item", "exclude_node_regex", "node_names", "room_nodes")
 # exclude_product_regex 以前算在指纹里：2026-10-28 补布艺抽屉的写法（bc8ec11）后指纹从 1d2b7354530a 变了，下一期会当成换了监控范围——
 # 重新发现子类目和头部商品（多花约 100 次调用）、“与上期对比”空着。它和其他商品级条件一样是读的时候过滤的，现在也不算进指纹；
 # 以前存下的旧指纹换成现在的（migrate_scope_keys）：旧指纹 → 那时的范围按现在的算法算出来的指纹，范围后来又改了的对不上，照常重新发现
@@ -56,6 +56,39 @@ def migrate_scope_keys(state: dict, cfg: dict) -> int:
             rec["scope_key"] = key
             count += 1
     return count
+
+
+def node_id(path: str | None) -> str:
+    """子类目路径最后一段（子类目自己的 ID）。"""
+    return str(path or "").rsplit(":", 1)[-1]
+
+
+def rename_nodes(state: dict, cfg: dict) -> int:
+    """子类目中文名按 scope.node_names（子类目 ID → 名字）改掉卖家精灵自带的翻译：存下的子类目列表（name_cn）、商品记录、
+    全市场名单和月度名单里的每一行（node_cn）都改。读的时候改，不算进监控范围的指纹。返回改了几处。"""
+    names = {str(k): str(v) for k, v in (cfg["scope"].get("node_names") or {}).items()}
+    if not names:
+        return 0
+    count, stack = 0, [state]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, dict):
+            for path_key, name_key in (("node", "node_cn"), ("path", "name_cn")):
+                path = x.get(path_key)
+                if isinstance(path, str) and name_key in x:
+                    new = names.get(node_id(path))
+                    if new and x[name_key] != new:
+                        x[name_key] = new
+                        count += 1
+            stack.extend(v for v in x.values() if isinstance(v, (dict, list)))
+        elif isinstance(x, list):
+            stack.extend(v for v in x if isinstance(v, (dict, list)))
+    return count
+
+
+def room_node(path: str | None, cfg: dict) -> bool:
+    """用途不固定的子类目（scope.room_nodes）：商品短称后面写标题里的房间。"""
+    return node_id(path) in {str(n) for n in cfg["scope"].get("room_nodes") or []}
 
 
 def small_item(item: dict | None, cfg: dict) -> bool:

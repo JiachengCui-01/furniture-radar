@@ -15,7 +15,7 @@ import httpx
 
 from .. import log
 from ..analyze import display_name, zero_increment_reason
-from ..detect.directions import headline, increment, money_text, skipped_big, skipped_text
+from ..detect.directions import headline, highlight, highlight_share, increment, money_text, skipped_big, skipped_text
 from ..report.render import growth_text, lift_text, ocean_group
 from ..vision import small_image
 from ..narrative import listed, top_design_labels
@@ -176,9 +176,9 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         lines.append("")
     if traits.get("directions"):
         dirs = traits["directions"]
-        top = dirs[: int(ctx["cfg"]["thresholds"]["directions"].get("summary_max") or 5)]
-        # 报告里够格的子类目全部列出，这里只写增量最大的几个
-        lines.append("**🛠 开发方向**" + (f"（有画像的子类目里增量最大的 {len(top)} 个，共 {len(dirs)} 个见报告）"
+        top = highlight(dirs, ctx["cfg"])
+        # 和报告本期要点同一组：按月增量取到累计占全部方向增量的 highlight_share 为止（个数每期不同）
+        lines.append("**🛠 开发方向**" + (f"（本期月增量的 {highlight_share(top, dirs):.0%} 来自这 {len(top)} 个品类，共 {len(dirs)} 个见报告）"
                                          if len(dirs) > len(top) else ""))
         lines += [f"- {headline(d)}" + (f"（月增量约 {money_text(d['sales']['increment'])}）" if d.get("sales") else "")
                   for d in top]

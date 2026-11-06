@@ -17,26 +17,25 @@ from .detect import directions
 
 SYSTEM_PROMPT = """你是亚马逊美国站家具类目的产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
 请写报告“本期要点”里的“开发建议”：2~3 条可以用到不同品类上的设计手法。每条一行，格式固定为
-- <特征> + <特征>｜[<品牌> <简短中文品名>](<ASIN>)｜<外观细节>
+- <特征> + <特征>｜[<品牌> <简短中文品名>](<ASIN>)
 严格遵守：
 1. 参考商品只能从“突然爆火”“潜力”里选“可作参考”为 true 的商品；每条换一个商品。
    方括号里必须有品牌，ASIN 照抄这个商品的“ASIN”，例如 [Huuger 窄长玄关桌](B0H2XKVQ5L)。
-2. <特征> 只能照抄这个商品“可用特征”里的词（都是本期增长商品比对照组更多的外观特征，见“共性特点”），
+2. <特征> 只能照抄这个商品“可用特征”里的词（本期增长商品比对照组更多、而且这个商品主图上看得出的外观特征），
    每条 1~2 个，两个时用“ + ”连接；不要用别的词，不要自己造词。各条的特征组合不要重复，尽量覆盖不同的特征。
-3. <外观细节> 只能取自这个商品的“外观要点”，挑能看出这一条特征在商品上怎么做的部分，压缩成不超过 16 个字的短语
-   （如“正面满布竖向凹槽”），不得编造。
+3. <简短中文品名> 要说清它是什么（如“壁炉电视柜”“浴室吊柜”），和主图、“外观要点”一致。
 4. 讲设计手法，不要把“开发方向”里某个品类的画像再写一遍；不要写数字、网址、解释或任何别的文字。
 5. 找不到符合第 1、2 条的组合就少写几条；一条都写不出时只输出“无”。"""
 
 
 FACT_ITEMS = 6  # 本期要点给大模型看的突然爆火、潜力各前几个（钉钉列前 notify.max_items 个，都在这里面）
 TIP_MAX = 3  # 开发建议最多几条
-DETAIL_MAX = 18  # 开发建议里外观细节最多几个字
+DETAIL_MAX = 18  # 开发建议里外观细节（取自主图的外观要点）最多几个字，说到特征的两句时再多 6 个字
 
 
 def build_facts(ctx: dict) -> dict:
     """给大模型写开发建议用的事实（只写开发建议，其余几块报告直接取数据）。"""
-    labels = trend_labels(ctx["traits"])
+    labels = tip_labels(ctx)
 
     def brief(item: dict) -> dict:
         out = {
@@ -50,7 +49,7 @@ def build_facts(ctx: dict) -> dict:
         if item.get("features"):
             out["特色"] = item["features"][:4]
         if can_refer(item):  # 这个商品自己有的、本期增长商品更多的特征（parse_tips 按同一个条件核对）
-            out["可用特征"] = [label for label in labels if has_feature(item, label)]
+            out["可用特征"] = [label for label in labels if shows(item, label)]  # labels = tip_labels
         if item.get("surge"):
             s = item["surge"]
             out["突然爆火"] = {"近期日均": round(s["recent_avg"], 1), "之前日均": round(s["base_avg"], 1),
@@ -69,8 +68,8 @@ def build_facts(ctx: dict) -> dict:
         "突然爆火": [brief(i) for i in listed(ctx, "surge")[:FACT_ITEMS]],
         "潜力": [brief(i) for i in listed(ctx, "potential")[:FACT_ITEMS]],
         "共性特点": design_facts(ctx["traits"]),
-        # 报告里够格的子类目全部列出，本期要点只写增量最大的前 summary_max 个
-        "开发方向": direction_facts(ctx["traits"])[: summary_limit(ctx["cfg"])],
+        # 报告里有画像的子类目全部列出，本期要点只放月增量合计占大头的几个（directions.highlight）
+        "开发方向": direction_facts({"directions": directions.highlight(ctx["traits"].get("directions") or [], ctx["cfg"])}),
     }
 
 
@@ -216,20 +215,33 @@ def trend_labels(tr: dict) -> list[str]:
     return [label for _gap, label in sorted(rows, key=lambda r: -r[0])]
 
 
+def tip_labels(ctx: dict) -> list[str]:
+    """开发建议能用的特征：本期“增长商品更多”的特征里，主图识别也比持续热销对照组多 ≥ appearance.image_min_gap 的
+    （开发建议配的是主图，标题里多、图上看不出差别的不用；如“现代”：标题 20% vs 14%，主图 80% vs 80%）。按差距从大到小。"""
+    tr = ctx["traits"]
+    vision = tr.get("vision") or {}
+    if not vision.get("n_reference"):
+        return []
+    min_gap = float(ctx["cfg"]["thresholds"]["appearance"].get("image_min_gap", 0.1))
+    rows = [(f["image"]["focus_share"] - f["image"]["reference_share"], f["label"])
+            for groups in (tr.get("appearance") or {}).values() for f in groups.get("more") or [] if f.get("image")]
+    return [label for gap, label in sorted(rows, key=lambda r: -r[0]) if gap >= min_gap - 1e-9]
+
+
 def reference_items(ctx: dict) -> list[dict]:
     """开发建议可以点名的商品：列出的突然爆火、潜力各前 FACT_ITEMS 个（和给大模型看的一样）；
-    有异常信号、或标签有降价驱动 / 数据可能有误的不算（它们在风险提醒里，见 risks）。"""
+    有任何风险因素的不算（它们在风险提醒里，见 risks）。"""
     rows = listed(ctx, "surge")[:FACT_ITEMS] + listed(ctx, "potential")[:FACT_ITEMS]
     return [i for i in rows if can_refer(i)]
 
 
 def can_refer(item: dict) -> bool:
-    return not item["fake"]["score"] and not item["fake"]["signals"] and not any(t.startswith(RISK_TAGS) for t in item["tags"])
+    return not risk_groups_of(item)
 
 
-def has_feature(item: dict, label: str) -> bool:
-    """商品自己有这个外观特征（标题或主图识别，item["design"]）。"""
-    return any(label in labels for labels in (item.get("design") or {}).values())
+def shows(item: dict, label: str) -> bool:
+    """商品主图上看得出这个外观特征（主图识别，item["seen"]）。报告里配图的地方都按它挑：图上看不出的特征不配这张图。"""
+    return any(label in labels for labels in (item.get("seen") or {}).values())
 
 
 def _clip_cn(text: str, limit: int = DETAIL_MAX) -> str:
@@ -237,20 +249,47 @@ def _clip_cn(text: str, limit: int = DETAIL_MAX) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip("，,、 ") + "…"
 
 
+def _bigrams(label: str) -> set[str]:
+    core = re.sub(r"[\s/（）()、]", "", label)
+    return {core} if len(core) < 2 else {core[k:k + 2] for k in range(len(core) - 1)}
+
+
+def look_detail(look: str, feats: list[str]) -> str:
+    """外观细节：主图识别写的外观要点里，说到这几个特征的句子（和特征名有两个字相同），没有就取第一句。
+    外观要点是对同一张主图的描述，所以细节和配图对得上。"""
+    clauses = [c.strip() for c in re.split(r"[，。；,;]", look or "") if c.strip()]
+    grams = set().union(*(_bigrams(f) for f in feats)) if feats else set()
+    hits = [c for c in clauses if any(g in c for g in grams)]
+    return _clip_cn("，".join(hits[:2]) if hits else (clauses[0] if clauses else ""), DETAIL_MAX + 6)
+
+
+ROOMS = (("浴室", r"\b(?:bathroom|medicine cabinet|over (?:the )?toilet|toilet)\b"),
+         ("厨房", r"\b(?:kitchen|pantry|coffee bar|microwave)\b"), ("车库", r"\b(?:garage|tool cabinets?)\b"),
+         ("洗衣房", r"\blaundry\b"), ("玄关", r"\b(?:entryway|hallway|mudroom|foyer)\b"), ("客厅", r"\bliving room\b"),
+         ("卧室", r"\bbedroom\b"), ("餐厅", r"\bdining room\b"), ("办公室", r"\boffice\b"))
+
+
+def room_of(title: str) -> str:
+    """标题里最先说到的房间（浴室、厨房、车库……）：收纳柜这类哪个房间都用的子类目，短称后面写上，免得图是浴室柜、字是“收纳柜”。"""
+    found = [(m.start(), name) for name, rx in ROOMS if (m := re.search(rx, title or "", re.I))]
+    return min(found)[1] if found else ""
+
+
 def cn_name(item: dict) -> str:
-    """商品的短称：品牌 + 中文子类目（如“KCZDXH 书架”）。"""
-    return " ".join(x for x in ((item.get("brand") or "").strip(), item.get("node_cn") or "") if x) or item["asin"]
+    """商品的短称：品牌 + 中文子类目，用途不固定的子类目再加标题里的房间（如“Minifeel 收纳柜 · 浴室”）。"""
+    name = " ".join(x for x in ((item.get("brand") or "").strip(), item.get("node_cn") or "") if x) or item["asin"]
+    return f"{name} · {item['room']}" if item.get("room") else name
 
 
 TIP_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.、)])?\s*(?P<feats>[^｜|\[\]]+?)\s*[｜|]\s*\[(?P<name>[^\[\]]{1,60})\]"
-                      r"\((?P<asin>[A-Z0-9]{10})\)\s*[｜|]\s*(?P<detail>[^｜|]+?)\s*$")
+                      r"\((?P<asin>[A-Z0-9]{10})\)\s*(?:[｜|].*)?$")
 
 
 def parse_tips(text: str | None, ctx: dict) -> list[dict]:
     """核对大模型写的开发建议（格式见 SYSTEM_PROMPT），留下对得上的：
-    特征必须在 trend_labels 里、而且参考商品自己有（has_feature）；参考商品必须在 reference_items 里、方括号里写着它的品牌，
-    同一个商品只用一次。特征一个都不剩、或商品对不上的整条删掉。"""
-    allowed = set(trend_labels(ctx["traits"]))
+    特征必须在 tip_labels 里、而且参考商品的主图上看得出（shows）；参考商品必须在 reference_items 里、方括号里写着它的品牌，
+    同一个商品只用一次。特征一个都不剩、或商品对不上的整条删掉。外观细节不用模型写的，取这张主图的外观要点（look_detail）。"""
+    allowed = set(tip_labels(ctx))
     refs = {i["asin"]: i for i in reference_items(ctx)}
     out, used = [], set()
     for line in (text or "").splitlines():
@@ -262,30 +301,31 @@ def parse_tips(text: str | None, ctx: dict) -> list[dict]:
         if not item or item["asin"] in used or (brand and brand not in m["name"].lower()):
             continue
         feats = [f for f in dict.fromkeys(x.strip() for x in re.split(r"[+＋]", m["feats"]))
-                 if f in allowed and has_feature(item, f)][:2]
+                 if f in allowed and shows(item, f)][:2]
         if not feats:
             continue
-        out.append({"features": feats, "asin": item["asin"], "name": m["name"].strip(), "detail": _clip_cn(m["detail"])})
+        out.append({"features": feats, "asin": item["asin"], "name": m["name"].strip(),
+                    "detail": look_detail(item.get("look") or "", feats)})
         used.add(item["asin"])
     return out[:TIP_MAX]
 
 
 def template_tips(ctx: dict) -> list[dict]:
-    """没有大模型时按同样的规则选：参考商品（reference_items，要有外观要点）里有本期“增长商品更多”的特征的，
-    特征多的先、同样多按原来的顺序（月增量）；同一组特征只用一次。外观细节取外观要点的第一句。"""
-    labels = trend_labels(ctx["traits"])
+    """没有大模型时按同样的规则选：参考商品（reference_items，要有外观要点）的主图上看得出开发建议能用的特征（tip_labels）的，
+    特征多的先，再是外观要点里写到这些特征的先（配的那句说明对得上），同样的按原来的顺序（月增量）；同一组特征只用一次。"""
+    labels = tip_labels(ctx)
     picked = []
     for k, item in enumerate(i for i in reference_items(ctx) if i.get("look")):
-        hit = [label for label in labels if has_feature(item, label)][:2]
+        hit = [label for label in labels if shows(item, label)][:2]
         if hit:
-            picked.append((-len(hit), k, item, hit))
+            told = sum(1 for f in hit if any(g in item["look"] for g in _bigrams(f)))
+            picked.append((-len(hit), -told, k, item, hit))
     out, seen = [], set()
-    for _n, _k, item, hit in sorted(picked, key=lambda r: r[:2]):
+    for _n, _t, _k, item, hit in sorted(picked, key=lambda r: r[:3]):
         if tuple(hit) in seen:
             continue
         seen.add(tuple(hit))
-        out.append({"features": hit, "asin": item["asin"], "name": cn_name(item),
-                    "detail": _clip_cn(re.split(r"[，。；,;]", item["look"])[0])})
+        out.append({"features": hit, "asin": item["asin"], "name": cn_name(item), "detail": look_detail(item["look"], hit)})
         if len(out) == TIP_MAX:
             break
     return out
@@ -299,42 +339,62 @@ def tips(ctx: dict, cfg: dict, api_key: str) -> tuple[list[dict], str]:
     return template_tips(ctx), "template"
 
 
-RISK_TAGS = ("降价驱动", "变体变多", "名单和日数据对不上", "最近 28 天有")  # 标签以这些开头的
+# 风险提醒：列出的商品（各板块列出的 + 异常信号）身上的风险因素，每类一个条件（标签以这些开头 / 含这些字），一个商品可以在几类里。
+# 标签的写法见 analyze / detect；报告卡片上标成红色（render._tag_class）的标签每一个都要归进某一类，归不进的在“其他需要留意”。
+RISK_GROUPS = (
+    ("fake", "异常信号", "疑似刷评或数据异常，需人工核实（不是断言刷单）", ("假爆火嫌疑",)),
+    ("suspect", "有可疑迹象", "有留评率偏高这类迹象，但分数没到异常信号的门槛；参考前先看看评论", ()),
+    ("price", "降价驱动", "上涨可能是降价带来的，不宜当长期需求", ("降价驱动",)),
+    ("data", "数据可能有误", "变体变多、名单和日数据对不上、日数据有缺或陈旧，先核对数据再判断",
+     ("变体变多", "变体合并", "名单和日数据对不上", "最近 28 天有", "数据陈旧", "只有名单数据", "销量区间不完整")),
+    ("base", "对比基准不足", "之前的销量基数太少或不完整，增幅可能被放大",
+     ("对比期只有", "对比数据不足", "月度增长尚未验证", "累计销量数据不足", "新品起量（对比数据不足", "对比期包括它开卖的第一周")),
+    ("relist", "老链接 / 断货恢复", "销量或评论里有老链接转来的、或断货后恢复的部分，不全是新需求",
+     ("老品换链接", "老链接重新起量", "评论是从老链接继承来的", "评论多是继承来的", "断货恢复")),
+    ("deal", "大促 / 数据待修订", "受大促或卖家精灵近几天数据修订影响，下期再确认",
+     ("大促拉动", "大促脉冲", "最近几天的数还会被改", "本期是否偏高")),
+    ("weak", "势头转弱", "最近在回落、近 7 天没涨够或只是短时冲高",
+     ("最近回落", "近 7 天没涨够", "短时脉冲", "上涨形态不稳")),
+    ("tide", "随大盘", "所在品类整体都在涨，增长不全是它自己的", ("随大盘",)),
+    ("monthly", "只有月度数据", "不在日数据追踪里：没有走势图、不判回落，只按月度名单判断", ("只有月度数据",)),
+)
+WARN_WORDS = ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定", "拉动", "还会被改", "变体变多",
+              "数据可能有误", "没有日数据", "没涨够")  # 卡片上标成红色的标签（render._tag_class）
 
 
-def _tag_head(tag: str) -> str:
-    return re.split(r"[（(：:，,]", tag, maxsplit=1)[0].strip() or tag
+def risk_groups_of(item: dict) -> dict[str, str]:
+    """一个商品的风险因素：{类别: 对应的那条标签}。异常信号 = 判成异常信号的（和 KPI 同一批）；有异常迹象（fake.signals）
+    但没到门槛的记在 suspect；其余按 RISK_GROUPS 的前缀；红色标签归不进任何一类的记在 other。"""
+    out: dict[str, str] = {}
+    sigs = item.get("fake", {}).get("signals") or []
+    text = "；".join(s["text"] for s in sigs)
+    if item.get("label") == "fake":
+        out["fake"] = text or "异常信号"
+    elif sigs:
+        out["suspect"] = text
+    for tag in item.get("tags") or []:
+        key = next((k for k, _n, _t, heads in RISK_GROUPS if tag.startswith(heads)), None)
+        if key is None and any(w in tag for w in WARN_WORDS):
+            key = "other"
+        if key and key not in out:
+            out[key] = tag
+    return out
 
 
 def risks(ctx: dict) -> list[dict]:
-    """“风险提醒”只点名两类商品：① 带异常信号的（异常信号板块前 5 个，或列出的爆火 / 潜力前 FACT_ITEMS 个自带的）；
-    ② 列出的爆火 / 潜力前 FACT_ITEMS 个里，标签有降价驱动、或数据可能有误（变体变多、名单和日数据对不上、日数据有缺）的。
-    返回 [{kind: fake | price | data, label, text, tag, item}]，一个商品只写一次。"""
-    out: list[dict] = []
-    seen: set[str] = set()
-
-    def add(item: dict, kind: str, label: str, text: str, tag: str = "") -> None:
-        if item["asin"] not in seen:
-            seen.add(item["asin"])
-            out.append({"kind": kind, "label": label, "text": text, "tag": tag, "item": item})
-
-    def signal(item: dict) -> str:
-        sigs = item["fake"]["signals"]
-        return _tag_head(sigs[0]["text"]) if sigs else "疑似刷评或数据异常"
-
-    for item in ctx["sections"].get("fake", [])[:5]:
-        add(item, "fake", "异常信号", f"{signal(item)}，疑似异常，需人工核实",
-            "；".join(s["text"] for s in item["fake"]["signals"]))
-    for item in listed(ctx, "surge")[:FACT_ITEMS] + listed(ctx, "potential")[:FACT_ITEMS]:
-        if item["fake"]["signals"]:
-            add(item, "fake", "异常信号", f"{signal(item)}，疑似异常，需人工核实",
-                "；".join(s["text"] for s in item["fake"]["signals"]))
-            continue
-        tag = next((t for t in item["tags"] if t.startswith(RISK_TAGS)), None)
-        if tag is None:
-            continue
-        if tag.startswith("降价驱动"):
-            add(item, "price", "降价驱动", "上涨可能是降价带来的，不宜当长期需求", tag)
-        else:
-            add(item, "data", _tag_head(tag), "数据可能有问题，需人工核实", tag)
-    return out
+    """“风险提醒”：报告里列出的全部商品（突然爆火、潜力、持续热销、蓝海产品、增长商品里列出的，加上异常信号）身上的
+    每一类风险因素，一类一组：[{kind, label, text, items: [(商品, 板块, 那条标签)]}]，按 RISK_GROUPS 的顺序，没有商品的类不出。"""
+    cur = ctx.get("curated") or {}
+    pool: dict[str, tuple[dict, str]] = {}
+    for key in ("surge", "potential", "hot", "ocean", "growth"):
+        rows = cur[key]["shown"] if cur.get(key) else (ctx.get("focus") if key == "growth" else ctx["sections"].get(key))
+        for item in rows or []:
+            pool.setdefault(item["asin"], (item, key))
+    for item in ctx["sections"].get("fake") or []:
+        pool.setdefault(item["asin"], (item, "fake"))
+    groups = {k: [] for k, *_r in RISK_GROUPS} | {"other": []}
+    for item, where in pool.values():
+        for kind, tag in risk_groups_of(item).items():
+            groups[kind].append((item, where, tag))
+    meta = {k: (name, text) for k, name, text, _h in RISK_GROUPS} | {"other": ("其他需要留意", "其余标成红色的标签")}
+    return [{"kind": k, "label": meta[k][0], "text": meta[k][1], "items": rows} for k, rows in groups.items() if rows]
