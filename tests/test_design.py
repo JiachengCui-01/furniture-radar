@@ -148,15 +148,23 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     assert "判定方法与数据口径" not in plain and "名词说明" in body  # 报告上不放大段规则
     assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
     assert "Material 属性" in plain and f"每期最多查 {cfg['budget']['material_lookups']} 个" in plain
-    assert body.index("<h3>开发建议</h3>") < body.index("<h3>开发方向")  # 两节都要有，不是互相替换
+    # 本期要点是四块图标卡片（不是大段文字），四块都要有、按这个顺序，不是互相替换
+    digest = body[body.index('class="summary"'):body.index('<section id="dirs"')]
+    heads = ["外观与工艺趋势", "开发建议", "开发方向", "风险提醒"]
+    at = [digest.index(f"</svg></span><span>{h}</span>") for h in heads]  # 小标题：图标徽章 + 名字
+    assert at == sorted(at)
+    assert digest.count('class="ib tn-') >= 4 and "<ul>" not in digest and "<li>" not in digest
+    assert 'class="tl tl-mat"' in digest and 'class="pair"' in digest  # 趋势卡：主材质 + 各维度，横条 = 增长 vs 对照
     # 开发方向：主体里一行一个子类目（可排序的一览），完整画像在小窗里，每行点开对应的那个
     assert '<section id="dirs"' in body and 'class="dbox dir"' not in body and n_dirs > 0
     assert body.count('class="brow"') == n_dirs
     assert all(f'data-pop="dir{k}"' in body and f'id="pop-dir{k}"' in plain for k in range(n_dirs))
-    # 够格的子类目全部有画像；本期要点只写前 summary_max 个，标题写明；一览表把每个子类目都列出来
+    # 够格的子类目全部有画像；本期要点只放前 summary_max 个（卡片点开是同一个小窗），标题写明；一览表把每个子类目都列出来
     top = cfg["thresholds"]["directions"]["summary_max"]
+    assert digest.count('class="dcard"') == min(top, n_dirs)
+    assert all(f'class="dcard" role="button" tabindex="0" data-pop="dir{k}"' in digest for k in range(min(top, n_dirs)))
     if n_dirs > top:
-        assert f"<h3>开发方向（有画像的子类目里增量最大的 {top} 个，全部 {n_dirs} 个见下方“开发方向”）</h3>" in body
+        assert f"有画像的子类目里月增量最大的 {top} 个 · " in digest and f"全部 {n_dirs} 个 ›" in digest
     assert f"个子类目一览：{n_dirs} 个有画像（见上表）" in body and body.count("<td>有（见上表）</td>") == n_dirs
     assert 'class="cards" data-tools' in plain and "data-node=" in plain  # 小窗里能按子类目、类别筛，按月增量、售价排
     for gone in ("爆火/上升中", "爆火/潜力中", "全部家具", "爆火回落", "持续型", "爬升型", "脉冲型"):
@@ -342,8 +350,8 @@ def test_directions_rank_by_increment_not_brand_count(cfg):
 def test_all_qualifying_subcategories_get_a_profile_and_the_rest_say_why(cfg):
     """够格的子类目全部有画像（以前只取前 5 个：10-23 够格的 12 个、前 5 个只占增量的 70%）；一览表把监控范围里的
     每个子类目都列出来，没有画像的写原因；本期要点、钉钉只写增量最大的前 summary_max 个，标题写明还有多少。"""
-    from radar import narrative
     from radar.detect import directions
+    from radar.report import render
     from radar.notify import dingtalk
 
     focus = [_dir_item(f"A{k}{j}", f"子类{k}", "Bookshelf", f"B{k}{j}", recent=10 + 10 * (7 - k), prev=5)
@@ -370,9 +378,11 @@ def test_all_qualifying_subcategories_get_a_profile_and_the_rest_say_why(cfg):
     rows = {r["node"]: r for r in directions.overview(items, focus, few, disc, capped)}
     assert len(few) == 3 and rows["子类3"]["status"] == "增量排在前 3 个之后"
 
-    text = narrative.name_the_cut("### 开发建议\n- x\n### 开发方向\n- 开发子类0\n### 风险提醒\n- y", 7, 5)
-    assert "### 开发方向（有画像的子类目里增量最大的 5 个，全部 7 个见下方“开发方向”）\n- 开发子类0" in text
-    assert narrative.name_the_cut("### 开发方向\n- a", 5, 5) == "### 开发方向\n- a"
+    # 本期要点只放增量最大的前 5 个卡片，标题写明还有多少；卡片点开的是一览里同一个子类目的小窗
+    cards, sub = render._dir_cards({"directions": out}, cfg, {"growth": {"shown": []}}, focus, {})
+    assert cards.count('class="dcard"') == 5 and 'data-pop="dir4"' in cards and 'data-pop="dir5"' not in cards
+    assert "有画像的子类目里月增量最大的 5 个 · " in sub and "全部 7 个 ›" in sub
+    assert "class=\"dnote\"" not in cards  # 没给一览表时不写
     ctx = {"title": "雷达", "report_id": "2026-11-01", "as_of": "2026-10-31", "cfg": cfg, "diff": {"first": True},
            "traits": {"directions": out},
            "sections": {"surge": [], "potential": [], "fake": [], "counts": {"total": 1, "surge": 0, "potential": 0,
@@ -394,8 +404,8 @@ def test_all_qualifying_subcategories_get_a_profile_and_the_rest_say_why(cfg):
     lines = dingtalk.build_text(ctx).splitlines()
     k = lines.index("**🛠 开发方向**（有画像的子类目里增量最大的 5 个，共 7 个见报告）")
     assert lines[k + 6] == f"- {line}"
-    text = narrative.note_skipped("### 开发方向（…）\n- 开发子类0\n- 开发子类1\n\n### 风险提醒\n- y", line)
-    assert text == f"### 开发方向（…）\n- 开发子类0\n- 开发子类1\n- {line}\n\n### 风险提醒\n- y"
+    cards, _sub = render._dir_cards({"directions": out, "direction_overview": overview}, cfg, {"growth": {"shown": []}}, focus, {})
+    assert '<p class="dnote">' in cards and render.esc(line) in cards
     assert directions.skipped_big(overview, []) == []
 
 
@@ -538,45 +548,103 @@ def test_vision_retries_and_skips_a_bad_image(cfg, monkeypatch):
     assert calls["n"] == 2  # 第一张：取图 + 识别 401，之后不再继续
 
 
-def test_risk_bullets_must_name_a_flagged_product():
-    """风险提醒只能点名带异常信号、或标签有降价驱动的商品；模型自己推测的删掉，删完写“没有需要特别提醒的风险”。"""
+def _ref_item(asin, brand, design=None, tags=(), signals=(), look="正面满布竖向凹槽，配金色拉手。", node="五斗橱"):
+    return {"asin": asin, "brand": brand, "title": f"{brand} Dresser", "node_cn": node, "node_name": "", "image": "",
+            "look": look, "tags": list(tags), "design": design or {},
+            "fake": {"score": 2 if signals else 0, "signals": [{"text": t} for t in signals]}}
+
+
+def _tip_ctx(surge, potential=(), fake=()):
+    """本期要点用到的最少数据：增长商品更多的特征（凹槽竖纹 +18、原木色 +13；双色拼接只是常见）和各板块。"""
+    def feat(label, focus, ref):
+        return {"label": label, "image": {"label": label, "focus": focus, "focus_share": focus / 50,
+                                          "reference": ref, "reference_share": ref / 40}}
+    traits = {"vision": {"n_focus": 50, "n_reference": 40}, "appearance": {
+        "工艺": {"more": [feat("凹槽竖纹", 19, 8)], "common": [feat("双色拼接", 14, 10)]},
+        "颜色": {"more": [feat("原木色", 14, 6)]}}}
+    return {"traits": traits, "sections": {"surge": list(surge), "potential": list(potential), "fake": list(fake)}}
+
+
+def test_risk_reminders_only_name_flagged_or_risk_tagged_products():
+    """风险提醒只点名两类商品：带异常信号的（异常信号板块 + 列出的爆火 / 潜力自带的）；标签有降价驱动或数据可能有误的
+    爆火 / 潜力。一个商品只写一次；这些商品也不当开发建议的参考商品。"""
     from radar import narrative
+    from radar.report import render
 
-    facts = {"异常信号": [{"品牌": "COMHOMA", "标签": []}],
-             "突然爆火": [{"品牌": "TUTOTAK", "标签": [], "异常信号": ["评论集中"]}, {"品牌": "VASAGLE", "标签": ["稳在高位"]}],
-             "潜力": [{"品牌": "OOOK", "标签": ["降价驱动"]}]}
-    text = ("### 开发方向\n- 开发书架：现代\n### 风险提醒\n- TUTOTAK 书架评论集中，疑似异常，需人工核实。\n"
-            "- COMHOMA 梳妆台留评率异常，需人工核实。\n- 部分增长商品带充电/插座，需留意是否为短期促销。\n"
-            "- VASAGLE 咖啡桌涨得太快。\n- OOOK 旋转书架靠降价拉动，不要当成长期需求。")
-    out = narrative.guard_risks(text, facts)
-    assert out.splitlines() == ["### 开发方向", "- 开发书架：现代", "### 风险提醒",
-                                "- TUTOTAK 书架评论集中，疑似异常，需人工核实。", "- COMHOMA 梳妆台留评率异常，需人工核实。",
-                                "- OOOK 旋转书架靠降价拉动，不要当成长期需求。"]
-    only_guess = "### 风险提醒\n- 部分增长商品带 LED 灯，需留意是否为短期促销。"
-    assert narrative.guard_risks(only_guess, facts).splitlines() == ["### 风险提醒", narrative.NO_RISK]
+    flagged = _ref_item("B0FAKE0001", "COMHOMA", signals=["留评率 22%，是子类目中位数的 7 倍"])
+    burst = _ref_item("B0SIG00001", "TUTOTAK", signals=["评论集中在 3 天"])
+    cut = _ref_item("B0CUT00001", "OOOK", tags=["稳在高位", "降价驱动"])
+    gap = _ref_item("B0GAP00001", "Huuger", tags=["最近 28 天有 6 天没有日数据（断货或数据缺失，判断可能不准）"])
+    fine = _ref_item("B0FINE0001", "VASAGLE", tags=["稳在高位"], design={"工艺": ["凹槽竖纹"]})
+    ctx = _tip_ctx([burst, cut, fine, flagged], [gap], fake=[flagged])
+    rows = narrative.risks(ctx)
+    assert [(r["item"]["asin"], r["kind"], r["label"]) for r in rows] == [
+        ("B0FAKE0001", "fake", "异常信号"), ("B0SIG00001", "fake", "异常信号"), ("B0CUT00001", "price", "降价驱动"),
+        ("B0GAP00001", "data", "最近 28 天有 6 天没有日数据")]
+    assert rows[0]["text"] == "留评率 22%，疑似异常，需人工核实"  # 只说疑似，不断言刷单
+    assert rows[2]["text"] == "上涨可能是降价带来的，不宜当长期需求"
+    assert rows[3]["text"] == "数据可能有问题，需人工核实" and rows[3]["tag"].startswith("最近 28 天有 6 天没有日数据（")
+    assert [i["asin"] for i in narrative.reference_items(ctx)] == ["B0FINE0001"]
+    assert narrative.risks(_tip_ctx([fine])) == []
+
+    html_text = render._risk_rows(rows)
+    assert html_text.count('class="rkr"') == 4 and "COMHOMA 五斗橱" in html_text
+    assert 'data-tip="最近 28 天有 6 天没有日数据（断货或数据缺失，判断可能不准）"' in html_text  # 完整标签在悬停里
+    assert "本期没有异常信号" in render._risk_rows([])
 
 
-def test_summary_product_mentions_become_amazon_links():
-    """本期要点里点名的商品写成 [品牌 简称](ASIN)，渲染成亚马逊商品链接（悬停看主图）；
-    ASIN 不是本期商品、或方括号里没有它的品牌（写错了商品），只保留文字，不会链到别的商品。"""
+def test_development_tips_from_the_model_are_checked_line_by_line(cfg):
+    """大模型写的开发建议逐条核对：特征必须是本期“增长商品更多”的、而且商品自己也有；商品必须是列出的、能当参考的爆火 / 潜力，
+    方括号里写着它的品牌；同一个商品只用一次。对不上的整条删掉；一条都不剩、或没有大模型时按数据选（template_tips）。"""
     from radar import narrative
-    from radar.report.render import markdown
+    from radar.report import render
 
-    products = {"B0H2XKVQ5L": {"brand": "Huuger", "image": "https://m.media-amazon.com/images/I/x.jpg"}}
-    html_text = markdown("### 开发建议\n- 参考 [Huuger 窄长玄关桌](B0H2XKVQ5L) 的插座\n"
-                         "- 参考 [VASAGLE 床头柜](B0H2XKVQ5L)\n- 参考 [某品牌 书架](B0ZZZZZZZZ)", products)
-    assert html_text.count('href="https://www.amazon.com/dp/B0H2XKVQ5L"') == 1
-    assert '<img src="https://m.media-amazon.com/images/I/x.jpg"' in html_text  # 链接前带一张小图
-    assert "<li>参考 VASAGLE 床头柜</li>" in html_text and "<li>参考 某品牌 书架</li>" in html_text
+    a = _ref_item("B0AAAAAAA1", "TEENFON", design={"工艺": ["凹槽竖纹"], "颜色": ["原木色"]})
+    b = _ref_item("B0BBBBBBB1", "Wayshome", design={"颜色": ["原木色"], "工艺": ["双色拼接"]}, look="原木纹理清爽简洁，外八锥形腿。")
+    cut = _ref_item("B0CUT00001", "OOOK", tags=["降价驱动"], design={"工艺": ["凹槽竖纹"]})
+    ctx = _tip_ctx([a, b, cut])
+    assert narrative.trend_labels(ctx["traits"]) == ["凹槽竖纹", "原木色"]
+    text = "\n".join([
+        "- 凹槽竖纹 + 原木色｜[TEENFON 六抽柜](B0AAAAAAA1)｜正面满布竖向凹槽配金色弧形拉手看起来很好",  # 留下，细节截短
+        "- 原木色｜[TEENFON 六抽柜](B0AAAAAAA1)｜原木纹理",              # 同一个商品第二次
+        "- 原木色｜[VASAGLE 五斗柜](B0BBBBBBB1)｜原木纹理",              # 方括号里不是它的品牌
+        "- 双色拼接｜[Wayshome 五斗柜](B0BBBBBBB1)｜外八锥形腿",         # 只是常见特征，不是“更多”的
+        "- 凹槽竖纹 + 原木色｜[Wayshome 五斗柜](B0BBBBBBB1)｜原木纹理",  # 它没有凹槽竖纹：只留原木色
+        "- 凹槽竖纹｜[OOOK 书柜](B0CUT00001)｜竖纹",                     # 降价驱动：不能当参考
+        "- 凹槽竖纹｜[某品牌 书柜](B0ZZZZZZZZ)｜竖纹",                    # 不是本期商品
+        "开发建议：多做凹槽竖纹",                                         # 格式不对
+    ])
+    tips = narrative.parse_tips(text, ctx)
+    assert [(t["asin"], t["features"], t["name"]) for t in tips] == [
+        ("B0AAAAAAA1", ["凹槽竖纹", "原木色"], "TEENFON 六抽柜"), ("B0BBBBBBB1", ["原木色"], "Wayshome 五斗柜")]
+    assert len(tips[0]["detail"]) == narrative.DETAIL_MAX and tips[0]["detail"].endswith("…") and tips[1]["detail"] == "原木纹理"
+    assert narrative.parse_tips("无", ctx) == []
 
-    item = {"品牌": "Huuger", "品名": "Huuger 63.4-78.3'' Extendable Behind Couch Table", "ASIN": "B0H2XKVQ5L",
-            "外观要点": "窄长条案", "标签": [], "可作参考": True, "异常信号": ["留评率高"]}
-    facts = {"共性特点": {}, "突然爆火": [item], "潜力": [], "异常信号": [item],
-             "开发方向": [{"画像": "玄关桌：窄小省空间", "参考商品": [{"品名": item["品名"], "ASIN": "B0H2XKVQ5L"}]},
-                      {"画像": "衣帽架：实木，$24–$120", "子类目": "衣帽架", "增量": "$26 万", "参考商品": []}]}
-    text = narrative.template_summary(facts)
-    assert "[Huuger 63.4-78.3'' Extendable Behind…](B0H2XKVQ5L)" in text
-    assert "- 开发玄关桌：窄小省空间，参考 [Huuger" in text
-    assert "- 开发衣帽架（月增量约 $26 万）：实木，$24–$120\n" in text and "季节" not in text
+    # 没有大模型：同样的规则从数据里选，特征多的先；外观细节取外观要点的第一句，品名 = 品牌 + 子类目
+    tips, source = narrative.tips(ctx, cfg, "")
+    assert source == "template" and tips == [
+        {"features": ["凹槽竖纹", "原木色"], "asin": "B0AAAAAAA1", "name": "TEENFON 五斗橱", "detail": "正面满布竖向凹槽"},
+        {"features": ["原木色"], "asin": "B0BBBBBBB1", "name": "Wayshome 五斗橱", "detail": "原木纹理清爽简洁"}]
+    html_text = render._ideas(tips, {})
+    assert html_text.count('class="idea"') == 2 and 'href="https://www.amazon.com/dp/B0AAAAAAA1"' in html_text
+    assert "<span>凹槽竖纹</span><i>+</i><span>原木色</span>" in html_text
 
 
+def test_trend_tiles_show_growth_vs_reference_bars(cfg):
+    """趋势卡：每个维度一张，写“增长商品更多”里差距最大的特征和多几个百分点（按显示出来的整数百分比相减），其余的写在右下角；
+    主材质一张，写比对照组多得最多的那类和占比前几的构成，不写“未注明”。"""
+    from radar.report import render
+
+    tr = _tip_ctx([])["traits"]
+    tr["appearance"]["工艺"]["more"].append({"label": "玻璃门", "image": {"label": "玻璃门", "focus": 10, "focus_share": 0.2,
+                                                                         "reference": 2, "reference_share": 0.05}})
+    tr["materials"] = {"n_focus": 79, "n_reference": 40, "rows": [
+        {"label": "铁木（金属+木）", "count": 28, "share": 0.354, "reference": 15, "reference_share": 0.375},
+        {"label": "实木", "count": 23, "share": 0.291, "reference": 3, "reference_share": 0.075},
+        {"label": "未注明", "count": 1, "share": 0.013, "reference": 0, "reference_share": 0.0}]}
+    html_text = render._trend_tiles(tr, cfg, [])
+    assert html_text.count('class="tl tl-mat"') == 1 and html_text.count('class="tl"') == 2  # 主材质 + 工艺 + 颜色
+    assert '<b>实木</b></span><b class="gp" data-tip="比对照多 21 个百分点">+21</b>' in html_text  # 29% − 8%（不是 21.6 → 22）
+    assert "<b>凹槽竖纹</b></span><b class=\"gp\"" in html_text and "玻璃门 +15</span>" in html_text
+    assert "未注明" not in html_text and html_text.count('class="pair"') == 2 + 2  # 两种材质 + 两个维度
+    assert "暂不总结" in render._trend_tiles({"note": "本期增长商品太少（少于 3 个），暂不总结共性特点"}, cfg, [])

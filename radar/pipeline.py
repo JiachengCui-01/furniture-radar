@@ -675,7 +675,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "nodes": (disc or {}).get("nodes") or [],
         "repo_url": repo_url(),
     }
-    ctx["summary"], ctx["summary_source"] = narrative.summary(ctx, cfg, secrets.llm_api_key)
+    # 本期要点里只有开发建议交给大模型（逐条核对，见 narrative.parse_tips）；趋势、开发方向、风险提醒在报告里直接取数据
+    ctx["tips"], ctx["summary_source"] = narrative.tips(ctx, cfg, secrets.llm_api_key)
     # 往期链接不带密钥：带的话一份报告里有前 6 期的密钥、一期期往回连，泄露一个钉钉链接就能打开全部往期。
     # 往期报告从钉钉里那一期的消息打开（同一个浏览器标签页里打开过的，记着密钥，点这里也能直接打开）
     ctx["history"] = [{"id": old_id, "href": f"{old_id}.html"}

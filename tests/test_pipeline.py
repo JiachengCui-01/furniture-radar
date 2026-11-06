@@ -227,7 +227,7 @@ def test_directions_match_their_definition(world_run, master_key, cfg):
     plain = _decrypt_page((site / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8"),
                           crypto.parse_master_key(master_key))
     assert "比之前 28 天多约" in plain and "立方英尺" in plain and "季节" not in plain
-    assert "（月增量约 $" in plain  # 本期要点（模板）里的开发方向
+    assert 'class="dcard"' in plain and "<span>开发建议</span>" in plain  # 本期要点里的开发方向卡片、开发建议
 
 
 def test_report_is_encrypted_and_decryptable(world_run, master_key):

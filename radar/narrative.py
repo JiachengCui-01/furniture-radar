@@ -1,6 +1,8 @@
-"""文字总结：把计算好的事实交给大模型（默认 DeepSeek，OpenAI 兼容接口）写成中文摘要。
+"""“本期要点”的内容：外观与工艺趋势、开发方向、风险提醒都直接取计算好的数据（报告里画成图标卡片，见 report/render.py），
+只有“开发建议”交给大模型（默认 DeepSeek，OpenAI 兼容接口）挑特征组合和参考商品、写一个短的外观细节。
 
-模型只负责措辞，不参与判定；提示词要求只能使用给定数字。没有 key 或调用失败时用模板文字。
+模型不参与判定，输出是固定格式的短行，逐条核对：特征必须是本期“增长商品更多”的特征、参考商品必须是列出的爆火 / 潜力商品
+而且自己就有这些特征，对不上的整条删掉。没有 key、调用失败或一条都没留下时，按同样的规则从数据里选（template_tips）。
 """
 from __future__ import annotations
 
@@ -13,59 +15,42 @@ from . import log, shipping
 from .analyze import display_name
 from .detect import directions
 
-SYSTEM_PROMPT = """你是亚马逊美国站家具类目的选品分析师兼产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
-请用简体中文写一份给选品/开发团队看的“本期要点”，严格遵守：
-1. 只能使用 JSON 里出现的数字和事实，不得编造或推算新数字；没有的数据就不提。
-2. 不要复述各板块的商品数量（页面顶部已经有），也不要逐个罗列商品（点开板块就能看到）。
-3. 结构固定为四个小节，用 "- " 开头：
-   ### 外观与工艺趋势（3~4 条）
-   ### 开发建议（2~3 条）
-   ### 开发方向（JSON“开发方向”里有几个就写几条，一个方向一条）
-   ### 风险提醒（1~3 条）
-4. 名词严格按 JSON 的叫法：“增长商品”= 突然爆火 + 潜力 + 上升中；“全部头部商品”是标题统计的对比对象；
-   “持续热销对照组”是主图识别和主材质的对比对象。引用数字时写清楚是哪种依据、和谁比。
-5. “外观与工艺趋势”：第一条说主材质构成（只用“主材质”的数据）；后面按风格、造型、工艺、颜色写“增长商品更多”的特征，
-   引用对应的占比；“常见特征”只能说“增长商品多数是…（对照组也一样多）”，不能说成趋势；可以引用“外观要点”的具体描述；
-   功能卖点最多一条。不要另外讨论材质。
-6. “开发建议”具体到设计方向（风格、造型、工艺、配色），可以点名 1~2 个参考商品（写法见第 10 条），
-   只能选“可作参考”为 true 的商品（有异常信号的不能当参考）。
-   它讲的是可以用到不同品类上的设计手法，不要把“开发方向”里某个品类的画像再写一遍。
-7. “开发方向”：按 JSON 的顺序（增量销售额从大到小），每条写成
-   “开发<品类>（月增量约 <增量>）：<主材质>，<比头部多的特征>，定价 <价格区间>”，
-   品类就是该方向的子类目（可以说得更口语，如“梳妆台”），增量照抄该方向“销售额”里的增量；
-   特征只能用该方向“比头部多”里列出的，不得添加、替换或挪用别的方向的，也不要写“基本款”里的；
-   “比头部多”为空时写“外观没有比同类头部更多的特征”；“主材质”是“未注明”“木质（未注明）”“其他”的不写；
-   不要写季节、淡旺季方面的内容（报告不做季节判断）；
-   末尾可以加“参考 [<品牌 简称>](<ASIN>) 的<一个外观细节>”，外观细节只能取该方向参考商品的“外观要点”，
-   并且不能和这条已经写出的颜色、主材质矛盾（矛盾就换一个细节或不写参考）。
-8. “风险提醒”只写两类，每条都要点名 JSON 里的一个具体商品（写法见第 10 条）：
-   ① 带“异常信号”的商品（“异常信号”列表里的，或爆火 / 潜力商品自带的“异常信号”字段）：只能说“疑似、需人工核实”，不要断言刷单；
-   ② “标签”里有“降价驱动”“变体变多”“名单和日数据对不上”“最近 28 天有 N 天没有日数据”的爆火 / 潜力商品：
-      降价驱动提醒上涨可能是降价带来的、不要当成长期需求；另外三种提醒“数据可能有问题，需人工核实”。
-   不要根据功能卖点、外观、品类或价格自己推测风险；两类都没有就只写一条“本期没有需要特别提醒的风险”。
-9. 不要输出链接和长标题。“开发方向”每条不超过 90 字，其余每条不超过 50 字、一条只说一个特征或一个建议；
-   引用依据时只写最有力的一组数字（如“主图 21/50，对照组 6/40”），不要把两种依据都抄一遍；
-   总长度不超过 800 字，宁可少写几条趋势。报告页面上有图和完整数字，这里只写结论。
-10. 点名具体商品时（开发建议的参考商品、开发方向末尾的“参考”、风险提醒里的商品）一律写成 [品牌 简短中文品名](ASIN)，
-   ASIN 用 JSON 里这个商品的“ASIN”，方括号里必须有品牌，例如 [Huuger 窄长玄关桌](B0H2XKVQ5L)；
-   报告里会变成点开就是亚马逊商品页的链接。同一条里同一个商品只写一次链接，链接里的 ASIN 不计入字数。"""
+SYSTEM_PROMPT = """你是亚马逊美国站家具类目的产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
+请写报告“本期要点”里的“开发建议”：2~3 条可以用到不同品类上的设计手法。每条一行，格式固定为
+- <特征> + <特征>｜[<品牌> <简短中文品名>](<ASIN>)｜<外观细节>
+严格遵守：
+1. 参考商品只能从“突然爆火”“潜力”里选“可作参考”为 true 的商品；每条换一个商品。
+   方括号里必须有品牌，ASIN 照抄这个商品的“ASIN”，例如 [Huuger 窄长玄关桌](B0H2XKVQ5L)。
+2. <特征> 只能照抄这个商品“可用特征”里的词（都是本期增长商品比对照组更多的外观特征，见“共性特点”），
+   每条 1~2 个，两个时用“ + ”连接；不要用别的词，不要自己造词。各条的特征组合不要重复，尽量覆盖不同的特征。
+3. <外观细节> 只能取自这个商品的“外观要点”，挑能看出这一条特征在商品上怎么做的部分，压缩成不超过 16 个字的短语
+   （如“正面满布竖向凹槽”），不得编造。
+4. 讲设计手法，不要把“开发方向”里某个品类的画像再写一遍；不要写数字、网址、解释或任何别的文字。
+5. 找不到符合第 1、2 条的组合就少写几条；一条都写不出时只输出“无”。"""
 
 
 FACT_ITEMS = 6  # 本期要点给大模型看的突然爆火、潜力各前几个（钉钉列前 notify.max_items 个，都在这里面）
+TIP_MAX = 3  # 开发建议最多几条
+DETAIL_MAX = 18  # 开发建议里外观细节最多几个字
 
 
 def build_facts(ctx: dict) -> dict:
+    """给大模型写开发建议用的事实（只写开发建议，其余几块报告直接取数据）。"""
+    labels = trend_labels(ctx["traits"])
+
     def brief(item: dict) -> dict:
         out = {
             "品牌": item["brand"], "品名": display_name(item["brand"], item["title"])[:60],
             "子类目": item["node_cn"] or item["node_name"], "价格": item["price"],
             "评分": item["rating"], "评论数": item["ratings"], "上架天数": item["age_days"], "标签": item["tags"],
-            "可作参考": not item["fake"]["score"], "ASIN": item["asin"],
+            "可作参考": can_refer(item), "ASIN": item["asin"],
         }
         if item.get("look"):
             out["外观要点"] = item["look"]
         if item.get("features"):
             out["特色"] = item["features"][:4]
+        if can_refer(item):  # 这个商品自己有的、本期增长商品更多的特征（parse_tips 按同一个条件核对）
+            out["可用特征"] = [label for label in labels if has_feature(item, label)]
         if item.get("surge"):
             s = item["surge"]
             out["突然爆火"] = {"近期日均": round(s["recent_avg"], 1), "之前日均": round(s["base_avg"], 1),
@@ -77,14 +62,12 @@ def build_facts(ctx: dict) -> dict:
             out["异常信号"] = [s["text"] for s in item["fake"]["signals"]]
         return out
 
-    sec = ctx["sections"]
     return {
         "数据截至": ctx["as_of"],
         "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子、衣帽架，也不含包装在亚马逊标准尺寸以内的小件）",
         # 只给列出的（去掉简单款、合并相近款，detect.showcase），本期要点点名的和报告里看到的一致
         "突然爆火": [brief(i) for i in listed(ctx, "surge")[:FACT_ITEMS]],
         "潜力": [brief(i) for i in listed(ctx, "potential")[:FACT_ITEMS]],
-        "异常信号": [brief(i) for i in sec["fake"][:5]],
         "共性特点": design_facts(ctx["traits"]),
         # 报告里够格的子类目全部列出，本期要点只写增量最大的前 summary_max 个
         "开发方向": direction_facts(ctx["traits"])[: summary_limit(ctx["cfg"])],
@@ -99,29 +82,6 @@ def listed(ctx: dict, key: str) -> list[dict]:
 
 def summary_limit(cfg: dict) -> int:
     return int(cfg["thresholds"]["directions"].get("summary_max") or 5)
-
-
-def name_the_cut(text: str, total: int, shown: int) -> str:
-    """“开发方向”小节只写了前几个时，标题写明是有画像的子类目里增量最大的几个、全部的在哪里（不然看着像只有这几个子类目）。
-    画不出画像的子类目不算（增量更大的另起一条写出来，见 note_skipped）。"""
-    if total <= shown:
-        return text
-    head = f"### 开发方向（有画像的子类目里增量最大的 {shown} 个，全部 {total} 个见下方“开发方向”）"
-    return re.sub(r"(?m)^###\s*开发方向(?:（[^）\n]*）)?[ \t]*$", lambda _m: head, text, count=1)
-
-
-def note_skipped(text: str, line: str) -> str:
-    """在“开发方向”小节末尾加一条（directions.skipped_text：增量排得进前几个、但没有画像的子类目）。"""
-    if not line:
-        return text
-    lines = text.splitlines()
-    start = next((i for i, row in enumerate(lines) if re.match(r"^###\s*开发方向", row)), None)
-    if start is None:
-        return text
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("#")), len(lines))
-    while end > start + 1 and not lines[end - 1].strip():
-        end -= 1
-    return "\n".join(lines[:end] + [f"- {line}"] + lines[end:])
 
 
 def _evidence(f: dict, tr: dict) -> str:
@@ -208,6 +168,7 @@ def top_design_labels(tr: dict, k: int = 4) -> list[str]:
 
 
 def llm_summary(facts: dict, cfg: dict, api_key: str) -> str | None:
+    """大模型写的开发建议（原文，parse_tips 再逐条核对）；没有 key 或调用失败返回 None。"""
     llm = cfg["llm"]
     enabled = str(llm.get("enabled", "auto")).lower()
     if enabled in ("false", "0", "no", "off") or not api_key:
@@ -219,7 +180,7 @@ def llm_summary(facts: dict, cfg: dict, api_key: str) -> str | None:
             {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
         ],
         "temperature": 0.3,
-        "max_tokens": 2000,
+        "max_tokens": 600,
         **(llm.get("extra_body") or {}),
     }
     try:
@@ -233,120 +194,147 @@ def llm_summary(facts: dict, cfg: dict, api_key: str) -> str | None:
         text = response.json()["choices"][0]["message"]["content"]
         return text.strip() or None
     except Exception as exc:  # noqa: BLE001 — 总结失败不影响报告
-        log.warn(f"文字总结生成失败，改用模板：{type(exc).__name__}")
+        log.warn(f"开发建议生成失败，改按数据选：{type(exc).__name__}")
         return None
 
 
-def _short(name: str, words: int = 4) -> str:
-    """品牌 + 前几个词，不截断在单词中间。"""
-    parts = (name or "").replace(",", " ").split()
-    return " ".join(parts[:words]) + ("…" if len(parts) > words else "")
+def feature_gap(f: dict, vision: dict) -> float:
+    """一个“增长商品更多”的特征比对照多几成：主图（增长势头前 N vs 持续热销对照组）、标题（增长商品 vs 全部头部商品）取大的。"""
+    gaps = []
+    if f.get("image") and vision.get("n_reference"):
+        gaps.append(f["image"]["focus_share"] - f["image"]["reference_share"])
+    if f.get("title"):
+        gaps.append(f["title"]["share"] - f["title"]["baseline_share"])
+    return max(gaps) if gaps else 0.0
 
 
-def _link(item: dict) -> str:
-    """[品牌 + 前几个词](ASIN)：报告里渲染成商品链接（report/render.py 的 product_links）。"""
-    return f"[{_short(item['品名'])}]({item['ASIN']})" if item.get("ASIN") else _short(item["品名"])
+def trend_labels(tr: dict) -> list[str]:
+    """本期“增长商品更多”的外观特征名，按 feature_gap 从大到小（开发建议只能用这些）。"""
+    vision = tr.get("vision") or {}
+    rows = [(feature_gap(f, vision), f["label"]) for groups in (tr.get("appearance") or {}).values()
+            for f in groups.get("more") or []]
+    return [label for _gap, label in sorted(rows, key=lambda r: -r[0])]
 
 
-def _compact(text: str) -> str:
-    """模板文字里的依据写短：“主图识别：增长商品 21/50，持续热销对照组 6/40” → “主图 21/50，对照组 6/40”。"""
-    for old, new in (("标题统计：增长商品 ", "标题 "), ("主图识别：增长商品 ", "主图 "), ("，全部头部商品 ", "，头部 "),
-                     ("，持续热销对照组 ", "，对照组 "), ("增长商品 ", "")):
-        text = text.replace(old, new)
-    return text
+def reference_items(ctx: dict) -> list[dict]:
+    """开发建议可以点名的商品：列出的突然爆火、潜力各前 FACT_ITEMS 个（和给大模型看的一样）；
+    有异常信号、或标签有降价驱动 / 数据可能有误的不算（它们在风险提醒里，见 risks）。"""
+    rows = listed(ctx, "surge")[:FACT_ITEMS] + listed(ctx, "potential")[:FACT_ITEMS]
+    return [i for i in rows if can_refer(i)]
 
 
-def template_summary(facts: dict) -> str:
-    """没有大模型时的“本期要点”：结构和大模型版一致，只用计算好的事实。"""
-    trait = facts["共性特点"]
-    lines = ["### 外观与工艺趋势"]
-    if trait.get("备注"):
-        lines.append(f"- {trait['备注']}")
-    mats = [m for m in next((v for k, v in trait.items() if k.startswith("主材质")), [])
-            if not m.startswith(("未注明", "木质（未注明）", "其他")) and "：增长商品 0/" not in m]
-    if mats:
-        lines.append(f"- 主材质：{'；'.join(_compact(m) for m in mats[:3])}。")
-    for dim, rows in trait.get("外观特征（增长商品更多）", {}).items():
-        lines.append(f"- {dim}：{'；'.join(_compact(r) for r in rows[:2])}。")
-    if len(lines) == 1:
-        lines.append("- 增长商品没有明显偏多的外观/工艺特征。")
-    lines.append("### 开发建议")
-    refs = [i for i in facts["突然爆火"][:2] + facts["潜力"][:2] if i.get("外观要点") and i.get("可作参考")]
-    for item in refs[:2]:
-        lines.append(f"- 参考 {_link(item)}：{item['外观要点']}")
-    if not refs:
-        lines.append("- 点开“突然爆火”“潜力产品”查看本期的参考商品。")
-    lines.append("### 开发方向")
-    for d in facts["开发方向"]:
-        ref = (d.get("参考商品") or [None])[0]
-        head, node = d["画像"], d.get("子类目")
-        if node and d.get("增量"):
-            head = head.replace(f"{node}：", f"{node}（月增量约 {d['增量']}）：", 1)
-        lines.append(f"- 开发{head}" + (f"，参考 {_link(ref)}" if ref else ""))
-    if not facts["开发方向"]:
-        lines.append("- 本期没有增长商品数达到门槛的子类目，暂不给开发方向。")
-    lines.append("### 风险提醒")
-    for item in facts["异常信号"][:2]:
-        signal = (item.get("异常信号") or [""])[0]
-        lines.append(f"- {_link(item)}：{signal}，疑似数据异常，需人工核实。")
-    short = [_short(i["品名"]) for i in facts["突然爆火"] + facts["潜力"] if any(t.startswith(RISK_TAGS) for t in i["标签"])]
-    if short:
-        lines.append(f"- {'、'.join(short[:2])} 的上涨带降价驱动或数据可能有误的标签，需人工核实，不要直接当成长期需求。")
-    if len(lines) and lines[-1] == "### 风险提醒":
-        lines.append("- 本期没有异常信号，也没有降价驱动或数据可能有误的爆火 / 潜力商品。")
-    return "\n".join(lines)
+def can_refer(item: dict) -> bool:
+    return not item["fake"]["score"] and not item["fake"]["signals"] and not any(t.startswith(RISK_TAGS) for t in item["tags"])
+
+
+def has_feature(item: dict, label: str) -> bool:
+    """商品自己有这个外观特征（标题或主图识别，item["design"]）。"""
+    return any(label in labels for labels in (item.get("design") or {}).values())
+
+
+def _clip_cn(text: str, limit: int = DETAIL_MAX) -> str:
+    text = (text or "").strip().strip("。.;；，, ")
+    return text if len(text) <= limit else text[:limit - 1].rstrip("，,、 ") + "…"
+
+
+def cn_name(item: dict) -> str:
+    """商品的短称：品牌 + 中文子类目（如“KCZDXH 书架”）。"""
+    return " ".join(x for x in ((item.get("brand") or "").strip(), item.get("node_cn") or "") if x) or item["asin"]
+
+
+TIP_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.、)])?\s*(?P<feats>[^｜|\[\]]+?)\s*[｜|]\s*\[(?P<name>[^\[\]]{1,60})\]"
+                      r"\((?P<asin>[A-Z0-9]{10})\)\s*[｜|]\s*(?P<detail>[^｜|]+?)\s*$")
+
+
+def parse_tips(text: str | None, ctx: dict) -> list[dict]:
+    """核对大模型写的开发建议（格式见 SYSTEM_PROMPT），留下对得上的：
+    特征必须在 trend_labels 里、而且参考商品自己有（has_feature）；参考商品必须在 reference_items 里、方括号里写着它的品牌，
+    同一个商品只用一次。特征一个都不剩、或商品对不上的整条删掉。"""
+    allowed = set(trend_labels(ctx["traits"]))
+    refs = {i["asin"]: i for i in reference_items(ctx)}
+    out, used = [], set()
+    for line in (text or "").splitlines():
+        m = TIP_LINE.match(line)
+        if not m:
+            continue
+        item = refs.get(m["asin"])
+        brand = ((item or {}).get("brand") or "").strip().lower()
+        if not item or item["asin"] in used or (brand and brand not in m["name"].lower()):
+            continue
+        feats = [f for f in dict.fromkeys(x.strip() for x in re.split(r"[+＋]", m["feats"]))
+                 if f in allowed and has_feature(item, f)][:2]
+        if not feats:
+            continue
+        out.append({"features": feats, "asin": item["asin"], "name": m["name"].strip(), "detail": _clip_cn(m["detail"])})
+        used.add(item["asin"])
+    return out[:TIP_MAX]
+
+
+def template_tips(ctx: dict) -> list[dict]:
+    """没有大模型时按同样的规则选：参考商品（reference_items，要有外观要点）里有本期“增长商品更多”的特征的，
+    特征多的先、同样多按原来的顺序（月增量）；同一组特征只用一次。外观细节取外观要点的第一句。"""
+    labels = trend_labels(ctx["traits"])
+    picked = []
+    for k, item in enumerate(i for i in reference_items(ctx) if i.get("look")):
+        hit = [label for label in labels if has_feature(item, label)][:2]
+        if hit:
+            picked.append((-len(hit), k, item, hit))
+    out, seen = [], set()
+    for _n, _k, item, hit in sorted(picked, key=lambda r: r[:2]):
+        if tuple(hit) in seen:
+            continue
+        seen.add(tuple(hit))
+        out.append({"features": hit, "asin": item["asin"], "name": cn_name(item),
+                    "detail": _clip_cn(re.split(r"[，。；,;]", item["look"])[0])})
+        if len(out) == TIP_MAX:
+            break
+    return out
+
+
+def tips(ctx: dict, cfg: dict, api_key: str) -> tuple[list[dict], str]:
+    """开发建议：[{features, asin, name, detail}]，来源 'llm' | 'template'。"""
+    found = parse_tips(llm_summary(build_facts(ctx), cfg, api_key), ctx) if api_key else []
+    if found:
+        return found, "llm"
+    return template_tips(ctx), "template"
 
 
 RISK_TAGS = ("降价驱动", "变体变多", "名单和日数据对不上", "最近 28 天有")  # 标签以这些开头的
-NO_RISK = "- 本期没有需要特别提醒的风险。"
 
 
-def risk_brands(facts: dict) -> set[str]:
-    """“风险提醒”可以点名的商品的品牌：带异常信号的，或标签有降价驱动 / 数据可能有误的爆火、潜力商品。"""
-    out = {i["品牌"] for i in facts["异常信号"]}
-    out |= {i["品牌"] for i in facts["突然爆火"] + facts["潜力"]
-            if i.get("异常信号") or any(t.startswith(RISK_TAGS) for t in i["标签"])}
-    return {b.strip() for b in out if b and b.strip()}
+def _tag_head(tag: str) -> str:
+    return re.split(r"[（(：:，,]", tag, maxsplit=1)[0].strip() or tag
 
 
-def guard_risks(text: str, facts: dict) -> str:
-    """大模型写的“风险提醒”里，每条都要点名一个可以点名的商品（见 risk_brands），否则删掉这条
-    （实测：模型会自己推测“带充电/插座、LED 灯的需留意是否为短期促销”，数据里没有依据）。删完没有了就写 NO_RISK。"""
-    brands = [b.lower() for b in risk_brands(facts)]
-    out: list[str] = []
-    in_risk, kept, dropped = False, 0, 0
+def risks(ctx: dict) -> list[dict]:
+    """“风险提醒”只点名两类商品：① 带异常信号的（异常信号板块前 5 个，或列出的爆火 / 潜力前 FACT_ITEMS 个自带的）；
+    ② 列出的爆火 / 潜力前 FACT_ITEMS 个里，标签有降价驱动、或数据可能有误（变体变多、名单和日数据对不上、日数据有缺）的。
+    返回 [{kind: fake | price | data, label, text, tag, item}]，一个商品只写一次。"""
+    out: list[dict] = []
+    seen: set[str] = set()
 
-    def close() -> None:
-        if in_risk and not kept:
-            out.append(NO_RISK)
+    def add(item: dict, kind: str, label: str, text: str, tag: str = "") -> None:
+        if item["asin"] not in seen:
+            seen.add(item["asin"])
+            out.append({"kind": kind, "label": label, "text": text, "tag": tag, "item": item})
 
-    for line in text.splitlines():
-        if line.lstrip().startswith("#"):
-            close()
-            in_risk, kept = "风险提醒" in line, 0
-            out.append(line)
-        elif in_risk and line.lstrip().startswith("- "):
-            if any(b in line.lower() for b in brands):
-                out.append(line)
-                kept += 1
-            elif "没有需要特别提醒" not in line:
-                dropped += 1
+    def signal(item: dict) -> str:
+        sigs = item["fake"]["signals"]
+        return _tag_head(sigs[0]["text"]) if sigs else "疑似刷评或数据异常"
+
+    for item in ctx["sections"].get("fake", [])[:5]:
+        add(item, "fake", "异常信号", f"{signal(item)}，疑似异常，需人工核实",
+            "；".join(s["text"] for s in item["fake"]["signals"]))
+    for item in listed(ctx, "surge")[:FACT_ITEMS] + listed(ctx, "potential")[:FACT_ITEMS]:
+        if item["fake"]["signals"]:
+            add(item, "fake", "异常信号", f"{signal(item)}，疑似异常，需人工核实",
+                "；".join(s["text"] for s in item["fake"]["signals"]))
+            continue
+        tag = next((t for t in item["tags"] if t.startswith(RISK_TAGS)), None)
+        if tag is None:
+            continue
+        if tag.startswith("降价驱动"):
+            add(item, "price", "降价驱动", "上涨可能是降价带来的，不宜当长期需求", tag)
         else:
-            out.append(line)
-    close()
-    if dropped:
-        log.info(f"风险提醒：删掉 {dropped} 条没有点名具体商品依据的")
-    return "\n".join(out)
-
-
-def summary(ctx: dict, cfg: dict, api_key: str) -> tuple[str, str]:
-    """返回 (markdown 文本, 来源 'llm'|'template')。大模型写的“风险提醒”会再按 guard_risks 核对一遍。"""
-    facts = build_facts(ctx)
-    dirs = ctx["traits"].get("directions") or []
-    total, shown = len(dirs), len(facts["开发方向"])
-    skipped = directions.skipped_text(directions.skipped_big(ctx["traits"].get("direction_overview") or [], dirs[:shown]),
-                                      shown)
-    text = llm_summary(facts, cfg, api_key)
-    if text:
-        return note_skipped(name_the_cut(guard_risks(text, facts), total, shown), skipped), "llm"
-    return note_skipped(name_the_cut(template_summary(facts), total, shown), skipped), "template"
+            add(item, "data", _tag_head(tag), "数据可能有问题，需人工核实", tag)
+    return out
