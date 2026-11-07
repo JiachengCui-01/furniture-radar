@@ -166,7 +166,7 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     traits = ctx.get("traits") or {}
     looks = top_design_labels(traits)
     mats = [m for m in (traits.get("materials") or {}).get("rows", [])
-            if m["count"] and m["label"] not in ("未注明", "其他")]
+            if m["count"] and m["label"] not in ("未注明", "木质（未注明）", "其他")]  # 占比只在知道具体材质的商品里算
     mats.sort(key=lambda m: -m["share"])
     if mats:
         lines.append("**🪵 增长商品主材质**：" + "、".join(f"{m['label']} {m['share']:.0%}" for m in mats[:3]))

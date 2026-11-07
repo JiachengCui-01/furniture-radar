@@ -11,7 +11,7 @@ import re
 from collections import Counter
 from datetime import date
 
-from . import log
+from . import log, vision
 from .detect.design import MATERIAL_CLASSES, main_material
 from .vendor import BudgetExhausted, Vendor
 
@@ -47,22 +47,27 @@ def remember(rec: dict, detail: dict, today: date) -> None:
 
 
 _SPECIFIC = ("铁木（金属+木）", "实木", "板材", "金属")
+VAGUE = ("木质（未注明）", "未注明")  # 不知道具体是哪种材质
+
+
+def denominators(m: dict, label: str) -> tuple[int, int]:
+    """compare 结果里一类材质的占比分母（增长, 对照）：具体材质 = 知道具体材质的商品数，木质（未注明）/ 未注明 = 全部。"""
+    if label in VAGUE or "known_focus" not in m:
+        return m.get("n_focus") or 0, m.get("n_reference") or 0
+    return m["known_focus"], m["known_reference"]
 
 
 def from_vision(rec: dict | None) -> str | None:
-    """主图识别的材质标签 → 主材质类别（标签用的是 design.LEXICON 的说法）。"""
-    tags = set((((rec or {}).get("vision") or {}).get("tags") or {}).get("材质") or [])
-    solid = bool(tags & {"实木", "相思木/橡胶木/松木", "竹"})
-    panel, metal = "人造板" in tags, "金属" in tags
-    if metal and (solid or panel):
-        return "铁木（金属+木）"
-    if solid:
-        return "实木"
-    if panel:
-        return "板材"
-    if metal:
+    """主图识别的材质 → 主材质类别。主图只说得清“是不是金属”：
+    木纹看不出是实木还是板材（11-02 实测：主图说实木的 57 个，亚马逊 Material 也说实木的只有 6 个，26 个是板材），
+    “金属 + 木”也不可靠（主图把拉手、铰链、升降五金也算金属：主图说铁木、亚马逊说板材的 12 个里只有 1 个真有金属框架）。
+    所以只有金属、没有木质的算“金属”（和亚马逊一致 18/20），有木质的只算“木质（未注明）”。"""
+    v = vision.normalized((rec or {}).get("vision") or {}, (rec or {}).get("title") or "")
+    tags = set((v.get("tags") or {}).get("材质") or [])
+    wood = bool(tags & {"木质", "竹"})
+    if "金属" in tags and not wood:
         return "金属"
-    return None
+    return "木质（未注明）" if wood else None
 
 
 def best(rec: dict | None, title: str = "") -> tuple[str, str]:
@@ -114,16 +119,22 @@ def compare(focus: list[dict], reference: list[dict], state: dict) -> dict:
 
     f, r = classes(focus), classes(reference)
     cf, cr = Counter(label for label, _ in f), Counter(label for label, _ in r)
+    # 占比只在知道具体材质的商品里算：没查到的（木质（未注明）、未注明）不猜。以前都算在分母里、再拿主图猜的“实木”补，
+    # 增长商品多半靠主图猜、对照组多半查过亚马逊，两边口径不同，11-02 那期“实木 32% vs 10%”就是这么来的
+    kf = sum(n for label, n in cf.items() if label not in VAGUE)
+    kr = sum(n for label, n in cr.items() if label not in VAGUE)
     rows = []
     for label in (*MATERIAL_CLASSES, "其他"):
         if not cf.get(label) and not cr.get(label):
             continue
-        share = cf.get(label, 0) / len(f) if f else 0
-        ref_share = cr.get(label, 0) / len(r) if r else None
+        vague = label in VAGUE
+        share = (cf.get(label, 0) / (len(f) if vague else kf)) if (len(f) if vague else kf) else 0
+        ref_n = len(r) if vague else kr
+        ref_share = cr.get(label, 0) / ref_n if ref_n else None
         rows.append({"label": label, "count": cf.get(label, 0), "share": round(share, 3),
                      "reference": cr.get(label, 0), "reference_share": None if ref_share is None else round(ref_share, 3)})
     rows.sort(key=lambda row: (row["label"] in ("未注明", "其他", "木质（未注明）"), -row["share"]))
-    return {"n_focus": len(f), "n_reference": len(r), "rows": rows,
+    return {"n_focus": len(f), "n_reference": len(r), "rows": rows, "known_focus": kf, "known_reference": kr,
             # 两组各有几个用的是亚马逊 Material（其余看标题 / 主图）：查询有每期名额，月度名单补判的新商品要等查过才有
             "amazon_focus": sum(1 for _, s in f if s == "amazon"), "amazon_reference": sum(1 for _, s in r if s == "amazon"),
             "from_amazon": sum(1 for _, s in f + r if s == "amazon"),

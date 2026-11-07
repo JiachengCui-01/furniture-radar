@@ -80,8 +80,96 @@ def test_vision_parse_tolerates_wrapped_json():
     text = '好的：```json\n{"风格":["奶油风"],"材质":"泰迪绒/羊羔绒","造型":[],"工艺":["凹槽竖纹"],"颜色":["奶油/米色"],' \
            '"外观要点":"奶油色泰迪绒弧形沙发"}\n```'
     parsed = vision._parse(text)
-    assert parsed["tags"]["材质"] == ["泰迪绒/羊羔绒"] and parsed["summary"] == "奶油色泰迪绒弧形沙发"
+    # 词表以外的说法丢掉（以前会原样变成一个特征）；没写部位的纯文字标签照收
+    assert parsed["tags"]["材质"] == [] and parsed["tags"]["工艺"] == ["凹槽竖纹"] and parsed["summary"] == "奶油色泰迪绒弧形沙发"
+    assert parsed["protocol"] == vision.PROTOCOL
     assert vision.small_image("https://m.media-amazon.com/images/I/41Ac._AC_US600_.jpg").endswith("._AC_SL400_.jpg")
+
+
+def test_vision_parse_needs_a_spot_and_puts_labels_in_their_dimension():
+    """新提示词：造型 / 工艺 / 功能每项要写在家具哪个部位看到的，说不出部位的不算；放错维度的挪回去，别名换成词表里的说法。"""
+    text = ('{"主风格":"中古风","风格":["中古风"],"材质":["实木","金属"],'
+            '"造型":[{"特征":"锥形/外八腿","位置":"四条腿"},{"特征":"拱形","位置":""}],'
+            '"工艺":[{"特征":"凹槽竖纹","位置":"两扇柜门"},{"特征":"弧形曲线","位置":"柜体两端"},{"特征":"条栅","位置":""}],'
+            '"主色":"胡桃木色","颜色":["胡桃木色","黑色"],"功能卖点":[{"特征":"带储物","位置":"柜内"}],"外观要点":"胡桃色凹槽门边柜"}')
+    p = vision._parse(text)
+    assert p["tags"]["造型"] == ["锥形/外八腿", "弧形曲线"]  # 拱形没写位置不算；弧形曲线从工艺挪到造型
+    assert p["tags"]["工艺"] == ["凹槽竖纹"]  # 条栅没写位置不算
+    assert p["tags"]["材质"] == ["木质", "金属"]  # 主图看不出实木还是板材
+    assert p["tags"]["功能卖点"] == ["带储物/抽屉"] and p["main_color"] == "胡桃色" and p["main_style"] == "中古风"
+    assert p["where"]["凹槽竖纹"] == "两扇柜门"
+
+
+def test_image_only_features_are_double_checked(cfg):
+    """主图识别说有、标题没写的特征再复核一次，没通过（答 false、没答到）的去掉；标题也写了的、开放格这类一直可靠的不复核。"""
+    asked = []
+
+    def handler(request: httpx.Request):
+        if request.method == "GET":
+            return httpx.Response(200, content=b"\xff\xd8fake", headers={"content-type": "image/jpeg"})
+        text = json.loads(request.content)["messages"][0]["content"][0]["text"]
+        if "严格复核" in text:
+            asked.append(text)
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"凹槽竖纹": false, "锥形/外八腿": true}'}}]})
+        content = ('{"主风格":"中古风","造型":[{"特征":"开放格","位置":"中间"},{"特征":"锥形/外八腿","位置":"四条腿"},'
+                   '{"特征":"拱形","位置":"柜门"}],"工艺":[{"特征":"凹槽竖纹","位置":"柜门"},{"特征":"玻璃门","位置":"两侧"}],'
+                   '"功能卖点":[],"外观要点":"x"}')
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    state = {"asins": {"A": {}}}
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    item = {"asin": "A", "image": "https://x/a._AC_US600_.jpg", "title": "Sideboard with Glass Doors"}
+    assert vision.tag_items([item], state, cfg, "key", client=client) == 1
+    v = state["asins"]["A"]["vision"]
+    assert v["tags"]["造型"] == ["开放格", "锥形/外八腿"]  # 拱形没答到：不算
+    assert v["tags"]["工艺"] == ["玻璃门"]  # 凹槽竖纹没通过；玻璃门标题写了，不复核
+    assert len(asked) == 1 and "凹槽竖纹" in asked[0] and "玻璃门" not in asked[0] and "开放格" not in asked[0]
+    assert v["checked"] == {"锥形/外八腿": True, "拱形": False, "凹槽竖纹": False} and "凹槽竖纹" not in v.get("where", {})
+
+
+def test_old_image_tags_need_the_title_to_agree():
+    """旧提示词的识别结果（2026-11-07 以前）误标多：造型 / 工艺 / 功能 / 材质只有抽查可靠的（开放格、谷仓门、镜子、木质、金属）照用，
+    其余要标题也有这个特征才算（11-07 用户反馈：点“凹槽竖纹”出来的不是凹槽竖纹）。新提示词的结果照用。颜色、风格不受影响。"""
+    old = {"image": "x", "tags": {"工艺": ["凹槽竖纹", "谷仓门/推拉门", "双色拼接"], "造型": ["开放格", "低矮落地"],
+                                  "功能卖点": ["LED 灯", "带镜子"], "颜色": ["白色"], "风格": ["农舍风"]}, "summary": ""}
+    st = {"asins": {"OLD": {"title": "Farmhouse TV Stand with LED Lights, Barn Doors", "vision": old},
+                    "FL": {"title": "Fluted Sideboard Buffet Cabinet", "vision": old},
+                    "NEW": {"title": "Farmhouse TV Stand", "vision": {**old, "protocol": vision.PROTOCOL}}}}
+    t = vision.of(st, "OLD")["tags"]
+    assert t["工艺"] == ["谷仓门/推拉门"] and t["造型"] == ["开放格"] and t["功能卖点"] == ["LED 灯", "带镜子"]
+    assert t["颜色"] == ["白色"] and t["风格"] == ["农舍风"]
+    assert vision.of(st, "FL")["tags"]["工艺"] == ["凹槽竖纹", "谷仓门/推拉门"]  # 标题写了 fluted
+    assert vision.of(st, "NEW")["tags"]["工艺"] == ["凹槽竖纹", "谷仓门/推拉门", "双色拼接"]
+    # 不在追踪里的商品从月度名单找标题
+    st2 = {"asins": {}, "vision_extra": {"H": {"vision": old}},
+           "discovery": {"products": {"H": {"title": "Fluted Nightstand"}}}}
+    assert vision.of(st2, "H")["tags"]["工艺"] == ["凹槽竖纹", "谷仓门/推拉门"]
+
+
+def test_title_words_that_are_not_the_feature():
+    """标题词库：浅色（Light Brown）不是灯、床架支撑条不是条栅、上下铺的梯子不是阶梯层板、刹车轮不是锁、
+    圆角不是转角款、写尺寸的“40\\" Tall”不是高柜、密码锁不是模块化组合、U 形钢架不是单柱底座。"""
+    from radar.detect.design import extract
+
+    def has(title, dim, label):
+        return label in extract(title)[dim]
+
+    assert not has("Nightstand, Light Brown and Light Gray", "功能卖点", "LED 灯")
+    assert has("TV Stand with LED Lights", "功能卖点", "LED 灯") and has("Vanity Desk with Mirror and Lights", "功能卖点", "LED 灯")
+    assert not has("Queen Bed Frame, Wood Slats Support", "工艺", "条栅")
+    assert has("Slatted Shoe Bench", "工艺", "条栅")
+    assert not has("Twin over Twin Bunk Bed with Ladder", "造型", "错落/阶梯层板")
+    assert has("5-Tier Ladder Shelf", "造型", "错落/阶梯层板")
+    assert not has("Standing Desk with Lockable Casters", "功能卖点", "带锁")
+    assert not has("Bed Frame with Round Corner Legs", "造型", "转角款") and has("Corner Desk", "造型", "转角款")
+    assert not has("Dresser for Bedroom, 40\" Tall Chest of Drawers", "造型", "高柜/立式")
+    assert has("71\" Tall Kitchen Pantry", "造型", "高柜/立式") and has("Tall Bookcase", "造型", "高柜/立式")
+    assert not has("Desk with Combination Lock Drawers", "造型", "模块化组合")
+    assert not has("Dining Table with U-Shape Carbon Steel Pedestal", "造型", "单柱/郁金香底座")
+    assert has("Round Pedestal Dining Table", "造型", "单柱/郁金香底座")
+    assert not has("Bookshelf, Greenguard Gold Certified", "工艺", "金色金属件")
+    assert has("Fluted TV Stand", "工艺", "凹槽竖纹") and has("Buffet Cabinet with Vertical Grooved Doors", "工艺", "凹槽竖纹")
+    assert has("Mid Century TV Stand with Tapered Legs", "造型", "锥形/外八腿")  # 腿型是造型
 
 
 def test_vision_tags_are_cached(cfg):
@@ -95,6 +183,8 @@ def test_vision_tags_are_cached(cfg):
         body = json.loads(request.content)
         assert body["model"] == cfg["llm"]["vision_model"]
         assert body["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+        if "严格复核" in body["messages"][0]["content"][0]["text"]:  # 复核：标题没写的弧形曲线
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"弧形曲线": true}'}}]})
         content = '{"风格":["奶油风"],"材质":["泰迪绒/羊羔绒"],"造型":["弧形曲线"],"工艺":[],"颜色":[],"外观要点":"弧形"}'
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
@@ -104,12 +194,16 @@ def test_vision_tags_are_cached(cfg):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     assert vision.tag_items(items, state, cfg, "key", client=client) == 2
     assert vision.tag_items(items, state, cfg, "key", client=client) == 0  # 图片没变：不再调用
-    assert calls == {"img": 2, "llm": 2}
+    assert calls == {"img": 2, "llm": 4}  # 每张：识别 1 次 + 复核 1 次（图片只下载一次）
+    assert state["asins"]["A1"]["vision"]["checked"] == {"弧形曲线": True}
     summary = vision.summarize(items, [], state)
-    assert summary["dimensions"]["材质"][0] == {"label": "泰迪绒/羊羔绒", "focus": 2, "focus_share": 1.0, "brands": 0,
+    assert "材质" not in summary["dimensions"]  # 泰迪绒不在词表里，丢掉
+    assert summary["dimensions"]["造型"][0] == {"label": "弧形曲线", "focus": 2, "focus_share": 1.0, "brands": 0,
                                               "reference": 0, "reference_share": None, "distinct": False}
+    assert summary["legacy_focus"] == 0 and state["asins"]["A1"]["vision"]["protocol"] == vision.PROTOCOL
     # 有持续热销对照时，“比热销多见”的特征排前面并标出
-    state["asins"]["H1"] = {"vision": {"image": "x", "summary": "", "tags": {"材质": ["人造板"], "造型": ["弧形曲线"]}}}
+    state["asins"]["H1"] = {"vision": {"image": "x", "summary": "", "protocol": vision.PROTOCOL,
+                                       "tags": {"材质": ["人造板"], "造型": ["弧形曲线"]}}}
     state["asins"]["A1"]["vision"]["tags"]["造型"] = ["弧形曲线", "低矮落地"]
     state["asins"]["A2"]["vision"]["tags"]["造型"] = ["弧形曲线", "低矮落地"]
     shapes = vision.summarize(items, [{"asin": "H1"}], state)["dimensions"]["造型"]
@@ -203,6 +297,35 @@ def test_amazon_material_attribute_beats_title():
     assert materials.best({"title": "Solid Wood Nightstand"}) == ("实木", "title")
 
 
+def test_image_material_only_tells_metal_apart():
+    """主图看不出实木还是板材、也会把拉手铰链当金属：只有金属、没有木质的算“金属”，有木质的只算“木质（未注明）”；
+    材质占比只在知道具体材质的商品里算（11-02 那期“实木 32% vs 10%”是主图猜出来的）。"""
+    from radar import materials
+
+    v = lambda *tags: {"vision": {"tags": {"材质": list(tags)}, "summary": "", "protocol": 2}}
+    assert materials.from_vision(v("金属")) == "金属"
+    assert materials.from_vision(v("实木", "金属")) == "木质（未注明）"  # 旧写法“实木”归成木质
+    assert materials.from_vision(v("木质")) == "木质（未注明）" and materials.from_vision(v()) is None
+    assert materials.best({"title": "Nightstand", **v("实木")}) == ("木质（未注明）", "image")
+    st = {"asins": {"A": {"amazon_material": {"class": "实木"}}, "B": {"amazon_material": {"class": "板材"}},
+                    "C": {}, "D": {}, "R": {"amazon_material": {"class": "板材"}}}}
+    m = materials.compare([{"asin": a, "title": "Wood Cabinet"} for a in "ABCD"], [{"asin": "R", "title": ""}], st)
+    rows = {r["label"]: r for r in m["rows"]}
+    assert m["known_focus"] == 2 and rows["实木"]["share"] == 0.5 and rows["木质（未注明）"]["share"] == 0.5
+    assert materials.denominators(m, "实木") == (2, 1) and materials.denominators(m, "木质（未注明）") == (4, 1)
+
+
+def test_size_features_need_the_title():
+    """看尺寸的特征（高柜/立式）照片上判断不了：新识别结果也要标题写明（55 英寸以上的高度、tall cabinet 之类）才算。"""
+    rec = {"image": "x", "summary": "", "protocol": 2, "tags": {"造型": ["高柜/立式", "开放格"]}}
+    st = {"asins": {"BED": {"title": "Queen Murphy Bed with Storage", "vision": rec},
+                    "PAN": {"title": "71\" Tall Kitchen Pantry Cabinet", "vision": rec},
+                    "CAB": {"title": "Bathroom Storage Cabinet, 67-Inch Tall", "vision": rec}}}
+    assert vision.of(st, "BED")["tags"]["造型"] == ["开放格"]
+    assert vision.of(st, "PAN")["tags"]["造型"] == ["高柜/立式", "开放格"] == vision.of(st, "CAB")["tags"]["造型"]
+    assert vision.to_verify(rec, "") == []  # 高柜不用复核（标题没写就不算），开放格一直可靠
+
+
 def test_potential_growth_shows_units_when_percentage_is_absurd():
     from radar.report.render import growth_text
 
@@ -272,7 +395,7 @@ def test_directions_list_only_what_most_of_the_subcategory_has(cfg):
         item("S2", "书架", "Narrow Bookcase for Small Space, Walnut", label="potential"),
         item("T1", "茶几", "Round Coffee Table"),
     ]
-    state = {"asins": {"V3": {"vision": {"tags": {"工艺": ["玻璃门"]}}}}}
+    state = {"asins": {"V3": {"vision": {"tags": {"工艺": ["玻璃门"]}, "protocol": 2}}}}
     appearance = {"工艺": {"more": [{"label": "玻璃门"}], "common": []}}
     out = directions.compute(focus, state, appearance, cfg)
     assert [d["node"] for d in out] == ["梳妆台", "书架"]  # 茶几只有 1 个增长商品
@@ -507,13 +630,13 @@ def test_package_fields_are_parsed_from_product_rows():
 def test_vision_tags_untracked_heads_and_prunes_them(cfg, monkeypatch):
     """同子类目头部商品不在追踪里：识别结果存在 state[vision.EXTRA_KEY]，不在月度名单里的会被删掉。"""
     monkeypatch.setattr(vision, "_describe_with_retry",
-                        lambda client, cfg, key, url: {"tags": {"颜色": ["黑色"]}, "summary": ""})
+                        lambda client, cfg, key, url, title="": {"tags": {"颜色": ["黑色"]}, "summary": "", "protocol": 2})
     state = {"asins": {}}
     rows = [{"asin": "H1", "image": "https://img/1.jpg"}, {"asin": "H2", "image": ""}]
     assert vision.tag_items(rows, state, cfg, "", client=httpx.Client()) == 0  # 没有 key 不识别
     assert vision.tag_items(rows, state, cfg, "k", client=httpx.Client()) == 0  # 不在追踪里，默认跳过
     assert vision.tag_items(rows, state, cfg, "k", client=httpx.Client(), untracked=True) == 1
-    assert vision.of(state, "H1")["tags"] == {"颜色": ["黑色"]} and "H2" not in state[vision.EXTRA_KEY]
+    assert vision.of(state, "H1")["tags"]["颜色"] == ["黑色"] and "H2" not in state[vision.EXTRA_KEY]
     vision.prune_extra(state, {"H9"})
     assert vision.of(state, "H1") == {}
 
@@ -713,11 +836,11 @@ def test_colors_count_only_the_main_color(cfg):
     """颜色只按主色归类（一件家具只有一个主体颜色）：识别结果写了“主色”就用它；以前的结果没有这一项，取外观要点里最先说到的颜色。
     原木色柜子配黑色滑轨不算黑色——统计、配图、点“黑色”看商品都按这个（11-06 用户反馈）。造型、工艺这些照样可以有几个。"""
     st = {"asins": {
-        "M": {"vision": {"image": "x", "tags": {"颜色": ["原木色", "黑色"], "工艺": ["凹槽竖纹", "黑色金属件"]},
-                         "summary": "原木色马厩门配黑色金属滑轨，跨马桶置物设计。"}},
+        "M": {"vision": {"image": "x", "tags": {"颜色": ["原木色", "黑色"], "工艺": ["凹槽竖纹", "谷仓门/推拉门"]},
+                         "summary": "原木色马厩门配黑色金属滑轨，跨马桶置物设计。", "protocol": 2}},
         "D": {"vision": {"image": "y", "tags": {"颜色": ["黑色", "棕色"]}, "summary": "黑色金属框架配深色木纹台面",
                          "main_color": "棕色"}}}}
-    assert vision.of(st, "M")["tags"]["颜色"] == ["原木色"] and vision.of(st, "M")["tags"]["工艺"] == ["凹槽竖纹", "黑色金属件"]
+    assert vision.of(st, "M")["tags"]["颜色"] == ["原木色"] and vision.of(st, "M")["tags"]["工艺"] == ["凹槽竖纹", "谷仓门/推拉门"]
     assert vision.of(st, "D")["tags"]["颜色"] == ["棕色"]
     assert st["asins"]["M"]["vision"]["tags"]["颜色"] == ["原木色", "黑色"]  # 存下的识别结果原样不动
     rows = vision.summarize([{"asin": "M"}, {"asin": "D"}], [], st)["dimensions"]["颜色"]
@@ -730,12 +853,12 @@ def test_styles_count_only_the_main_style(cfg):
     """风格也只按主风格归类：识别结果写了“主风格”就用它；以前的结果没有这一项，取第一个具体风格（不是“现代”“极简”），
     没有具体风格的取第一个。有主图识别时标题里堆的风格词不算（Modern Farmhouse Rustic 不会同时算三种）。"""
     st = {"asins": {
-        "F": {"vision": {"image": "x", "tags": {"风格": ["现代", "农舍风", "乡村复古"], "造型": ["开放格", "抽屉"]},
-                         "summary": "做旧灰木纹床头柜"}},
+        "F": {"vision": {"image": "x", "tags": {"风格": ["现代", "农舍风", "乡村复古"], "造型": ["开放格", "低矮落地"]},
+                         "summary": "做旧灰木纹床头柜", "protocol": 2}},
         "P": {"vision": {"image": "y", "tags": {"风格": ["现代", "极简"]}, "summary": "白色三抽床头柜"}},
         "G": {"vision": {"image": "z", "tags": {"风格": ["工业风", "现代"]}, "summary": "黑色金属框架书桌",
                          "main_style": "现代"}}}}
-    assert vision.of(st, "F")["tags"]["风格"] == ["农舍风"] and vision.of(st, "F")["tags"]["造型"] == ["开放格", "抽屉"]
+    assert vision.of(st, "F")["tags"]["风格"] == ["农舍风"] and vision.of(st, "F")["tags"]["造型"] == ["开放格", "低矮落地"]
     assert vision.of(st, "P")["tags"]["风格"] == ["现代"]
     assert vision.of(st, "G")["tags"]["风格"] == ["现代"]  # 模型写的主风格为准
     assert st["asins"]["F"]["vision"]["tags"]["风格"] == ["现代", "农舍风", "乡村复古"]  # 存下的识别结果原样不动

@@ -11,7 +11,7 @@ import re
 
 import httpx
 
-from . import log, shipping
+from . import log, materials, shipping
 from .analyze import display_name
 from .detect import directions
 
@@ -104,9 +104,9 @@ def design_facts(tr: dict) -> dict:
         "样本说明": f"增长商品 {n} 个（突然爆火 + 潜力 + 上升中）。标题统计对比全部头部商品 {tr.get('n_baseline')} 个；"
                 f"主图识别看增长商品里势头最强的 {(tr.get('vision') or {}).get('n_focus') or 0} 个，"
                 f"主材质看全部增长商品，二者都对比持续热销对照组 {mats.get('n_reference') or 0} 个",
-        "主材质（每个商品一类，依次取亚马逊 Material 属性、标题、主图识别）": [
-            f"{m['label']}：增长商品 {m['count']}/{mats.get('n_focus')}（{m['share']:.0%}）"
-            + (f"，持续热销对照组 {m['reference']}/{mats['n_reference']}（{m['reference_share']:.0%}）"
+        "主材质（每个商品一类，依次取亚马逊 Material 属性、标题、主图识别；占比只在知道具体材质的商品里算）": [
+            f"{m['label']}：增长商品 {m['count']}/{materials.denominators(mats, m['label'])[0]}（{m['share']:.0%}）"
+            + (f"，持续热销对照组 {m['reference']}/{materials.denominators(mats, m['label'])[1]}（{m['reference_share']:.0%}）"
                if m.get("reference_share") is not None else "")
             for m in mats.get("rows", []) if m["count"] or m["reference"]],
         "外观特征（增长商品更多）": {dim: [f"{f['label']}（{_evidence(f, tr)}）" for f in rows.get("more") or []]

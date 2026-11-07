@@ -13,7 +13,7 @@ from __future__ import annotations
 import html
 import re
 
-from .. import narrative, shipping
+from .. import materials, narrative, shipping
 from ..analyze import display_name, growth_kind, increment_note, usable_revision
 from ..detect import blueocean, directions, events
 from ..detect.market import EDGES as market_edges
@@ -814,15 +814,18 @@ def _material_box(m: dict, lookups: int) -> str:
     nf, nr = m["n_focus"], m["n_reference"]
     lines = []
     for r in rows:
-        tip = f"{r['label']}：增长商品 {r['count']}/{nf}（{r['share']:.0%}）" + (
-            f" · 对照组 {r['reference']}/{nr}（{r['reference_share']:.0%}）" if nr else "")
+        df, dr = materials.denominators(m, r["label"])
+        tip = f"{r['label']}：增长商品 {r['count']}/{df}（{r['share']:.0%}）" + (
+            f" · 对照组 {r['reference']}/{dr}（{r['reference_share']:.0%}）" if dr and r["reference_share"] is not None else "")
         lines.append(f'<div class="frow mrow"><b class="flab">{esc(r["label"])}</b>'
-                     f'<span class="fdb">{charts.dumbbell(r["share"], r["reference_share"] if nr else None, tip)}</span>'
-                     f'<span class="cnt">{r["count"]}/{nf}' + (f' · {r["reference"]}/{nr}' if nr else "") + "</span></div>")
+                     f'<span class="fdb">{charts.dumbbell(r["share"], r["reference_share"] if dr else None, tip)}</span>'
+                     f'<span class="cnt">{r["count"]}/{df}' + (f' · {r["reference"]}/{dr}' if dr else "") + "</span></div>")
     src = ""
     if "amazon_focus" in m:
-        src = (f'<p class="hint">亚马逊 Material 属性：增长 {m["amazon_focus"]}/{nf}、对照 {m["amazon_reference"]}/{nr}，'
-               f'其余看标题 / 主图（每期最多查 {lookups} 个，查过的缓存）</p>')
+        known = (f"知道具体材质的：增长 {m['known_focus']}/{nf}、对照 {m['known_reference']}/{nr}，占比只在这些里算（没查到的不猜）；"
+                 if "known_focus" in m else "")
+        src = (f'<p class="hint">{known}亚马逊 Material 属性：增长 {m["amazon_focus"]}/{nf}、对照 {m["amazon_reference"]}/{nr}，'
+               f'其余看标题、主图（主图只认得出金属，看不出实木还是板材；每期最多查 {lookups} 个，查过的缓存）</p>')
     return f'<div class="dbox"><h4>主材质</h4>{src}{"".join(lines)}</div>'
 
 
@@ -1276,12 +1279,14 @@ def _material_tile(m: dict, min_gap: float, focus: list[dict], pool: list[dict])
     rows = [r for r in m.get("rows") or [] if r["count"] and r["label"] not in directions.VAGUE_MATERIALS]
     if not rows:
         return ""
-    nr = m.get("n_reference")
     lines = []
     for r in rows[:ROWS_PER_TILE]:
+        df, nr = materials.denominators(m, r["label"])
         o = r["reference_share"] if nr else None
-        tip = f"{r['label']}：增长商品 {r['count']}/{m['n_focus']}（{r['share']:.0%}）" + (
-            f" · 对照组 {r['reference']}/{nr}（{o:.0%}）" if nr else "")
+        tip = f"{r['label']}：知道材质的增长商品 {r['count']}/{df}（{r['share']:.0%}）" + (
+            f" · 对照组 {r['reference']}/{nr}（{o:.0%}）" if nr and o is not None else "") + (
+            f"；另有增长 {m['n_focus'] - df}、对照 {m['n_reference'] - nr} 个没查到具体材质，不算在内"
+            if "known_focus" in m and (m["n_focus"] - df or m["n_reference"] - nr) else "")
         money = _money_sum(focus, lambda i, label=r["label"]: i.get("material") == label)
         filt = f"材质:{r['label']}" if any(i.get("material") == r["label"] for i in pool) else None
         lines.append(_feature_row(re.sub(r"（.*?）", "", r["label"]), _mark(r["share"] - o if o is not None else None, min_gap),
@@ -1619,6 +1624,11 @@ def _method(cfg: dict, repo_url: str = "") -> str:
         rows.append(("蓝海产品", f"某个小众兴趣爱好专用的家具 / 收纳（桌游桌、爬宠箱、鱼缸柜、唱片机柜、手办展示柜、缝纫桌、街机柜、台球桌……），"
                               f"近期新上架（≤{ob['max_age_days']} 天）、月售 ≥{ob['min_units']:g} 件、卖得够量，这一类全市场不超过 "
                               f"{ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
+    rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
+                            "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
+                            "2026-11-07 以前的旧识别结果误标多，只用标题也写了的（开放格、谷仓门、镜子照用）"))
+    rows.append(("主材质", "依次取亚马逊 Material 属性、标题、主图；主图只认得出金属，看不出实木还是板材；"
+                          "占比只在知道具体材质的商品里算"))
     if sc.get("enabled", True):
         rows += [("简单款", "主图识别过、主图和标题都没有任何特色（只有开放格、平板框架、普通抽屉这类基本结构，"
                             "或只有这个子类目多数商品都有的造型、功能，如衣帽架的挂钩）的，数据达标也不列：报告里哪里都不放它的图和品名，只写个数"),

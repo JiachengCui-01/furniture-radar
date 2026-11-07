@@ -8,8 +8,9 @@ def _item(asin, title, *, node="n1", brand="", material="板材", label="surge")
             "label": label, "image": f"https://m.media-amazon.com/images/I/{asin}._AC_US600_.jpg"}
 
 
-def _state(tags_by_asin):
-    return {"asins": {a: {"vision": {"tags": tags, "summary": ""}} for a, tags in tags_by_asin.items()}}
+def _state(tags_by_asin, protocol=2):
+    """protocol 2 = 新提示词的识别结果（照用）；1 = 旧提示词的（造型 / 工艺 / 功能要标题也有才算，见 vision.normalized）。"""
+    return {"asins": {a: {"vision": {"tags": tags, "summary": "", "protocol": protocol}} for a, tags in tags_by_asin.items()}}
 
 
 def test_plain_needs_an_image_read_and_no_feature_beyond_the_basic_structure():
@@ -32,6 +33,9 @@ def test_plain_needs_an_image_read_and_no_feature_beyond_the_basic_structure():
     assert not showcase.is_plain(led, state)
     assert showcase.features(led, state) == ["双色拼接", "LED 灯", "充电/插座"]  # 主图在前，标题补充
     assert not showcase.is_plain(_item("NOVISION", "Wood Entryway Bench with Rush Seat"), state)
+    # 旧提示词的识别结果只留下标题也写了的特征，说不清“没有特色”：照“没识别主图”处理，不判简单款
+    old = _state({"CUBE": {"造型": ["开放格"], "工艺": ["凹槽竖纹"]}}, protocol=1)
+    assert not showcase.is_plain(cube, old) and showcase.features(cube, old) == []
 
 
 def test_lookalikes_fold_into_the_first_listed_one():

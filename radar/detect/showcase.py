@@ -1,7 +1,7 @@
 """报告里列哪些商品：判定照旧，列出时去掉简单款、合并相近款，让有限的位置多放不同的、有特色的商品。
 
 特色 = 主图识别和标题里看得出的、这个品类基本结构以外的设计：工艺（凹槽竖纹、藤编、谷仓门…）、
-不算基本结构的造型（圆形、拱形、L 形、悬浮…）、看得见的功能（灯带、插座、升降台面、电子壁炉、轮子…）、特殊材质（藤编、大理石纹、岩板、亚克力）。
+不算基本结构的造型（圆形、拱形、L 形、悬浮、锥形腿…）、看得见的功能（灯带、插座、升降台面、电子壁炉、轮子…）、特殊材质（藤编、大理石纹、岩板、亚克力）。
 简单款 = 主图识别过、而主图和标题都没有任何特色的（例：开放格收纳柜、金属平台床架、普通三层边几）：数据达标也不列。
 双色拼接、高光烤漆、做旧、金色金属件只是表面处理，只有这些的也算简单款。
 造型和功能还要看子类目：这个子类目里主图识别过的商品多数（≥ common_share）都有的，是这个品类的基本结构，不算它的特色
@@ -45,6 +45,13 @@ oak walnut espresso beige cream finish style design new""".split())
 def _vision_tags(state: dict, asin: str) -> dict | None:
     v = vision.of(state, asin)
     return v.get("tags") if v else None
+
+
+def _recognized(state: dict, asin: str) -> bool:
+    """按新提示词识别过主图（vision.PROTOCOL）。旧提示词的结果只留下了标题也写了的特征，说不清“没有特色”，
+    不拿来判简单款、也不拿来算子类目的基本结构（照“没有主图识别”处理）。"""
+    raw = vision.raw_of(state, asin)
+    return bool(raw) and not vision.legacy(raw)
 
 
 def _node(item: dict) -> str:
@@ -92,7 +99,7 @@ def common_features(rows: list[dict], state: dict, cfg: dict) -> dict[str, froze
         return {}
     by_node: dict[str, dict[str, set[str]]] = defaultdict(dict)
     for row in rows:
-        if row["asin"] in by_node[_node(row)] or _vision_tags(state, row["asin"]) is None:
+        if row["asin"] in by_node[_node(row)] or not _recognized(state, row["asin"]):
             continue
         by_node[_node(row)][row["asin"]] = {label for dim, label in _by_dim(row, state) if dim in STRUCTURAL_DIMS}
     out = {}
@@ -105,8 +112,8 @@ def common_features(rows: list[dict], state: dict, cfg: dict) -> dict[str, froze
 
 def is_plain(item: dict, state: dict, common: dict | None = None) -> bool:
     """简单款：主图识别过，而主图和标题都没有任何特色（只有表面处理 FINISHES、或只有这个子类目的基本结构的也算）。
-    没有主图识别的不算（照常列出）。"""
-    return _vision_tags(state, item["asin"]) is not None and all(f in FINISHES for f in features(item, state, common))
+    没有主图识别的、只有旧提示词识别结果的不算（照常列出，见 _recognized）。"""
+    return _recognized(state, item["asin"]) and all(f in FINISHES for f in features(item, state, common))
 
 
 def _shape(item: dict, state: dict) -> set[str]:
