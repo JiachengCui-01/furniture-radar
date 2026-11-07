@@ -326,6 +326,17 @@ def test_size_features_need_the_title():
     assert vision.to_verify(rec, "") == []  # 高柜不用复核（标题没写就不算），开放格一直可靠
 
 
+def test_fluting_seen_on_glass_or_fabric_does_not_count():
+    """识别写下的部位说明是定义里“不算”的：凹槽竖纹在玻璃上是长虹玻璃门（11-07 线上的拱形玻璃门电视柜），在软包上是布面竖条纹。"""
+    rec = lambda spot: {"image": "x", "summary": "", "protocol": 2, "tags": {"工艺": ["凹槽竖纹", "玻璃门"]},
+                        "where": {"凹槽竖纹": spot, "玻璃门": "左右柜门"}}
+    st = {"asins": {"G": {"title": "Mid Century TV Stand", "vision": rec("左右柜门玻璃后方")},
+                    "B": {"title": "Fluted Bed Frame", "vision": rec("床头软包")},
+                    "D": {"title": "TV Stand", "vision": rec("两扇柜门")}}}
+    assert vision.of(st, "G")["tags"]["工艺"] == ["玻璃门"] and vision.of(st, "B")["tags"]["工艺"] == ["玻璃门"]
+    assert vision.of(st, "D")["tags"]["工艺"] == ["凹槽竖纹", "玻璃门"]
+
+
 def test_potential_growth_shows_units_when_percentage_is_absurd():
     from radar.report.render import growth_text
 

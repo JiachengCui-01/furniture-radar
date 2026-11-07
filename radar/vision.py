@@ -269,7 +269,8 @@ def normalized(v: dict, title: str | None = "") -> dict:
     ② 颜色、风格（MAIN_ONLY）只留最主要的那一个（主色、主风格）；
     ③ 旧提示词的结果（legacy）：造型 / 工艺 / 功能 / 材质只有 design.LEGACY_TRUSTED 照用，其余的要商品标题也有这个特征
        （design.extract）才算——11-07 抽查旧结果，凹槽竖纹 36 张里只有 13 张真是，标题写 fluted 的则全是；
-    ④ 看尺寸的特征（design.TITLE_REQUIRED：高柜/立式）不管新旧结果，都要标题也写了才算（照片没有参照物）。"""
+    ④ 看尺寸的特征（design.TITLE_REQUIRED：高柜/立式）不管新旧结果，都要标题也写了才算（照片没有参照物）；
+    ⑤ 识别时写下的部位落在定义“不算”的地方（design.EXCLUDED_SPOTS：凹槽竖纹写在玻璃、软包上）的不算——标题写了也不算。"""
     if not v or not v.get("tags"):
         return v or {}
     tags = design.canonical_tags(v["tags"])
@@ -279,10 +280,12 @@ def normalized(v: dict, title: str | None = "") -> dict:
         tags[dim] = [main] if main else []
     said = design.extract(title or "")
     old = legacy(v)
+    where = v.get("where") or {}
     for dim in design.LEGACY_GATED:
         tags[dim] = [label for label in tags[dim]
-                     if label in said.get(dim, ())
-                     or (label not in design.TITLE_REQUIRED and (not old or label in design.LEGACY_TRUSTED))]
+                     if not any(word in where.get(label, "") for word in design.EXCLUDED_SPOTS.get(label, ()))
+                     and (label in said.get(dim, ())
+                          or (label not in design.TITLE_REQUIRED and (not old or label in design.LEGACY_TRUSTED)))]
     return picked
 
 
