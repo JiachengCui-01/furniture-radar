@@ -369,7 +369,7 @@ def tag_items(items: list[dict], state: dict, cfg: dict, api_key: str, *,
     return done
 
 
-def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim: int = 12,
+def summarize(focus: list[dict], reference: list[dict], state: dict, *, per_dim: int = 20,
               min_gap: float = 0.2) -> dict:
     """汇总主图标签：每个维度里，增长商品最常见的特征，并和持续热销对照组比较。
     每个商品自己的“外观要点”直接显示在商品卡片上（pipeline 里写到 item["look"]）。"""

@@ -36,7 +36,7 @@ from __future__ import annotations
 from datetime import date
 
 from . import log
-from .discovery import keep_product, normalize_product
+from .discovery import hobby_node, keep_product, normalize_product
 from .vendor import BudgetExhausted, Vendor, request
 
 STATE_KEY = "monthly_lists"
@@ -207,7 +207,7 @@ def backfill(vendor: Vendor, cfg: dict, state: dict, disc: dict, limit: int, kin
     try:
         for key in keys:
             for node in disc["nodes"]:
-                if node["path"] in (months.get(key) or {}):
+                if node["path"] in (months.get(key) or {}) or hobby_node(node["path"], cfg):  # 兴趣爱好类目只出蓝海产品，不判持续热销
                     continue
                 if vendor.billable_calls - start >= limit:
                     raise BudgetExhausted(f"{purpose}：本期名额用完")
@@ -229,7 +229,8 @@ def backfill(vendor: Vendor, cfg: dict, state: dict, disc: dict, limit: int, kin
         pass
     calls = vendor.billable_calls - start
     if calls:
-        have = sum(1 for k in keys if all(nd["path"] in (months.get(k) or {}) for nd in disc["nodes"]))
+        have = sum(1 for k in keys if all(nd["path"] in (months.get(k) or {}) for nd in disc["nodes"]
+                                          if not hobby_node(nd["path"], cfg)))
         log.info(f"{purpose}：补了 {calls} 次调用，{have}/{len(keys)} 个月已齐")
     return calls
 
@@ -244,7 +245,7 @@ def thin_nodes(disc: dict, cfg: dict, failed=()) -> set[str]:
     for p in ((disc or {}).get("products") or {}).values():
         if "top" in p["sources"] and (p.get("units") or 0) < floor_units and (p.get("revenue") or 0) < floor_revenue:
             out.add(p["node"])
-    return out
+    return {n for n in out if not hobby_node(n, cfg)}  # 兴趣爱好类目只出蓝海产品，不判持续热销，不用查近 30 天名单
 
 
 def recent_rows(state: dict, nodes: list[dict], today: date | None) -> tuple[dict[str, dict], set[str]]:

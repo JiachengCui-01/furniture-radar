@@ -50,7 +50,8 @@ LEXICON: dict[str, list[tuple[str, str]]] = {
     "造型": [
         ("开放格", r"open (?:shel(?:f|ves|ving)|storage|cubb(?:y|ies)|compartments?)|cubbies|\bcube (?:storage|shelf|bookcase|organizer)"),
         # ladder 只认梯形书架：上下铺、阁楼床的爬梯不算
-        ("错落/阶梯层板", r"staggered|asymmetr|ladder (?:shel(?:f|ves)|bookcase|bookshelf|book shelf)|zig[- ]?zag"),
+        ("错落/阶梯层板", r"staggered|asymmetr|irregular (?:compartments?|shel(?:f|ves)|cubes?|cubbies)|"
+                         r"ladder (?:shel(?:f|ves)|bookcase|bookshelf|book shelf)|zig[- ]?zag"),
         # 只认柜架本身高：“40\" Tall Dresser”这种写尺寸的不算，写明 55 英寸以上的才算；vertical 多是竖放（vertical murphy bed）、
         # 竖向凹槽（vertical grooved doors），pc tower 是电脑主机架
         ("高柜/立式", r"\btall (?:bookcase|bookshel(?:f|ves)|book shel(?:f|ves)|cabinet|pantry|cupboard|storage|display|shel(?:f|ves)|"
@@ -141,6 +142,18 @@ LEXICON: dict[str, list[tuple[str, str]]] = {
         ("可折叠", r"fold(?:able|ing)|collapsible"),
         # 360 单独出现多是“360° View Mirror”；swivel bar stools 是配的凳子会转
         ("旋转", r"swivel(?! (?:bar )?(?:stools?|chairs?))|rotating|revolving|spinning|lazy susan"),
+        # 下面几项是结构上的设计，只看标题（不在 VISION_FUNCTIONS 里，主图词表不变、不用重看）。2026-11-07 用户要外观工艺尽可能多地展示：
+        # 以前词表里没有这些，壁床、上下铺、翻板唱片架这类商品说不出特色，被当成简单款不列
+        ("壁床/隐形床", r"murphy|\bwall beds?\b|\bcabinet beds?\b|hidden beds?\b"),
+        ("高架床/上下铺", r"\bloft beds?\b|\bbunk ?beds?\b|\b(?:twin|full|queen) over (?:twin|full|queen)\b"),
+        ("带拖床", r"\btrundle\b"),
+        ("翻板/折叠台面", r"drop[- ]leaf|flip[- ](?:down|up|top)|fold[- ](?:down|out) (?:desk|table|shel(?:f|ves)|tabletop|top)|"
+                          r"drop[- ]down (?:desk|table|shel(?:f|ves))"),
+        ("酒架/杯架", r"\bwine (?:racks?|storage|holders?|bottle)|stemware|\bglass(?:es)? (?:holders?|racks?)\b|wine glass"),
+        ("暗格/隐藏储物", r"hidden (?:storage|compartments?|drawers?)|secret (?:compartments?|drawers?|storage)|concealment|"
+                          r"gun (?:storage|drawers?|compartments?)"),
+        ("床头储物/书架", r"(?:bookcase|storage|shelf|shelves|cubby) headboard|headboard with (?:storage|shel(?:f|ves)|bookcase)"),
+        ("文件抽屉", r"\bfil(?:e|ing) drawers?\b"),
         ("免安装/易安装", r"no assembly|tool[- ]free|easy assembly|quick assembly|assembly[- ]free"),
         ("人体工学", r"ergonomic"),
         ("防倾倒", r"anti[- ]tip|wall anchor"),

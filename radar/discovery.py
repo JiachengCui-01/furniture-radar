@@ -32,7 +32,8 @@ def clean_text(value) -> str:
 
 # 读的时候就过滤的商品级条件（keep_product / apply_product_filter）：改了不用重新发现，不算进监控范围的指纹
 READ_TIME_FILTERS = ("exclude_product_regex", "upholstered_material_regex", "upholstered_item_regex", "accessory_regex",
-                     "furniture_noun_regex", "small_item", "exclude_node_regex", "node_names", "room_nodes")
+                     "furniture_noun_regex", "small_item", "exclude_node_regex", "node_names", "room_nodes",
+                     "hobby_noun_regex", "hobby_min_weight")
 # exclude_product_regex 以前算在指纹里：2026-10-28 补布艺抽屉的写法（bc8ec11）后指纹从 1d2b7354530a 变了，下一期会当成换了监控范围——
 # 重新发现子类目和头部商品（多花约 100 次调用）、“与上期对比”空着。它和其他商品级条件一样是读的时候过滤的，现在也不算进指纹；
 # 以前存下的旧指纹换成现在的（migrate_scope_keys）：旧指纹 → 那时的范围按现在的算法算出来的指纹，范围后来又改了的对不上，照常重新发现
@@ -107,6 +108,30 @@ def small_item(item: dict | None, cfg: dict) -> bool:
             and weight <= float(rule.get("max_weight", 0)) + 1e-9)
 
 
+def hobby_paths(cfg: dict) -> set[str]:
+    """兴趣爱好类目（scope.extra_nodes，家具以外的根类目里查到的子类目）的 nodeIdPath。"""
+    return {str(e.get("path") or "").strip() for e in cfg["scope"].get("extra_nodes") or []} - {""}
+
+
+def hobby_node(path: str | None, cfg: dict) -> bool:
+    """商品在不在兴趣爱好类目里。这些类目只为蓝海产品而加（2026-11-06），里面的商品只进蓝海产品，
+    不进突然爆火、潜力、持续热销、增长商品、开发方向、外观与工艺（2026-11-07 用户要求）。"""
+    return bool(path) and str(path) in hobby_paths(cfg)
+
+
+def hobby_furniture(item: dict, cfg: dict) -> bool:
+    """兴趣爱好类目里只要家具：标题里有家具名词（scope.hobby_noun_regex：桌、柜、架子台、饲养箱……），
+    而且不是小件——包装重量 ≥ scope.hobby_min_weight 磅（没有重量数据的只看名词）。
+    11-07 那期这些类目进来的多是饲料活虫、垫材、毛线收纳袋、海报筒、卡册、墙上枪架、球衣相框，都不是家具。"""
+    scope = cfg["scope"]
+    noun = scope.get("hobby_noun_regex")
+    if noun and not re.search(noun, item.get("title") or ""):
+        return False
+    weight = ((item.get("pkg") or {}).get("weight"))
+    floor = scope.get("hobby_min_weight")
+    return not (floor and weight is not None and float(weight) < float(floor) - 1e-9)
+
+
 def excluded_node(name: str | None, cfg: dict) -> bool:
     """整个子类目不追踪（scope.exclude_node_regex，按子类目自己的英文名）：读的时候过滤，改了不用重新发现。"""
     pattern = cfg["scope"].get("exclude_node_regex")
@@ -116,10 +141,12 @@ def excluded_node(name: str | None, cfg: dict) -> bool:
 def keep_product(item: dict | None, cfg: dict) -> bool:
     """商品级过滤：标题里是软包、布艺抽屉、塑料等不在监控范围内的，直接剔除；
     软包的床 / 床头板 / 长凳 / 椅凳（面料词 + 这几类商品词都有）；配件（配件词出现在任何家具名词之前）；
-    小件（small_item）；不追踪的子类目里的（excluded_node）。"""
+    小件（small_item）；不追踪的子类目里的（excluded_node）；兴趣爱好类目里不是家具或太小的（hobby_furniture）。"""
     if not item:
         return False
     if small_item(item, cfg) or excluded_node(item.get("node_name"), cfg):
+        return False
+    if hobby_node(item.get("node"), cfg) and not hobby_furniture(item, cfg):
         return False
     scope = cfg["scope"]
     title = item.get("title") or ""
@@ -383,7 +410,7 @@ def fill_units(vendor: Vendor, cfg: dict, disc: dict, failed: list[str] | None =
     start = vendor.billable_calls
     done = disc.setdefault("done_units", [])
     for node in disc["nodes"]:
-        if node["path"] in done:
+        if node["path"] in done or hobby_node(node["path"], cfg):  # 兴趣爱好类目只出蓝海产品，不判持续热销
             continue
         reply = _query(vendor, cfg, node, disc["period"], "units")
         if _failed(reply):

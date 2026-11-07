@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from . import clock, log, monthly_lists, universe
 from .detect import blueocean
 from .detect.rules import current_rating, low_rating
-from .discovery import clean_text, keep_product
+from .discovery import clean_text, hobby_node, keep_product
 from .series import Daily, build_daily
 from .vendor import Vendor
 
@@ -167,6 +167,9 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
         if low_rating(*current_rating(rec, row), th):
             return False
         if not keep_product(row or rec, cfg):  # 不在范围内的（软包、配件……）：商品级条件改了以后，以前进过池的也不再追踪
+            return False
+        # 兴趣爱好类目只为蓝海产品而加：只以蓝海候选进池，不占往期上榜、头部、初筛的日数据名额（11-07 那期占了约 45 个）
+        if why != "ocean" and hobby_node((row or rec).get("node"), cfg):
             return False
         reason[asin] = why
         order.append(asin)

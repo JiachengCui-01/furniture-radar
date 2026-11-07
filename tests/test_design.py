@@ -30,7 +30,7 @@ def test_extract_reads_appearance_and_craft_from_titles():
 
 
 def test_appearance_also_tier_and_colors_from_images(cfg):
-    """“也有”：10%~30% 有、不比对照组多；颜色有主图识别时只看主图，标题里的颜色不能否决（标题常列出全部可选颜色）。"""
+    """“也有”：不到 30% 有、不比对照组多（2026-11-07 起不设占比下限）；颜色有主图识别时只看主图，标题里的颜色不能否决（标题常列出全部可选颜色）。"""
     t = lambda label, n, share, base: {"label": label, "count": n, "share": share, "baseline_share": base, "brands": n}
     i = lambda label, n, ref: {"label": label, "focus": n, "focus_share": n / 50, "reference": ref,
                                "reference_share": ref / 40, "brands": n}
@@ -42,7 +42,8 @@ def test_appearance_also_tier_and_colors_from_images(cfg):
         "造型": [i("模块化组合", 7, 4)]}}
     out = traits.merge_appearance(tr, vision, cfg)
     assert [f["label"] for f in out["颜色"]["more"]] == ["胡桃色"]  # 主图 20% vs 0%，标题 5% vs 8% 不再否决；标题的棕色不看
-    assert [f["label"] for f in out["颜色"]["also"]] == ["白色", "原木色"]  # 灰色 8% 不到 10%
+    # 2026-11-07 起“也有”不设占比下限（用户要尽可能多地展示）：灰色 4 个（8%）、4 个品牌也列
+    assert [f["label"] for f in out["颜色"]["also"]] == ["白色", "原木色", "灰色"]
     assert [f["label"] for f in out["造型"]["also"]] == ["模块化组合"]
     assert [f["label"] for f in out["功能卖点"]["also"]] == ["电动/可升降"]  # 只有标题依据，21%、1.24 倍
     no_images = traits.merge_appearance(tr, {}, cfg)  # 没有主图识别时颜色看标题

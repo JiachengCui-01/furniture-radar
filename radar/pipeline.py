@@ -461,7 +461,7 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     (site / ".nojekyll").write_text("", encoding="utf-8")
 
     # 6. 状态
-    state.setdefault("runs", []).append(_run_record(cfg, ctx, today.isoformat(), labels))
+    state.setdefault("runs", []).append(_run_record(cfg, ctx, today.isoformat(), labels, ocean_tracked(result)))
     state["runs"] = state["runs"][-20:]
     state["run_seq"] = run_seq
     state["last_success"] = now_utc.isoformat(timespec="seconds")
@@ -784,9 +784,15 @@ def growth_map(items: list[dict]) -> dict[str, str]:
     return {i["asin"]: kind for i in items if (kind := analyze.growth_kind(i))}
 
 
-def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict) -> dict:
+def ocean_tracked(result: dict) -> list[str]:
+    """本期拉了日数据的蓝海产品：它们只在蓝海产品里列出，不在 labels 里（analyze 把它们从本期商品里拿出来了），
+    另记一份，重新生成报告时照样进池（不然会变成“只有名单数据”的卡片、没有走势图）。"""
+    return [i["asin"] for i in result.get("ocean_extra") or [] if not i.get("list_only")]
+
+
+def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict, ocean: list[str] | None = None) -> dict:
     return {
-        "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels,
+        "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels, "ocean": list(ocean or []),
         # 下期“与上期对比”用：本期提示了大促后数据待修订（events.bsr_lift）时，下期写明这些增长商品哪些仍成立（diff.compare）
         "growth": growth_map(ctx["items"]), "lift": bool((ctx.get("events") or {}).get("lift")),
         "monthly_judged": ctx.get("monthly_judged") or [],
@@ -828,7 +834,9 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     # 只用那一期真正拉了日数据的商品（labels 里还有月度名单补判的，它们可能留着更早进池时的旧日数据）；
     # 之后有一期中途中止（RunAborted）时，它进池的商品记的是下一期的期数，也算
     # 商品级范围条件改了的，按新条件去掉（和 run 的选池一样）
-    pool = [a for a in last.get("labels") or {} if int((state["asins"].get(a) or {}).get("last_pool_run", -1)) >= last["seq"]
+    # 蓝海产品不在 labels 里，另记在 ocean（ocean_tracked）
+    pool = [a for a in dict.fromkeys([*(last.get("labels") or {}), *(last.get("ocean") or [])])
+            if int((state["asins"].get(a) or {}).get("last_pool_run", -1)) >= last["seq"]
             and discovery.keep_product(state["asins"].get(a), cfg)]
     result = analyze.analyze(state, disc, pool, cfg, today, extra_rows, (last.get("coverage") or {}).get("revision"))
     items = result["items"]
@@ -856,7 +864,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     point_to_latest(cfg, site, state.get("reports") or [last["id"]])
     scrub_history_keys(cfg, site, master, (state.get("reports") or [])[:-1])
     labels = {i["asin"]: [i["label"], i["fake"]["score"]] for i in items}
-    state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels)
+    state["runs"][-1] = _run_record(cfg, ctx, last.get("date") or today.isoformat(), labels, ocean_tracked(result))
     drop_seasonal(state)
     store.save(site, master, state)
     sec = ctx["sections"]

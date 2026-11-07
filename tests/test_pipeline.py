@@ -414,6 +414,32 @@ def test_rerender_after_a_scope_change_keeps_the_runs_own_scope(cfg, master_key,
     assert pipeline.needs_discovery(after, wider, (START + timedelta(days=6)).date())  # 下一期照样按新范围重新发现
 
 
+def test_rerender_keeps_tracked_blue_ocean_products_in_the_pool(cfg, master_key, tmp_path, monkeypatch):
+    """蓝海产品只在蓝海产品里列出、不在运行记录的 labels 里（2026-11-07 起），另记在 ocean：
+    重新生成时照样进池判一遍，不会变成“只有名单数据”、没有走势图的卡片。"""
+    from radar import analyze
+
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key)
+    pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
+    master = crypto.parse_master_key(master_key)
+    state = store.load(tmp_path, master)
+    last = state["runs"][-1]
+    assert last["ocean"] == []  # 合成数据里没有兴趣爱好专用的商品
+    asin = next(iter(last["labels"]))
+    last["labels"].pop(asin)
+    last["ocean"] = [asin]
+    store.save(tmp_path, master, state)
+    seen, real = {}, analyze.analyze
+
+    def spy(state, disc, pool, *a, **k):
+        seen["pool"] = list(pool)
+        return real(state, disc, pool, *a, **k)
+    monkeypatch.setattr(analyze, "analyze", spy)
+    pipeline.rerender(cfg, secrets, tmp_path)
+    assert asin in seen["pool"]
+
+
 def test_send_last_refuses_a_link_that_cannot_open(world_run, cfg, monkeypatch):
     """推不出报告网址时，按钮只有相对路径、在钉钉里点不开：不发送。"""
     from radar import config as config_mod

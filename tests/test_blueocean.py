@@ -201,7 +201,8 @@ def _item(asin, **kw):
 
 def test_blue_ocean_list_checks_daily_data_when_it_has_it(cfg):
     """拉到了日数据的再核对：异常信号、名单和日数据对不上的不列；月度名单补判的持续热销照样算；没拉到日数据的按名单那一行
-    做卡片，写明只有名单数据。商品照样留在自己的板块里，同一类排在一起（合计销售额大的类在前）。"""
+    做卡片，写明只有名单数据。蓝海产品只在蓝海产品里（不算进潜力、持续热销和追踪商品数，2026-11-07 用户要求），
+    同一类排在一起（合计销售额大的类在前）。"""
     st = state_with([row(a, title=f"Record Player Stand {a}", revenue=60_000 - i) for i, a in enumerate("ABCDE")]
                     + [row("S", title="Folding Sewing Table", revenue=90_000)])
     cands, niches = blueocean.scan(st, TODAY, cfg)
@@ -215,10 +216,11 @@ def test_blue_ocean_list_checks_daily_data_when_it_has_it(cfg):
     assert sorted(i["asin"] for i in extra) == ["E", "S"] and all(i["tags"] == [blueocean.LIST_ONLY] for i in extra)
     sec = analyze.sections(items + extra, 0)
     assert [i["asin"] for i in sec["ocean"]] == ["A", "D", "E", "S"]  # 黑胶影音收藏合计 $30 万在前，缝纫 $9 万在后
-    assert sec["counts"]["ocean"] == 4 and sec["counts"]["total"] == 3  # 只有名单数据的不算追踪商品
-
+    assert sec["counts"]["ocean"] == 4 and sec["counts"]["total"] == 2  # 只有名单数据的、蓝海产品都不算追踪商品
+    assert sec["potential"] == [] and sec["hot"] == [] and sec["counts"]["potential"] == 0  # A（潜力）、D（持续热销）只在蓝海里
+    assert analyze.focus_items(items) == []
     html = render.card(items[0], "ocean", render.ocean_group(items[0]))
-    assert "<b>黑胶影音收藏</b> · 全市场 5 个" in html and 'class="grp">潜力<' in html and 'data-node="黑胶影音收藏"' in html
+    assert "<b>黑胶影音收藏</b> · 全市场 5 个" in html and 'class="grp">潜力<' not in html and 'data-node="黑胶影音收藏"' in html
     cov = {"ocean": {**out, "niches": niches, "list_only": len(extra)}}
     note = render._ocean_note(cov)
     assert note.startswith("名单上符合 6 个：有日数据 3 个、月度补判 1 个、只有名单数据 2 个") and "异常信号 1" in note
@@ -248,4 +250,6 @@ def test_dingtalk_lists_blue_ocean_products(cfg):
            "diff": {"first": True}, "traits": {}}
     text = dingtalk.build_text(ctx)
     assert "🌊 蓝海 1" in text and "**🌊 蓝海产品**" in text
-    assert "黑胶唱片（全市场9个），上架95天，近30天$8 万，也在潜力" in text
+    assert "黑胶唱片（全市场9个），上架95天，近30天$8 万" in text and "潜力" not in text.split("**🌊 蓝海产品**")[1]
+    item["rising"] = {"ratio": 1.5}  # 只写走势（上升中），不写突然爆火 / 潜力 / 持续热销
+    assert "近30天$8 万，上升中" in dingtalk.build_text(ctx)

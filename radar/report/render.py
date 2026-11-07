@@ -172,7 +172,7 @@ color:var(--tc);background:var(--tb)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:8px}
 .tl{background:var(--row);border-radius:10px;padding:8px 8px 7px;display:flex;flex-direction:column;gap:1px;min-width:0}
 .tl-h{display:flex;align-items:center;gap:8px;margin:0 3px 4px}.tl-h b{font-size:14px}.tl-h .ib{width:26px;height:26px}
-.fr{display:grid;grid-template-columns:minmax(4.6em,1.15fr) minmax(56px,1.3fr) 5.6em 4.4em;gap:7px;align-items:center;
+.fr{display:grid;grid-template-columns:minmax(5.8em,1.55fr) minmax(48px,1fr) 5.6em 4.4em;gap:7px;align-items:center;
 font-size:12.5px;padding:3px 4px;border-radius:6px;font-variant-numeric:tabular-nums}
 .fr[data-pop]{cursor:pointer}.fr[data-pop]:hover,.fr[data-pop]:focus-visible{background:var(--card);outline:none;box-shadow:0 1px 4px rgba(0,0,0,.08)}
 .fl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fr.more .fl{font-weight:700}
@@ -182,6 +182,7 @@ font-size:12.5px;padding:3px 4px;border-radius:6px;font-variant-numeric:tabular-
 .bl b{position:absolute;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:var(--text);border-radius:1px}
 .nm{text-align:right;white-space:nowrap}.nm em{font-style:normal;color:var(--muted)}
 .mo{text-align:right;white-space:nowrap;font-weight:600}
+.tl-more{margin:0}.tl-more summary{font-size:12px;padding:2px 4px;list-style-position:inside}
 .tl-f{display:flex;align-items:center;gap:6px;margin:5px 4px 0}.tl-f .ths{display:flex;gap:3px}
 .tl-f a.th{width:30px;height:30px;border-radius:5px}.tl-f em{font-style:normal;font-size:11.5px;color:var(--muted)}
 .ideas{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:8px}
@@ -681,11 +682,9 @@ def _growth_pop(cur: dict, hint: str, total: int) -> str:
 
 
 def ocean_group(item: dict) -> str:
-    """蓝海产品卡片上写它本来在哪个板块（蓝海是另一份名单，商品照样留在自己的板块里）。"""
-    kind = growth_kind(item)
-    if kind:
-        return GROUP_CN[kind]
-    return "持续热销" if item["label"] == "hot" else ""
+    """蓝海产品卡片上的走势：符合“上升中”条件的写上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 1.3 倍）。
+    不写突然爆火、潜力、持续热销：蓝海产品只在蓝海产品里列出，不算进那几个板块（2026-11-07 用户要求）。"""
+    return GROUP_CN["rising"] if item.get("rising") and item["label"] not in ("fake", "low") else ""
 
 
 def _ocean_note(cov: dict) -> str:
@@ -1241,7 +1240,16 @@ def _tile_examples(pool: list[dict], rows: list[tuple[str, callable]]) -> str:
     return ""
 
 
-ROWS_PER_TILE = 4
+ROWS_PER_TILE = 8  # 每张趋势卡先显示几行，其余折叠在“另 N 个”里（2026-11-07 用户要全面、多样：以前每张最多 4 行，多的直接不列）
+
+
+def _fold_rows(lines: list[str]) -> str:
+    """趋势卡的行：前 ROWS_PER_TILE 行直接显示，其余放进折叠的“另 N 个”。"""
+    if len(lines) <= ROWS_PER_TILE:
+        return "".join(lines)
+    rest = lines[ROWS_PER_TILE:]
+    return ("".join(lines[:ROWS_PER_TILE])
+            + f'<details class="tl-more"><summary>另 {len(rest)} 个</summary>{"".join(rest)}</details>')
 
 
 def _dim_tile(dim: str, groups: dict, vision: dict, min_gap: float, focus: list[dict], pool: list[dict]) -> str:
@@ -1255,7 +1263,7 @@ def _dim_tile(dim: str, groups: dict, vision: dict, min_gap: float, focus: list[
     if not ranked:
         return ""
     lines, examples = [], []
-    for tier, f, (src, g, o, tip) in ranked[:ROWS_PER_TILE]:
+    for tier, f, (src, g, o, tip) in ranked:
         label = f["label"]
 
         def has(i, label=label, dim=dim):
@@ -1271,7 +1279,7 @@ def _dim_tile(dim: str, groups: dict, vision: dict, min_gap: float, focus: list[
         examples.append((label, seen))
     name = DIM_SHORT.get(dim, dim)
     return (f'<div class="tl"><div class="tl-h">{_badge(dim if dim in ICONS else "工艺", "dim")}<b>{esc(name)}</b></div>'
-            f'{"".join(lines)}{_tile_examples(pool, examples)}</div>')
+            f'{_fold_rows(lines)}{_tile_examples(pool, examples)}</div>')
 
 
 def _material_tile(m: dict, min_gap: float, focus: list[dict], pool: list[dict]) -> str:
@@ -1280,7 +1288,7 @@ def _material_tile(m: dict, min_gap: float, focus: list[dict], pool: list[dict])
     if not rows:
         return ""
     lines = []
-    for r in rows[:ROWS_PER_TILE]:
+    for r in rows:
         df, nr = materials.denominators(m, r["label"])
         o = r["reference_share"] if nr else None
         tip = f"{r['label']}：知道材质的增长商品 {r['count']}/{df}（{r['share']:.0%}）" + (
@@ -1291,7 +1299,7 @@ def _material_tile(m: dict, min_gap: float, focus: list[dict], pool: list[dict])
         filt = f"材质:{r['label']}" if any(i.get("material") == r["label"] for i in pool) else None
         lines.append(_feature_row(re.sub(r"（.*?）", "", r["label"]), _mark(r["share"] - o if o is not None else None, min_gap),
                                   r["share"], o, "对照", tip, money, filt, f"主材质是「{r['label']}」"))
-    return f'<div class="tl"><div class="tl-h">{_badge("材质", "dim")}<b>主材质</b></div>{"".join(lines)}</div>'
+    return f'<div class="tl"><div class="tl-h">{_badge("材质", "dim")}<b>主材质</b></div>{_fold_rows(lines)}</div>'
 
 
 def _trend_tiles(tr: dict, cfg: dict, focus: list[dict], pool: list[dict]) -> str:
@@ -1591,7 +1599,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                   f"≥{int(cfg['pool']['opportunity_min_units'])} 件或 ≥{float(cfg['pool']['opportunity_min_revenue']) / 1e4:g} 万美元），"
                   f"这一类全市场不超过 {o['max_products']} 个（老款也算）；太小、结构太简单的不算"
                   f"（包装不到 {o['tiny_weight']:g} 磅又没有升降折叠这类机构的，不到 {o['simple_weight']:g} 磅的开放书架、置物架）。"
-                  "同一类排在一起，商品照样留在原板块。"
+                  "同一类排在一起。只在这里列出，不进突然爆火、潜力、持续热销、增长商品和开发方向。"
                   if universe else "本期没翻成全市场名单，不判蓝海产品。"),
         "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
         "all": "本期拉了日数据的全部商品，简单款不列。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",

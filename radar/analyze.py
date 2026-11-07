@@ -9,7 +9,7 @@ from .detect import blueocean
 from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
-from .discovery import clean_text
+from .discovery import clean_text, hobby_node
 from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, launch_potential, low_rating,
                            momentum, new_days, rating_floor, relist_ramp, relist_text, relisted, surge_candidates)
 from .series import Daily, baseline_average, closed_months, mean, median
@@ -551,6 +551,17 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     ocean, judged_ocean = blueocean.mark(items, cands)
     ocean_extra = blueocean.list_items(state, cands, judged_ocean, today)
     ocean.update(niches=niches, list_only=len(ocean_extra))
+    # 蓝海产品只在蓝海产品里列出（2026-11-07 用户：突然爆火、潜力里都不要有）：判过的蓝海产品从本期商品里拿出来，
+    # 和只有名单数据的一样做成蓝海卡片（ocean_extra：不进任何板块、增长商品、开发方向、外观与工艺、全部追踪商品、与上期对比）；
+    # 兴趣爱好类目（scope.extra_nodes）只为蓝海而加，里面不是蓝海产品的商品哪里都不列
+    kept, ocean_items = [], []
+    for item in items:
+        if item.get("ocean"):
+            ocean_items.append(item)
+        elif not hobby_node(item.get("node"), cfg):
+            kept.append(item)
+    ocean["hobby_dropped"] = len(items) - len(kept) - len(ocean_items)
+    items, ocean_extra = kept, ocean_items + ocean_extra
     check = None
     if usable_revision(revision, th):  # 数据说明里写：当期拉到的数偏不偏高、校正了没有
         need = 1 + (1 / float(revision["median"]) - 1) * float(th.get("revision_inflation_share", 0.5))
@@ -802,9 +813,12 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
     period = str(disc["period"])
     keys = monthly_lists.month_keys(period, n)
     have = (state.get("monthly_lists") or {}).get("months") or {}
-    status["months"] = sum(1 for k in keys if all(nd["path"] in (have.get(k) or {}) for nd in disc["nodes"]))
+    # 兴趣爱好类目只出蓝海产品、不判持续热销，也不补它们的往月名单：算“已齐”时不看它们
+    # （11-07 那期新加的 9 个兴趣爱好类目没有往月名单，已齐的月数 6 → 1，整期没有月度名单补判，持续热销 92 → 56）
+    judged_nodes = [nd for nd in disc["nodes"] if not hobby_node(nd["path"], cfg)]
+    status["months"] = sum(1 for k in keys if all(nd["path"] in (have.get(k) or {}) for nd in judged_nodes))
     units_have = (state.get("monthly_lists") or {}).get("units_months") or {}
-    status["units_months"] = sum(1 for k in keys if all(nd["path"] in (units_have.get(k) or {}) for nd in disc["nodes"]))
+    status["units_months"] = sum(1 for k in keys if all(nd["path"] in (units_have.get(k) or {}) for nd in judged_nodes))
     recent_rows, covered = monthly_lists.recent_rows(state, disc["nodes"], today)
     status["rolling"] = len(covered & {nd["path"] for nd in disc["nodes"]})
     status["rolling_date"] = ((state.get("monthly_lists") or {}).get("rolling") or {}).get("date")
@@ -821,7 +835,8 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
     # 销售额前 50 里的先判：同一父体两份名单里的代表子体不一样时，用销售额名单里那个 ASIN（和以前一样，“与上期对比”不会当成一出一进）
     for p in sorted(products.values(), key=lambda r: ("top" not in r["sources"], -(r.get("units") or 0))):
         key = p.get("parent") or p["asin"]
-        if not ({"top", "units"} & set(p["sources"])) or p["asin"] in taken or key in taken or p["node"] not in stats:
+        if (not ({"top", "units"} & set(p["sources"])) or p["asin"] in taken or key in taken or p["node"] not in stats
+                or hobby_node(p["node"], cfg)):
             continue
         taken.add(key)
         r = recent_rows.get(p["asin"]) or by_parent.get(key)
@@ -882,6 +897,8 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     def cut(rows: list[dict]) -> list[dict]:
         return rows if top_n <= 0 else rows[:top_n]
 
+    every, items = items, [i for i in items if not i.get("ocean")]
+
     # 突然爆火、潜力按增量销售额排（同额看爆发强度 / 增长），和开发方向同一个口径：钉钉、本期要点、评论抽查的“点名”都按这个顺序取前几个。
     # 以前爆火按“倍数 × log(销量)”、潜力按月环比排：刚开卖头几个月的小基数（6~9 月 14 / 0 / 0 / 220 件 → 每月 +1387%）排第一，
     # 老品换链接（增量按 0）排第二；比两个月前没多卖的（近 7~14 天比之前 28 天翻倍，但近 28 天不比再之前 28 天多：跌下去又涨回来）排在后面
@@ -891,8 +908,9 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
                   key=lambda i: (-i["fake"]["score"], -(i.get("recent_avg28") or 0)))
     potential = sorted((i for i in items if i["label"] == "potential"), key=lambda i: (-round(increment(i)), -_growth(i)))
     hot = sorted((i for i in items if i["label"] == "hot"), key=lambda i: -(i["hot"]["avg_monthly"] or 0))
-    # 蓝海产品（detect/blueocean.py）：另成一份名单，商品照样留在自己的板块里；同一类排在一起（合计销售额大的类在前），类里按近 30 天销售额
-    ocean = sorted((i for i in items if i.get("ocean")),
+    # 蓝海产品（detect/blueocean.py）只在蓝海产品里：别的板块和计数都不算它（analyze 已经把它们从本期商品里拿出来，这里再挡一次）；
+    # 同一类排在一起（合计销售额大的类在前），类里按近 30 天销售额
+    ocean = sorted((i for i in every if i.get("ocean")),
                    key=lambda i: (-i["ocean"]["niche_revenue"], i["ocean"]["niche"], -i["ocean"]["revenue"]))
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot), "ocean": cut(ocean),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
@@ -925,7 +943,7 @@ def focus_items(items: list[dict]) -> list[dict]:
             return 50 + ((i["potential"] or {}).get("recent_ratio") or 1)
         return (i.get("rising") or {}).get("ratio") or 0
 
-    picked = [i for i in items if i["label"] not in UNLISTED
+    picked = [i for i in items if i["label"] not in UNLISTED and not i.get("ocean")  # 蓝海产品只在蓝海产品里
               and (i["label"] in ("surge", "potential") or i.get("rising"))]
     return sorted(picked, key=lambda i: -strength(i))
 

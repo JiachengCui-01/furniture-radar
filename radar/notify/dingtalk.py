@@ -147,14 +147,14 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
         for item in potential[:max_items]:
             lines.append(item_line(item, f" {growth_text(item)}（{increment_text(item)}）"))
         lines.append("")
-    if ocean:  # 蓝海产品：另一份名单（商品照样在自己的板块里），写出是哪一类细分人群 / 用途
+    if ocean:  # 蓝海产品：只在这份名单里（不进别的板块），写出是哪一类细分人群 / 用途
         lines.append("**🌊 蓝海产品**")
         for item in ocean[:max_items]:
             o = item["ocean"]
             also = ocean_group(item)
             age = f"上架{item['age_days']}天，" if item.get("age_days") is not None else ""
             lines.append(item_line(item, f" {o['niche']}（全市场{o['n']}个），{age}近30天{money_text(o['revenue'])}"
-                                         + (f"，也在{also}" if also else "")))
+                                         + (f"，{also}" if also else "")))  # 只写走势（上升中），不写别的板块名
         lines.append("")
     high =[i for i in sec["fake"] if i["fake"]["level"] == "high"] or sec["fake"]
     if high:

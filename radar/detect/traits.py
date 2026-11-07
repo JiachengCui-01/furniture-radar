@@ -236,5 +236,5 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
         common.sort(key=lambda f: -share_of(f))
         also.sort(key=lambda f: -share_of(f))
         if more or common or also:
-            out[dim] = {"more": more[: int(a["per_dim"])], "common": common[:3], "also": also[: int(a["per_dim"])]}
+            out[dim] = {"more": more[: int(a["per_dim"])], "common": common[: int(a["per_dim"])], "also": also[: int(a["per_dim"])]}
     return out
