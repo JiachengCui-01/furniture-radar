@@ -301,7 +301,14 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
         # 2. 追踪池：大小不超过本期还能刷新的个数（给核查和材质查询留出预算）
         reserve = min(int(bcfg["review_checks"]) + int(bcfg.get("material_lookups", 0)), vendor.budget.remaining // 4)
-        pool, reasons = tracking.select_pool(disc, state, cfg, today, limit=vendor.budget.remaining - reserve)
+        # 主图预筛（DeepSeek，不花卖家精灵次数）：简单款不拉日数据。出错只是不预筛，不影响这一期
+        try:
+            skip, prescreened = tracking.prescreen(state, disc, cfg, today, vendor.budget.remaining - reserve,
+                                                   secrets.llm_api_key)
+        except Exception as exc:  # noqa: BLE001
+            log.warn(f"主图预筛出错，本期不预筛：{type(exc).__name__}")
+            skip, prescreened = set(), None
+        pool, reasons = tracking.select_pool(disc, state, cfg, today, limit=vendor.budget.remaining - reserve, skip=skip)
         for asin in pool:
             rec = state["asins"].setdefault(asin, {"asin": asin, "first_seen_run": run_seq, "obs": []})
             rec["last_pool_run"] = run_seq
@@ -365,7 +372,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         out = _publish(cfg, secrets, site, master, state, vendor, progress, disc=disc, pool=pool, today=today,
                        reserve=reserve, revision=revision, run_seq=run_seq, now_utc=now_utc, limit=limit,
                        refreshed=refreshed, mix=mix, n_cands=n_cands, screened=screened, uni=uni, month=month,
-                       used_this_month=used_this_month)
+                       used_this_month=used_this_month, prescreened=prescreened)
     except Exception as exc:  # noqa: BLE001
         state.update(keep)
         _discard_unpublished(cfg, site, progress.get("report_id"), keep["reports"])
@@ -379,7 +386,7 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
 
 def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict, vendor: Vendor, progress: dict, *,
              disc, pool, today, reserve, revision, run_seq, now_utc, limit, refreshed, mix, n_cands, screened, uni,
-             month, used_this_month) -> RunResult:
+             month, used_this_month, prescreened=None) -> RunResult:
     """核心数据拉完以后：补充查询 → 判定 → 核查 → 材质 → 报告 → 存状态。出错由 run 接住（存下数据和调用次数）。
     progress["report_id"]：已经写出的这一期报告（出错时删掉）。"""
     bcfg = cfg["budget"]
@@ -439,6 +446,7 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"] + mix["screen"], "revision": revision,
                 "young": [len(uni.get("young") or {}), mix["young"]] if screened is not None and uni.get("young") else None,
+                "prescreen": prescreened,
                 "universe": len(uni.get("rows") or {}) if screened is not None else None,
                 "universe_pages": uni.get("pages") if screened is not None else None,
                 "universe_failed": len(uni.get("failed") or []) if screened is not None else None,
@@ -635,7 +643,10 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     tagged = vision.tag_items(listed, state, cfg, secrets.llm_api_key, untracked=True)
     if tagged:
         log.info(f"上榜商品主图识别 {tagged} 张")
-    vision.prune_extra(state, set(((disc or {}).get("products") or {})) | {i["asin"] for i in listed})
+    # 全市场名单、早期名单里的也留着：主图预筛识别过的，下期还在名单里就不用再识别一遍（按张算钱、也费时间）
+    uni = state.get("universe") or {}
+    vision.prune_extra(state, set(((disc or {}).get("products") or {})) | {i["asin"] for i in listed}
+                       | set(uni.get("rows") or {}) | set(uni.get("young") or {}))
     trait["vision"] = vision.summarize(focus, reference, state,
                                        min_gap=float(cfg["thresholds"]["appearance"]["image_min_gap"]))
     trait["materials"] = materials.compare(analyze.focus_items(items), reference, state)
@@ -848,7 +859,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict, ocean: list[
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         # tides：下一期回看这期没追踪的商品时，按这期的品类大盘扣（previous_view）
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
-                                                         "universe", "universe_pages", "universe_failed", "young", "tides",
+                                                         "universe", "universe_pages", "universe_failed", "young", "prescreen", "tides",
                                                          "unsettled")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},

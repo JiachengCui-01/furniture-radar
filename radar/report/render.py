@@ -1582,6 +1582,10 @@ def _facts(ctx: dict, counts: dict, cur: dict) -> list[tuple[str, str]]:
                                 f"→ 拉日数据 {cov.get('opportunity') or 0} 个"))
         if cov.get("young"):
             out.append(("早期名单", f"上架半年内、量还不够门槛的 {cov['young'][0]} 个，拉日数据 {cov['young'][1]} 个"))
+        pre = cov.get("prescreen")
+        if pre:
+            out.append(("主图预筛", f"拉日数据前先看了早期名单和全市场初筛排在前面的 {pre['looked']} 个候选的主图，"
+                                   f"{pre['plain']} 个是简单款、没拉日数据（DeepSeek 识别，不花卖家精灵次数）"))
     elif cov.get("candidates"):
         out.append(("机会候选", f"{cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"))
     listed = [(label, len(cur[k]["shown"]), counts[k]) for k, label in (("surge", "突然爆火"), ("potential", "潜力"), ("hot", "持续热销"),

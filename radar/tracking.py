@@ -24,8 +24,8 @@ import statistics
 import zlib
 from datetime import datetime, timedelta, timezone
 
-from . import clock, log, monthly_lists, universe
-from .detect import blueocean
+from . import clock, log, monthly_lists, universe, vision
+from .detect import blueocean, showcase
 from .detect.rules import current_rating, low_rating
 from .discovery import clean_text, hobby_node, keep_product
 from .series import Daily, build_daily
@@ -143,9 +143,49 @@ def opportunity_candidates(disc: dict | None, state: dict, cfg: dict, today) -> 
     return opportunity_rank(list(best.values()), today)
 
 
+def prescreen(state: dict, disc: dict | None, cfg: dict, today, budget: int, api_key: str,
+              client=None) -> tuple[set[str], dict | None]:
+    """主图预筛（pool.prescreen，2026-11-07 起）：拉日数据之前，早期名单和全市场初筛排在前面的候选先看主图
+    （DeepSeek，不花卖家精灵次数，识别过的按图片缓存），简单款（detect.showcase.is_plain：主图和标题都没有这个子类目基本结构以外的特色）
+    不拉日数据——反正列不出来。11-07 那期 249 个拉了日数据的商品里，主图识别过的三分之一最后被当成简单款隐藏了。
+    看前 min(max_images, 预算 × look_ahead) 个（约三分之一被跳过，多看一些才填得满池子）。没识别成的照常拉。
+    返回 (要跳过的 ASIN, 统计 {looked, new, plain})；没开、没有大模型密钥、本期没翻成全市场名单时返回 (空, None)。"""
+    c = cfg["pool"].get("prescreen") or {}
+    uni = state.get("universe") or {}
+    if not c.get("enabled") or not vision.enabled(cfg, api_key) or uni.get("date") != today.isoformat() or not uni.get("rows"):
+        return set(), None
+    rows = {**(uni.get("young") or {}), **uni["rows"]}
+    young_max = int((cfg["pool"].get("young") or {}).get("max", 0))
+    young = [a for a, _s, _w in universe.screen_young(uni.get("young") or {}, cfg)]
+    order = list(dict.fromkeys(young[:young_max] + [a for a, _s, _w in universe.screen(state, uni["rows"], today, cfg)]
+                               + young[young_max:]))
+    n = min(int(c.get("max_images", 900)), int(max(0, budget) * float(c.get("look_ahead", 1.5))))
+    targets, parents = [], set()
+    for asin in order:
+        if len(targets) >= n:
+            break
+        row = rows.get(asin)
+        key = (row or {}).get("parent") or asin
+        if not row or key in parents or not keep_product(row, cfg) or hobby_node(row.get("node"), cfg):
+            continue
+        if low_rating(*current_rating(state["asins"].get(asin), row), cfg["thresholds"]):
+            continue
+        parents.add(key)
+        targets.append(row)
+    new = vision.tag_items(targets, state, cfg, api_key, client=client, untracked=True)
+    products = list(((disc or {}).get("products") or {}).values())
+    common = showcase.common_features(products + list(rows.values()), state, cfg)
+    skip = {r["asin"] for r in targets if showcase.is_plain(r, state, common)}
+    stats = {"looked": len(targets), "new": new, "plain": len(skip)}
+    log.info(f"主图预筛：早期名单和全市场初筛排在前面的 {len(targets)} 个候选先看主图（新识别 {new} 张），"
+             f"{len(skip)} 个是简单款，不拉日数据")
+    return skip, stats
+
+
 def select_pool(disc: dict | None, state: dict, cfg: dict, today,
-                limit: int | None = None) -> tuple[list[str], dict[str, str]]:
-    """返回 (ASIN 列表, 入选原因)。limit：本期还能刷新多少个（预算），池子不会超过它。"""
+                limit: int | None = None, skip: set[str] | None = None) -> tuple[list[str], dict[str, str]]:
+    """返回 (ASIN 列表, 入选原因)。limit：本期还能刷新多少个（预算），池子不会超过它。
+    skip：主图预筛判成简单款的（prescreen），不以全市场初筛、早期名单进池（往期上榜、头部、蓝海候选照常）。"""
     pcfg = cfg["pool"]
     size = int(pcfg["max_size"]) if limit is None else max(0, min(int(pcfg["max_size"]), limit))
     watch_max = min(size, int(pcfg.get("watch_max", size)))
@@ -170,6 +210,8 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
             return False
         # 兴趣爱好类目只为蓝海产品而加：只以蓝海候选进池，不占往期上榜、头部、初筛的日数据名额（11-07 那期占了约 45 个）
         if why != "ocean" and hobby_node((row or rec).get("node"), cfg):
+            return False
+        if skip and why in ("screen", "young") and asin in skip:  # 主图预筛：简单款列不出来，不拉日数据
             return False
         reason[asin] = why
         order.append(asin)
@@ -225,11 +267,19 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
     #    没翻成的（预算不够）退回旧办法：月度名单和近 30 天榜单里的，分数最高的每期都看，其余按“最久没查”轮流
     uni = state.get("universe") or {}
     if uni.get("date") == today.isoformat() and uni.get("rows"):
+        # 早期名单（新上架、量还不够全市场门槛的）先占自己的名额（pool.young.max）：放在全市场初筛之后的话，
+        # 初筛出来的候选（11-07 那期 1,999 个）总比预算多，新上架的一个都排不上（2026-11-07 用户要尽量搜集新上架的大件家具）
+        young = universe.screen_young(uni.get("young") or {}, cfg)
+        ycap = min(size, len(order) + int((pcfg.get("young") or {}).get("max", 0)))
+        for asin, _score, _why in young:
+            if len(order) >= ycap:
+                break
+            add(asin, "young", ycap)
         for asin, _score, _why in universe.screen(state, uni["rows"], today, cfg):
             if len(order) >= size:
                 break
             add(asin, "screen", size)
-        for asin, _score, _why in universe.screen_young(uni.get("young") or {}, cfg):  # 早期名单：全市场初筛之后
+        for asin, _score, _why in young:  # 名额以外的早期名单：全市场初筛之后还有预算再看
             if len(order) >= size:
                 break
             add(asin, "young", size)

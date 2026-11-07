@@ -45,7 +45,10 @@ scope:
   # 整个子类目不追踪（按子类目自己的英文名，读的时候过滤，改了不用重新发现）。衣帽架：2026-04~09 每个月的月度名单里
   # 67%~87% 的销售额是小件，剔除小件后只剩八九个大号的衣帽树，也还是衣帽架。
   # 茶几（45%~60%）、音响架（31%~45%）一半左右是小件，只剔除小件、子类目保留（剩下的是带抽屉、柜体的大号边几）
-  exclude_node_regex: '(?i)\bcoat racks?\b'
+  # 2026-11-07 起也停查 5 个几乎没有家具的兴趣爱好类目（按 extra_nodes 的 label 匹配）：11-07 全市场名单里
+  # 纪念品展示柜 33 个商品只有 1 个算家具（多是球衣相框、卡砖展示框），收藏品展示收纳 17 个里 0 个（卡册、卡套），手工收纳 14 个里 1 个，
+  # 枪支弹药收纳柜 4 个里 0 个，台球杆架 1 个里 0 个。读的时候过滤：不翻它们的名单（每期少约 10 页），也不用重新发现子类目
+  exclude_node_regex: '(?i)\bcoat racks?\b|^(?:纪念品展示柜|收藏品展示收纳|手工收纳|枪支弹药收纳柜|台球杆架)$'
   # 子类目中文名（子类目 ID → 名字），盖掉卖家精灵自带的翻译：它把 Storage Cabinets 叫“门厅收纳柜”（里面多是浴室、厨房、车库柜），
   # End Tables 叫“茶几”而 Coffee Tables 叫“咖啡桌”，Flat File Cabinets 叫“十抽文件柜”……2026-11-06 对照英文名和商品标题逐个核过。
   # 读的时候改（discovery.rename_nodes），不算进监控范围的指纹；新发现的子类目不在表里时用卖家精灵的名字
@@ -102,15 +105,15 @@ scope:
     - path: "3375251:10971181011:706808011:3397051:7427857011:3397171"
       label: 台球桌                        # … > Billiards & Pool > Tables & Accessories > Tables
     - path: "3375251:10971181011:706808011:3397051:3397261"
-      label: 台球杆架                      # … > Billiards & Pool > Cue Racks
+      label: 台球杆架                      # … > Billiards & Pool > Cue Racks（2026-11-07 起停查，见 exclude_node_regex）
     - path: "3375251:706813011:13364359011:13364369011:3413341"
-      label: 枪支弹药收纳柜                # Hunting & Fishing > Shooting > Gun Accessories, Maintenance & Storage > Gun & Ammunition Storage & Safes
+      label: 枪支弹药收纳柜                # Hunting & Fishing > Shooting > Gun Accessories, Maintenance & Storage > Gun & Ammunition Storage & Safes（2026-11-07 起停查，见 exclude_node_regex）
     - path: "165793011:19431275011:19431291011"
-      label: 收藏品展示收纳                # Toys & Games > Collectible Toys > Collectible Display & Storage（手办、乐高、卡牌）
+      label: 收藏品展示收纳                # Toys & Games > Collectible Toys > Collectible Display & Storage（手办、乐高、卡牌）（2026-11-07 起停查，见 exclude_node_regex）
     - path: "3375251:2358921011:374791011"
-      label: 纪念品展示柜                  # Sports & Outdoors > Memorabilia Display & Storage > Display Cases
+      label: 纪念品展示柜                  # Sports & Outdoors > Memorabilia Display & Storage > Display Cases（2026-11-07 起停查，见 exclude_node_regex）
     - path: "2617941011:2237594011"
-      label: 手工收纳                      # Arts, Crafts & Sewing > Organization, Storage & Transport（缝纫、手工收纳柜、手工桌）
+      label: 手工收纳                      # Arts, Crafts & Sewing > Organization, Storage & Transport（缝纫、手工收纳柜、手工桌）（2026-11-07 起停查，见 exclude_node_regex）
 
 # ---------------- 发现 ----------------
 # 卖家精灵的商品榜单有两种：传月份 = 已结束月份的月末快照（月度名单，每月查一次）；
@@ -214,13 +217,27 @@ pool:
   # 突然爆火开始时还不够门槛，中位数晚 7 天（2~3 期）才进全市场名单，其中八成上架不到半年。打开后每个子类目再翻一份
   # 上架 ≤ max_age_months 个月、近 30 天 ≥ min_units 件或 ≥ min_revenue 美元（但不够全市场门槛）的商品，
   # 近 7 天 BSR 改善 ≥ bsr_cr% 的拉日数据（排在全市场初筛之后）。回测：能提前约 6 天抓到其中 46 个突然爆火，
-  # 每期约多 300 次调用（翻名单约 45 次 + 日数据约 250 次）。默认关闭：每月 7,000 次的预算放不下
+  # 每期约多 300 次调用（翻名单约 45 次 + 日数据约 250 次）。以前关着（预算放不下）；2026-11-07 用户要尽量搜集新上架的大件家具，打开：
+  # 只翻家具子类目（兴趣爱好类目不翻），读的时候照样剔除小件、非家具；排名在升的先过主图预筛（下面 prescreen），简单款不拉日数据。
+  # max：早期名单先占的日数据名额。以前排在全市场初筛之后，初筛候选（11-07 那期 1,999 个）总比预算多，新上架的一个都排不上；
+  # 名额以外的，全市场初筛之后还有预算再看
   young:
-    enabled: false
+    enabled: true
     max_age_months: 6
     min_units: 100
     min_revenue: 15000
     bsr_cr: 50
+    max: 120
+  # 主图预筛（tracking.prescreen）：拉日数据之前，早期名单和全市场初筛排在前面的候选先看主图（DeepSeek，不花卖家精灵次数，
+  # 识别过的按图片缓存，下期还在名单里的不再识别），简单款（主图和标题都没有这个子类目基本结构以外的特色，见 detect/showcase.py）
+  # 不拉日数据——反正列不出来。11-07 那期拉了日数据的 249 个里，主图识别过的三分之一最后被当成简单款隐藏了。
+  # 看前 min(max_images, 本期日数据名额 × look_ahead) 个；没识别成的（没有大模型密钥、识别失败）照常拉。
+  # 代价：头一期约 900 张图（约 2~3 元、多 30~40 分钟），之后只识别新进名单的；识别偏保守（约四分之一真有的特征认不出），
+  # 有些其实有特色的商品会被当成简单款跳过
+  prescreen:
+    enabled: true
+    max_images: 900
+    look_ahead: 1.5
 
 # ---------------- 卖家精灵调用预算 ----------------
 # 2026-10-29 起两周一期、雷达每月最多 2,000 次（以前每周一期、每月 7,000 次：按套餐 1 万、给 AI工作台 留 3,000 算）。

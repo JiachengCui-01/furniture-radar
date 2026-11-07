@@ -47,7 +47,7 @@ import statistics
 from datetime import date, timedelta
 
 from . import clock, log
-from .discovery import keep_product, normalize_product
+from .discovery import hobby_node, keep_product, normalize_product
 from .vendor import Vendor, request
 
 STATE_KEY = "universe"
@@ -161,6 +161,8 @@ def fetch_young(vendor: Vendor, cfg: dict, nodes: list[dict], exclude: set[str],
     out: dict[str, dict] = {}
     parents: set[str] = set()
     for node in nodes:
+        if hobby_node(node["path"], cfg):  # 兴趣爱好类目只出蓝海产品（蓝海用全市场名单），早期名单不翻
+            continue
         common = {"availableMonth": int(ycfg.get("max_age_months", 6))}
         raw = _page_all(vendor, cfg, node, "total_units",
                         {**common, "minUnits": int(ycfg.get("min_units", 100)), "maxUnits": floor_units - 1}, None, failed)

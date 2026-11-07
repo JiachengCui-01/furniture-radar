@@ -248,6 +248,8 @@ def select_nodes(raw: list[dict], cfg: dict) -> list[dict]:
 
     for extra in scope.get("extra_nodes") or []:
         path = str(extra.get("path") or "").strip()
+        if excluded_node(extra.get("label"), cfg):  # 停查的兴趣爱好类目（exclude_node_regex 按 label 匹配）
+            continue
         if path and all(c["path"] != path for c in chosen):
             chosen.append({
                 "path": path, "label": extra.get("label", path), "name": extra.get("label", path),

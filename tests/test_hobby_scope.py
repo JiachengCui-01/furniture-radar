@@ -85,3 +85,20 @@ def test_title_only_structure_features_count_as_design():
     assert {"壁床/隐形床", "高架床/上下铺", "翻板/折叠台面"} <= showcase.TITLE_FUNCTIONS
     # 不在主图词表里：识别提示词不变，旧的识别结果不用重看
     assert not ({"壁床/隐形床", "高架床/上下铺", "翻板/折叠台面"} & set(design.VISION_FUNCTIONS))
+
+
+def test_stopped_hobby_categories_are_not_paged_or_listed(cfg):
+    """几乎没有家具的 5 个兴趣爱好类目停查（exclude_node_regex 按 label 匹配）：商品读的时候剔除、子类目列表里去掉、
+    选子类目时不再加进来；读的时候过滤，监控范围的指纹不变（不重新发现）。"""
+    live = copy.deepcopy(cfg)
+    live["scope"]["extra_nodes"] = [{"path": "165793011:19431275011:19431291011", "label": "收藏品展示收纳"},
+                                    {"path": "3375251:10971181011:706808011:3397051:7427857011:3397171", "label": "台球桌"}]
+    live["scope"]["exclude_node_regex"] = (
+        "(?i)" + chr(92) + "bcoat racks?" + chr(92) + "b|^(?:纪念品展示柜|收藏品展示收纳|手工收纳|枪支弹药收纳柜|台球杆架)$")
+    card = {"asin": "C", "title": "Card Display Cabinet with Glass Door", "node": "165793011:19431275011:19431291011",
+            "node_name": "收藏品展示收纳", "pkg": {"dims": [40.0, 20.0, 15.0], "weight": 45.0}}
+    assert not discovery.keep_product(card, live)
+    disc = {"nodes": [{"path": card["node"], "name": "收藏品展示收纳"}, {"path": MAIN, "name": "Nightstands"}], "products": {}}
+    assert [n["path"] for n in discovery.apply_product_filter(disc, live)["nodes"]] == [MAIN]
+    chosen = discovery.select_nodes([], live)
+    assert [n["name"] for n in chosen] == ["台球桌"]
