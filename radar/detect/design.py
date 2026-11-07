@@ -134,9 +134,10 @@ VISION_FUNCTIONS = ("带储物/抽屉", "LED 灯", "充电/插座", "带镜子",
 APPEARANCE_DIMENSIONS = ("风格", "造型", "工艺", "颜色")
 _COMPILED = {dim: [(label, re.compile(pattern, re.I)) for label, pattern in rules if pattern]
              for dim, rules in LEXICON.items()}
-# 颜色以主图识别为准：标题里的颜色常是把可选变体都列出来（Walnut/Black/White），不代表商品本身。
+# 颜色以主图识别为准：标题里的颜色常是把可选变体都列出来（Walnut/Black/White），不代表商品本身；
+# 风格同理：标题常把几种风格词堆在一起（Modern Farmhouse Rustic Industrial），而报告里风格只按主风格归类（vision.main_style）。
 # 有主图识别时这些维度只看主图，没有主图识别（没配 DeepSeek）时才看标题
-IMAGE_FIRST_DIMENSIONS = ("颜色",)
+IMAGE_FIRST_DIMENSIONS = ("颜色", "风格")
 
 
 # 主材质：板材 / 实木 / 铁木（金属 + 木）/ 金属。标题没写清楚的归为“木质（未注明）”或“未注明”。

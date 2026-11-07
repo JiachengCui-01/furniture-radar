@@ -188,7 +188,8 @@ def merge_appearance(tr: dict, vision: dict | None, cfg: dict) -> dict[str, dict
           和说“更多”的那种依据矛盾）。按“比对照组多出的占比”排序，每个维度最多 per_dim 个。
     常见：不在“更多”里、增长商品中占比 ≥ common_share 的（有主图识别看主图，没有看标题），不代表比对照组多。
     也有：不在上面两档、增长商品中占比 ≥ also_share 的（同样要 min_count 个、min_brands 个品牌），只说明有，不代表趋势。
-    颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图：标题里的颜色常是把可选变体都列出来，不代表商品本身。"""
+    颜色、风格（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图：标题里的颜色常是把可选变体都列出来、风格词常堆好几个，
+    不代表商品本身（主图识别只留主色、主风格）。"""
     a = cfg["thresholds"]["appearance"]
     min_count, gap_min = int(a["min_count"]), float(a["image_min_gap"])
     min_brands = int(a.get("min_brands", 1))

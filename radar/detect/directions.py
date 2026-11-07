@@ -55,7 +55,7 @@ def node_of(row: dict) -> str:
 
 
 def _features(item: dict, state: dict, use_vision: bool = True) -> dict[str, set[str]]:
-    """标题词库 + 主图识别，任一有就算；颜色（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图。
+    """标题词库 + 主图识别，任一有就算；颜色、风格（design.IMAGE_FIRST_DIMENSIONS）有主图识别时只看主图（主色、主风格）。
     use_vision=False 时只看标题（和只能看标题的头部商品比的时候）。"""
     feats = design.extract(item.get("title", ""))
     seen = vision.of(state, item["asin"]) if use_vision else {}

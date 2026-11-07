@@ -29,9 +29,10 @@ def _vocab() -> str:
 
 
 PROMPT = f"""你是家具设计分析师。看这张亚马逊家具商品主图，只输出一个 JSON 对象，不要任何其他文字：
-{{"风格":[],"材质":[],"造型":[],"工艺":[],"颜色":[],"主色":"","功能卖点":[],"外观要点":""}}
+{{"风格":[],"主风格":"","材质":[],"造型":[],"工艺":[],"颜色":[],"主色":"","功能卖点":[],"外观要点":""}}
 要求：
 - 每个数组 0~4 项，优先使用下面词表里的说法，词表里没有的再用 2~6 个字的中文自拟；
+- “风格”按贴切程度从高到低排；“主风格”只写一个：最能代表这件家具的那种风格——看得出具体风格（农舍风、工业风、中古风、奶油风等）就写具体的，看不出具体风格的普通款才写“现代”或“极简”，用风格词表里的说法；
 - “颜色”按占画面面积从大到小排；“主色”只写一个：这件家具本体占面积最大的颜色（拉手、金属腿、床垫、摆件这些小面积的颜色不算），用颜色词表里的说法；
 - 只写图片里看得出来的，看不清就留空，不要猜；“功能卖点”只写图里看得见的（抽屉、灯带、镜子、轮子、挂钩、插座口等）；
 - “外观要点”用一句话（不超过 40 字）说清这件家具最抓眼的外观/工艺设计。
@@ -75,10 +76,11 @@ def _parse(text: str) -> dict | None:
         if isinstance(values, str):
             values = [values]
         tags[dim] = [str(v).strip() for v in values if str(v).strip()][:4]
-    main = str(data.get("主色") or "").strip()
     out = {"tags": tags, "summary": str(data.get("外观要点") or "").strip()[:60]}
-    if main:
-        out["main_color"] = main[:8]
+    for key, field in (("主色", "main_color"), ("主风格", "main_style")):
+        main = str(data.get(key) or "").strip()
+        if main:
+            out[field] = main[:8]
     return out
 
 
@@ -161,19 +163,36 @@ def main_color(v: dict) -> str | None:
     return min(hits)[2] if hits else colors[0]
 
 
-MAIN_ONLY = ("颜色",)  # 只按最主要的那一个归类的维度（一件家具只有一个主体颜色；造型、工艺、功能可以同时有几个）
+GENERIC_STYLES = ("现代", "极简")  # 笼统的风格：几乎每件都会被标上，一起标了具体风格（农舍风、工业风……）时，主风格取具体的
+
+
+def main_style(v: dict) -> str | None:
+    """主风格：识别结果里写了“主风格”就用它；以前的结果没有这一项，取风格里第一个具体风格（不是“现代”“极简”的），
+    没有具体风格的取第一个。报告里“风格”只按主风格归类：现代 + 农舍风的五斗橱只算农舍风（11-06 用户要求按最主要的特点归类）。"""
+    styles = list(dict.fromkeys((v.get("tags") or {}).get("风格") or []))
+    if v.get("main_style"):
+        return v["main_style"]
+    return next((s for s in styles if s not in GENERIC_STYLES), styles[0] if styles else None)
+
+
+# 只按最主要的那一个归类的维度：一件家具只有一个主体颜色、一种主风格；造型、工艺、功能可以同时有几个
+MAIN_ONLY = {"颜色": main_color, "风格": main_style}
 
 
 def normalized(v: dict) -> dict:
-    """识别结果里 MAIN_ONLY 的维度只留主色（main_color），其余照旧。报告、统计、开发方向都读这个（of、summarize）。"""
+    """识别结果里 MAIN_ONLY 的维度只留最主要的那一个（主色、主风格），其余照旧。报告、统计、开发方向都读这个（of、summarize）。"""
     if not v or not v.get("tags"):
         return v or {}
-    main = main_color(v)
-    return {**v, "tags": {**v["tags"], "颜色": [main] if main else []}}
+    tags = dict(v["tags"])
+    for dim, pick in MAIN_ONLY.items():
+        if dim in tags:
+            main = pick(v)
+            tags[dim] = [main] if main else []
+    return {**v, "tags": tags}
 
 
 def of(state: dict, asin: str) -> dict:
-    """一个商品的主图识别结果（颜色只留主色，见 normalized）：追踪商品存在 state["asins"] 里，其余存在 state[EXTRA_KEY] 里。没有返回 {}。"""
+    """一个商品的主图识别结果（颜色只留主色、风格只留主风格，见 normalized）：追踪商品存在 state["asins"] 里，其余存在 state[EXTRA_KEY] 里。没有返回 {}。"""
     rec = (state.get("asins") or {}).get(asin) or {}
     return normalized(rec.get("vision") or ((state.get(EXTRA_KEY) or {}).get(asin) or {}).get("vision") or {})
 

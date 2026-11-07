@@ -9,7 +9,7 @@ from radar.cli import _decrypt_page
 from radar.cli import TRACK_ALL
 from radar.config import Secrets
 from radar.demo import SyntheticWorld
-from radar.detect import design, traits
+from radar.detect import design, directions, traits
 
 
 def test_extract_reads_appearance_and_craft_from_titles():
@@ -217,22 +217,28 @@ def test_appearance_lists_more_and_common_features(cfg):
     i = lambda label, n, ref: {"label": label, "focus": n, "focus_share": n / 20, "reference": ref,
                                "reference_share": ref / 10}
     tr = {"design": {"工艺": [dict(t("凹槽竖纹", 3, 0.15, 0.07), lift=2.1)],
+                     "造型": [dict(t("开放格", 4, 0.2, 0.13), lift=1.5)],
                      "风格": [dict(t("现代", 4, 0.2, 0.13), lift=1.5)]},
           "title_shares": {"工艺": {"凹槽竖纹": t("凹槽竖纹", 3, 0.15, 0.07)},
+                           "造型": {"开放格": t("开放格", 4, 0.2, 0.13)},
                            "风格": {"现代": t("现代", 4, 0.2, 0.13), "农舍风": t("农舍风", 2, 0.1, 0.09)},
                            "颜色": {"黑色": t("黑色", 3, 0.15, 0.2)}}}
     tr["title_shares"]["功能卖点"] = {"带储物/抽屉": t("带储物/抽屉", 9, 0.48, 0.52)}
     vision = {"n_focus": 20, "n_reference": 10, "dimensions": {
         "风格": [i("现代", 16, 9), i("农舍风", 3, 0)],
+        "造型": [i("开放格", 16, 9)],
         "工艺": [i("锥形/外八腿", 6, 1)],
         "颜色": [i("黑色", 11, 8)],
         "功能卖点": [i("带储物/抽屉", 16, 4)]}}
     out = traits.merge_appearance(tr, vision, cfg)
     assert [f["label"] for f in out["工艺"]["more"]] == ["锥形/外八腿", "凹槽竖纹"]  # 30% − 10% 正好 20 个百分点
-    # 依据冲突的哪一档都不列：现代（标题说更多、主图说更少）；带储物（主图 80% vs 40%、标题 48% vs 52%），
+    # 依据冲突的哪一档都不列：开放格（标题说更多、主图说更少）；带储物（主图 80% vs 40%、标题 48% vs 52%），
     # 放进“常见但不比对照组多”就和显示的主图数字矛盾（实测 2026-10-14 报告：40/50 · 对照 17/40）
-    assert [f["label"] for f in out["风格"]["more"]] == ["农舍风"] and out["风格"]["common"] == []
+    assert "造型" not in out
     assert "功能卖点" not in out
+    # 风格和颜色一样，有主图识别时只看主图（主风格）：标题里说现代更多不算，现代按主图是常见、不比对照组多
+    assert [f["label"] for f in out["风格"]["more"]] == ["农舍风"]
+    assert [f["label"] for f in out["风格"]["common"]] == ["现代"] and out["风格"]["common"][0]["title"] is None
     assert out["颜色"]["more"] == [] and [f["label"] for f in out["颜色"]["common"]] == ["黑色"]
 
 
@@ -718,3 +724,25 @@ def test_colors_count_only_the_main_color(cfg):
     assert "黑色" not in [r["label"] for r in rows]
     assert "“主色”只写一个" in vision.PROMPT
     assert vision._parse('{"颜色":["白色","黑色"],"主色":"白色","外观要点":"白色柜"}')["main_color"] == "白色"
+
+
+def test_styles_count_only_the_main_style(cfg):
+    """风格也只按主风格归类：识别结果写了“主风格”就用它；以前的结果没有这一项，取第一个具体风格（不是“现代”“极简”），
+    没有具体风格的取第一个。有主图识别时标题里堆的风格词不算（Modern Farmhouse Rustic 不会同时算三种）。"""
+    st = {"asins": {
+        "F": {"vision": {"image": "x", "tags": {"风格": ["现代", "农舍风", "乡村复古"], "造型": ["开放格", "抽屉"]},
+                         "summary": "做旧灰木纹床头柜"}},
+        "P": {"vision": {"image": "y", "tags": {"风格": ["现代", "极简"]}, "summary": "白色三抽床头柜"}},
+        "G": {"vision": {"image": "z", "tags": {"风格": ["工业风", "现代"]}, "summary": "黑色金属框架书桌",
+                         "main_style": "现代"}}}}
+    assert vision.of(st, "F")["tags"]["风格"] == ["农舍风"] and vision.of(st, "F")["tags"]["造型"] == ["开放格", "抽屉"]
+    assert vision.of(st, "P")["tags"]["风格"] == ["现代"]
+    assert vision.of(st, "G")["tags"]["风格"] == ["现代"]  # 模型写的主风格为准
+    assert st["asins"]["F"]["vision"]["tags"]["风格"] == ["现代", "农舍风", "乡村复古"]  # 存下的识别结果原样不动
+    rows = {r["label"]: r["focus"] for r in vision.summarize([{"asin": a} for a in "FPG"], [], st)["dimensions"]["风格"]}
+    assert sum(rows.values()) == 3 and "乡村复古" not in rows  # 一件只算一种
+    assert "“主风格”只写一个" in vision.PROMPT
+    assert vision._parse('{"风格":["现代","中古风"],"主风格":"中古风"}')["main_style"] == "中古风"
+    item = {"asin": "F", "title": "Modern Farmhouse Rustic Industrial Nightstand"}
+    assert directions._features(item, st)["风格"] == {"农舍风"}  # 有主图识别：标题里的风格词不算
+    assert directions._features(item, {"asins": {}})["风格"] == {"现代", "农舍风", "乡村复古", "工业风"}  # 没有才看标题
