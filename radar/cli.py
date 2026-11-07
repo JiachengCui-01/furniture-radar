@@ -61,6 +61,11 @@ def cmd_reseal(args, cfg, secrets) -> int:
     return 0
 
 
+def cmd_pages(args, cfg, secrets) -> int:
+    pipeline.export_pages(cfg, secrets, args.site_dir, args.out)
+    return 0
+
+
 def cmd_notify(args, cfg, secrets) -> int:
     results = pipeline.send_last(cfg, secrets, args.site_dir)
     return 0 if results and all(results) else 1
@@ -252,6 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reseal", help="重新加密 site 里的数据和报告（换随机 IV，内容和链接不变；推送被 GitHub 误拦时用）")
     p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))
     p.set_defaults(func=cmd_reseal)
+
+    p = sub.add_parser("pages", help="准备部署到网站的文件：site 里除 data/ 的文件 + 每份报告不加密的网页（r/，知道链接就能看）")
+    p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))
+    p.add_argument("--out", default=str(PROJECT_ROOT / "_pages"))
+    p.set_defaults(func=cmd_pages)
 
     p = sub.add_parser("notify", help="把最近一期报告推送到钉钉")
     p.add_argument("--site-dir", default=str(PROJECT_ROOT / "site"))

@@ -1779,8 +1779,7 @@ def render(ctx: dict) -> str:
     facts = _facts(ctx, counts, cur)
     history = ""
     if ctx.get("history"):
-        history = (" · 往期 " + " ".join(f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"])
-                   + '<span class="sub">（往期报告请从钉钉里那一期的消息打开）</span>')
+        history = " · 往期 " + " ".join(f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"])
     pops = "".join([
         _section_pop("surge", "突然爆火", hints["surge"], cur["surge"], counts["surge"]),
         _section_pop("potential", "潜力产品", hints["potential"], cur["potential"], counts["potential"]),

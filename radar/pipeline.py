@@ -1,9 +1,11 @@
 """一次完整运行：发现 → 近 30 天榜单 / 相似款 → 选池 → 刷新日数据 → 判定 → 核查 → 报告 → 加密发布 →（可选）钉钉。"""
 from __future__ import annotations
 
+import html
 import itertools
 import os
 import re
+import shutil
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -202,9 +204,14 @@ def _period_text(period: str | None) -> str:
     return f"{period[:4]}年{int(period[4:6])}月"
 
 
-def build_url(cfg: dict, secrets: Secrets, report_id: str, key_text: str) -> str:
+PUBLIC_DIR = "r"  # 网站上不加密的报告网页放在这里（export_pages），不进公开仓库
+
+
+def build_url(cfg: dict, secrets: Secrets, report_id: str, master: bytes) -> str:
+    """钉钉里的报告链接：网站上不加密的那份（r/<报告 ID>-<随机码>.html），打开就能看、不用密钥（2026-11-07 起）。"""
     base = report_base_url(cfg, secrets)
-    return f"{base}reports/{report_id}.html#k={key_text}"
+    log.mask(crypto.public_token(master, report_id))  # 公开仓库的 Actions 日志谁都能看：随机码就是“链接”，不能出现在日志里
+    return f"{base}{PUBLIC_DIR}/{crypto.public_name(master, report_id)}"
 
 
 def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
@@ -444,7 +451,6 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
                        monthly=result.get("monthly_status"), monthly_judged=result.get("monthly_judged"),
                        retro=previous_view(state, disc, items, prev_run, cfg, today, result, extra_rows),
                        ocean_extra=result.get("ocean_extra"))
-    key_text = ctx["key_text"]
     sec = ctx["sections"]
 
     state.setdefault("reports", []).append(report_id)
@@ -480,7 +486,7 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
             rec.pop("series", None)
     store.save(site, master, state)
 
-    url = build_url(cfg, secrets, report_id, key_text)
+    url = build_url(cfg, secrets, report_id, master)
     log.info(f"报告已生成：第 {run_seq} 期 {report_id}，调用 {vendor.billable_calls} 次；"
              f"爆火 {sec['counts']['surge']} / 潜力 {sec['counts']['potential']} / "
              f"热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']}")
@@ -684,9 +690,9 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     }
     # 本期要点里只有开发建议交给大模型（逐条核对，见 narrative.parse_tips）；趋势、开发方向、风险提醒在报告里直接取数据
     ctx["tips"], ctx["summary_source"] = narrative.tips(ctx, cfg, secrets.llm_api_key)
-    # 往期链接不带密钥：带的话一份报告里有前 6 期的密钥、一期期往回连，泄露一个钉钉链接就能打开全部往期。
-    # 往期报告从钉钉里那一期的消息打开（同一个浏览器标签页里打开过的，记着密钥，点这里也能直接打开）
-    ctx["history"] = [{"id": old_id, "href": f"{old_id}.html"}
+    # 往期链接指向网站上不加密的那份（2026-11-07 起，知道链接就能看）：点了直接打开，不用回钉钉找那一期的消息。
+    # 从 r/ 下的网页和 reports/ 下的加密外壳打开都对（都是上一级目录下的 r/）
+    ctx["history"] = [{"id": old_id, "href": f"../{PUBLIC_DIR}/{crypto.public_name(master, old_id)}"}
                       for old_id in list(reversed(state.get("reports") or [])) if old_id != report_id][:6]
 
     page = report_render.render(ctx)
@@ -717,6 +723,48 @@ def _write_shell(cfg: dict, site: Path, report_id: str, envelope: dict, latest_i
     reports_dir.mkdir(parents=True, exist_ok=True)
     (reports_dir / f"{report_id}.html").write_text(
         shell.encrypted_page(f"{cfg['report']['title']} {report_id}", envelope, report_id, latest_id), encoding="utf-8")
+
+
+PUBLIC_INDEX = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<title>{title}</title><style>body{{font:15px/1.6 system-ui,sans-serif;color:#1c2230;background:#f5f6f8;margin:0;
+display:flex;min-height:100vh;align-items:center;justify-content:center}}div{{background:#fff;border-radius:12px;padding:28px 32px;
+max-width:420px;text-align:center}}</style></head><body><div><h1>{title}</h1><p>请从钉钉消息里的链接打开报告。</p></div></body></html>"""
+
+
+OLD_HISTORY_RE = re.compile(r'href="(\d{4}-\d{2}-\d{2}(?:-\d+)?)\.html(?:#k=[A-Za-z0-9_-]*)?"')
+
+
+def export_pages(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, out_dir: str | os.PathLike) -> int:
+    """部署到网站的文件（工作流“准备网站文件”调用）：site 里除了 data/ 的全部文件（加密外壳照样留着，旧钉钉链接还能打开），
+    另外每份报告解密成普通网页写到 r/<报告 ID>-<随机码>.html（知道链接就能看，2026-11-07 起）。
+    这些不加密的网页只在网站上、不进公开仓库（site 分支里还是加密的）；首页不列报告、robots.txt 不让搜索引擎收录，
+    地址里的随机码猜不出，所以只有拿到链接的人能看。返回写出的报告网页数。"""
+    master = crypto.parse_master_key(secrets.report_key)
+    site, out = Path(site_dir), Path(out_dir)
+    if out.exists():
+        shutil.rmtree(out)
+    shutil.copytree(site, out, ignore=shutil.ignore_patterns(".git", "data"))
+    title = html.escape(cfg["report"]["title"])
+    (out / "index.html").write_text(PUBLIC_INDEX.format(title=title), encoding="utf-8")
+    (out / "robots.txt").write_text("User-agent: *\nDisallow: /\n", encoding="utf-8")
+    public = out / PUBLIC_DIR
+    public.mkdir(parents=True, exist_ok=True)
+    pages = {}
+    for path in sorted((site / "reports").glob("*.html")):
+        payload = shell.read_payload(path.read_text(encoding="utf-8"))
+        pages[payload["id"]] = shell.unseal(master, payload)
+    names = {rid: crypto.public_name(master, rid) for rid in pages}
+    for rid in pages:  # 接下来上传网站文件的那一步会在（公开的）日志里列出文件名：先让 GitHub 把随机码换成 ***
+        log.mask(crypto.public_token(master, rid))
+
+    def relink(m: re.Match) -> str:  # 以前生成的报告里“往期”链到加密外壳（2026-11-02.html），改成同目录下不加密的那份
+        return f'href="{names[m.group(1)]}"' if m.group(1) in names else m.group(0)
+    for rid, page in pages.items():
+        (public / names[rid]).write_text(OLD_HISTORY_RE.sub(relink, page), encoding="utf-8")
+    count = len(pages)
+    log.info(f"网站文件已准备好：不加密的报告网页 {count} 份（{PUBLIC_DIR}/）")
+    return count
 
 
 def reseal(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> int:
@@ -870,7 +918,7 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     sec = ctx["sections"]
     log.info(f"已重新生成第 {last['seq']} 期报告 {last['id']}（未调用卖家精灵）；爆火 {sec['counts']['surge']} / "
              f"潜力 {sec['counts']['potential']} / 热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']}")
-    return RunResult(published=True, report_id=last["id"], url=build_url(cfg, secrets, last["id"], ctx["key_text"]),
+    return RunResult(published=True, report_id=last["id"], url=build_url(cfg, secrets, last["id"], master),
                      counts=sec["counts"])
 
 
@@ -885,9 +933,7 @@ def send_last(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *, clien
         log.warn("还没有任何报告，跳过钉钉推送")
         return []
     last = state["runs"][-1]
-    key_text = crypto.report_key_text(master, last["id"])
-    log.mask(key_text)
-    url = build_url(cfg, secrets, last["id"], key_text)
+    url = build_url(cfg, secrets, last["id"], master)
     if not url.startswith("http"):  # 只有相对路径的按钮在钉钉里点不开，宁可不发
         log.warn("无法确定报告网址，未推送钉钉：请设置 REPORT_BASE_URL 或 config.yaml 的 report.base_url")
         return []

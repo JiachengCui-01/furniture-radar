@@ -1,4 +1,6 @@
-"""加密：历史数据和报告都用 AES-256-GCM 加密后才发布到公开仓库/网站。
+"""加密：历史数据和报告都用 AES-256-GCM 加密后才放进公开仓库（site 分支）。
+2026-11-07 起网站上的报告不加密、知道链接就能看（用户要求）：部署时把每份报告解密成普通网页，
+放在网站的 r/<报告 ID>-<随机码>.html（随机码见 public_token），只在网站上、不进公开仓库；加密的外壳照样留着，旧的钉钉链接还能打开。
 
 主密钥 REPORT_KEY（32 字节，base64url）只存在 GitHub Secrets / 本地 .env。
 用 HKDF-SHA256 派生：
@@ -66,6 +68,20 @@ def report_key(master: bytes, report_id: str) -> bytes:
 
 def report_key_text(master: bytes, report_id: str) -> str:
     return b64u_encode(report_key(master, report_id))
+
+
+PUBLIC_INFO = b"public-page-v1"
+
+
+def public_token(master: bytes, report_id: str) -> str:
+    """报告网页地址里的随机码（2026-11-07 起报告网页不加密，知道链接就能看）：由主密钥和报告 ID 派生，
+    同一份报告每次都一样（重新生成后钉钉里的链接照样打开），没有主密钥猜不出（48 位）。"""
+    return _hkdf(master, report_id.encode("utf-8"), PUBLIC_INFO)[:6].hex()
+
+
+def public_name(master: bytes, report_id: str) -> str:
+    """不加密的报告网页文件名：<报告 ID>-<随机码>.html，放在网站的 r/ 下（不放进公开仓库）。"""
+    return f"{report_id}-{public_token(master, report_id)}.html"
 
 
 def report_aad(report_id: str) -> bytes:

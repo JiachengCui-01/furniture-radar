@@ -234,13 +234,57 @@ def test_report_is_encrypted_and_decryptable(world_run, master_key):
     _world, _secrets, site, _first, second = world_run
     page = (site / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
     assert "B0DEMO" not in page and "突然爆火" not in page   # 公开文件里只有密文
-    plain = _decrypt_page(page, crypto.parse_master_key(master_key))
+    master = crypto.parse_master_key(master_key)
+    plain = _decrypt_page(page, master)
     assert "突然爆火" in plain and "B0DEMO" in plain and "与上期对比" in plain
-    assert 'href="2026-10-05.html"' in plain and "2026-10-05.html#k=" not in plain  # 往期链接不带密钥（不能一期期往回连）
+    # 往期链接指向网站上不加密的那份（2026-11-07 起知道链接就能看），不带密钥
+    assert f'href="../r/{crypto.public_name(master, "2026-10-05")}"' in plain and "#k=" not in plain
     index = (site / "index.html").read_text(encoding="utf-8")
     assert "2026-10-08" in index and "B0DEMO" not in index
     assert b"B0DEMO" not in (site / "data" / "state.enc").read_bytes()
-    assert second.url.startswith("https://demo.github.io/radar/reports/2026-10-08.html#k=")
+    # 钉钉链接：网站上不加密的网页，地址里是猜不出的随机码，不带密钥
+    assert second.url == f"https://demo.github.io/radar/r/2026-10-08-{crypto.public_token(master, '2026-10-08')}.html"
+    assert len(crypto.public_token(master, "2026-10-08")) == 12
+    assert crypto.public_token(master, "2026-10-08") != crypto.public_token(master, "2026-10-05")
+
+
+def test_website_gets_plain_pages_at_random_links_and_repo_stays_encrypted(world_run, master_key, cfg, tmp_path,
+                                                                           capsys, monkeypatch):
+    """网站文件（export_pages）：每份报告解密成普通网页放在 r/<ID>-<随机码>.html，往期链接（包括以前生成的、链到加密外壳的）
+    都改成同目录下不加密的那份；首页不列报告、robots.txt 不让收录；data/ 不上网站；site 分支（公开仓库）里还是只有密文；
+    在 GitHub Actions 里先把随机码登记成要遮住的值（上传那一步会在公开日志里列出文件名）。"""
+    _world, secrets, site, first, second = world_run
+    master = crypto.parse_master_key(master_key)
+    out = tmp_path / "pages"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert pipeline.export_pages(cfg, secrets, site, out) == 2
+    logs = capsys.readouterr().out
+    names = {rid: crypto.public_name(master, rid) for rid in (first.report_id, second.report_id)}
+    for rid, name in names.items():
+        page = (out / "r" / name).read_text(encoding="utf-8")
+        assert "突然爆火" in page and "#k=" not in page
+        assert f"::add-mask::{crypto.public_token(master, rid)}" in logs
+    newest = (out / "r" / names[second.report_id]).read_text(encoding="utf-8")
+    assert f'href="../r/{names[first.report_id]}"' in newest
+    index = (out / "index.html").read_text(encoding="utf-8")
+    assert "钉钉" in index and first.report_id not in index and second.report_id not in index
+    assert (out / "robots.txt").read_text(encoding="utf-8").startswith("User-agent: *")
+    assert not (out / "data").exists() and (out / "reports" / f"{second.report_id}.html").exists()  # 旧的加密链接照样能开
+    assert "B0DEMO" not in (site / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
+    assert not (site / "r").exists()  # 不加密的网页不进 site 分支
+
+    # 以前生成的报告：往期链到加密外壳（2026-10-05.html，更早的还带 #k=），网站上那份改成同目录下不加密的
+    import shutil
+    from radar.report import shell
+    old_site = tmp_path / "old_site"
+    shutil.copytree(site, old_site)
+    path = old_site / "reports" / f"{second.report_id}.html"
+    payload = shell.read_payload(path.read_text(encoding="utf-8"))
+    legacy = shell.unseal(master, payload).replace(f'href="../r/{names[first.report_id]}"', f'href="{first.report_id}.html#k=abc"')
+    pipeline._write_shell(cfg, old_site, second.report_id, shell.seal(master, second.report_id, legacy), second.report_id)
+    pipeline.export_pages(cfg, secrets, old_site, tmp_path / "pages2")
+    page = (tmp_path / "pages2" / "r" / names[second.report_id]).read_text(encoding="utf-8")
+    assert f'href="{names[first.report_id]}"' in page and "#k=" not in page
 
 
 def test_old_reports_point_to_latest(world_run, master_key):
@@ -312,9 +356,12 @@ def test_ci_logs_never_contain_product_data(cfg, master_key, tmp_path, capsys, m
     result = pipeline.run(cfg, Secrets(report_key=master_key), tmp_path, transport=world, now=START)
     out = capsys.readouterr()
     text = out.out + out.err
-    key = result.url.split("#k=")[1]
+    master = crypto.parse_master_key(master_key)
+    key = crypto.report_key_text(master, result.report_id)
+    token = crypto.public_token(master, result.report_id)  # 报告网页地址里的随机码：知道它就能看报告
     assert "B0DEMO" not in text and "Fluted" not in text
     assert f"::add-mask::{key}" in text and text.count(key) == 1  # 只出现在 mask 指令里
+    assert f"::add-mask::{token}" in text and text.count(token) == text.count(f"::add-mask::{token}")
 
 
 def test_send_last_posts_action_card(world_run, cfg):
@@ -331,7 +378,8 @@ def test_send_last_posts_action_card(world_run, cfg):
     assert results == [True]
     card = sent[0]["actionCard"]
     assert "突然爆火" in card["text"] and "2026-10-08" in card["title"]
-    assert "%23k%3D" in card["singleURL"]  # 密钥片段被完整编码进按钮链接
+    # 按钮链接：网站上不加密的那份（随机码），不再带 #k= 密钥（2026-11-07 起）
+    assert "%2Fr%2F2026-10-08-" in card["singleURL"] and "%23k%3D" not in card["singleURL"]
 
 
 def test_whole_market_list_feeds_the_pool(cfg, master_key, tmp_path):
@@ -781,7 +829,9 @@ def test_old_reports_lose_their_embedded_history_keys(world_run, master_key, cfg
     path = site / "reports" / f"{second.report_id}.html"
     payload = shell.read_payload(path.read_text(encoding="utf-8"))
     key, aad = crypto.report_key(master, payload["id"]), crypto.report_aad(payload["id"])
-    plain = _decrypt_page(path.read_text(encoding="utf-8"), master)
+    # 那时的往期链接写的是加密外壳（2026-10-05.html），2026-11-07 起改成网站上不加密的那份（../r/…）
+    plain = _decrypt_page(path.read_text(encoding="utf-8"), master).replace(
+        f'href="../r/{crypto.public_name(master, first.report_id)}"', f'href="{first.report_id}.html"')
     leaky = plain.replace(f'href="{first.report_id}.html"', f'href="{first.report_id}.html#k=SECRETKEY_abc-123"')
     assert leaky != plain
     # 以前的报告：没压缩、带往期密钥

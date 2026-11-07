@@ -126,17 +126,18 @@ jobs:
           echo "::error::三次都没能推送到 site 分支，本期数据没有保存"
           exit 1
 
-      - name: 准备网站文件（不包含 data/）
+      - name: 准备网站文件（不包含 data/；每份报告另出一份不加密的网页，知道链接就能看）
         if: steps.run.outputs.published == 'true'
-        run: |
-          mkdir -p _pages
-          cp -r site/. _pages/
-          rm -rf _pages/data
+        env:
+          REPORT_KEY: ${{ secrets.REPORT_KEY }}
+        # 不加密的网页只放进网站（r/<报告 ID>-<随机码>.html），不进公开仓库的 site 分支；首页不列报告
+        run: python -m radar pages --site-dir site --out _pages
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5
         if: steps.run.outputs.published == 'true'
         with:
           path: _pages
+          retention-days: 1  # 部署完 deploy 那一步就删掉（里面有不加密的报告网页），这里是兜底
 
       - name: 保活
         if: always() && github.event_name == 'schedule'
@@ -151,6 +152,7 @@ jobs:
     permissions:
       pages: write      # 部署 GitHub Pages
       id-token: write
+      actions: write    # 部署完删掉网站文件包
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -159,6 +161,16 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5
+
+      # 网站文件包里有不加密的报告网页（r/）：公开仓库里登录 GitHub 的人都能在运行页面下载，部署完马上删掉（失败也删）
+      - name: 删掉这次上传的网站文件包
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" --jq '.artifacts[] | select(.name=="github-pages") | .id'); do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" && echo "已删除网站文件包 ${id}"
+          done
 
   notify:
     needs: [radar, deploy]
