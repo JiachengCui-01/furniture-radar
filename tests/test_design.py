@@ -237,12 +237,15 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     # 主体里不放完整的商品卡片（都在隐藏的小窗内容里），但商品要有图：KPI 缩略图、本期增长商品图墙
     body = plain.split('<div class="pop-src"')[0]
     assert '<article class="card"' not in body and '<article class="card"' in plain
-    assert "外观与工艺依据" in body and "增长商品" in body and "本期要点" in body
+    # 单独的“外观与工艺依据”模块 2026-11-07 删掉了（本期要点的外观与工艺趋势卡已经有每个特征的占比和对照）
+    assert "外观与工艺依据" not in body and 'id="traits"' not in body and "增长商品" in body and "本期要点" in body
+    assert "外观与工艺趋势" in body
     assert body.index('class="kpis"') < body.index('id="picks"') < body.index('class="summary"')
     assert 'class="tile"' in body and 'class="kpi-th"><span class="ph">' in body  # 演示数据没有图片地址，用首字母占位
     assert "判定方法与数据口径" not in plain and "名词说明" in body  # 报告上不放大段规则
-    assert "凹槽竖纹" in body and "<h4>主材质</h4>" in body  # 演示数据里爆火商品标题都带 Fluted
-    assert "Material 属性" in plain and f"每期最多查 {cfg['budget']['material_lookups']} 个" in plain
+    # 外观与工艺趋势卡：主材质一张、工艺里有凹槽竖纹（演示数据里爆火商品标题都带 Fluted）
+    assert "凹槽竖纹" in body and "<b>主材质</b>" in body and "<h4>主材质</h4>" not in body
+    assert "知道材质的增长商品" in body  # 主材质卡的提示：占比只在知道具体材质的商品里算（原来单独的依据模块已删）
     # 本期要点是四块图标卡片（不是大段文字），四块都要有、按这个顺序，不是互相替换
     digest = body[body.index('class="summary"'):body.index('<section id="dirs"')]
     heads = ["外观与工艺趋势", "开发方向", "开发建议", "风险提醒"]

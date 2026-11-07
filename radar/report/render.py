@@ -3,7 +3,8 @@
 单文件、无外部脚本/字体，只有商品图片引用亚马逊图床；适配手机和深色模式。
 主体：KPI（带缩略图）→ 本期增长商品（图墙，带迷你走势）→ 本期要点（图标卡片：外观与工艺趋势、开发建议、
 前几个开发方向、风险提醒）→ 开发方向（一行一个子类目的一览：月增量、价格带、
-新品占比、头部评论，可排序）→ 外观与工艺依据（哑铃图）→ 与上期对比（缩略图行）→ 数据说明（次要的折叠）。
+新品占比、头部评论，可排序）→ 与上期对比（缩略图行）→ 数据说明（次要的折叠）。
+（单独的“外观与工艺依据”哑铃图模块 2026-11-07 按用户要求删掉了：本期要点的外观与工艺趋势卡已经列了每个特征的占比和对照）
 完整的商品卡片（各板块、增长商品、全部追踪商品）和每个开发方向的画像放在隐藏的小窗内容里，点 KPI 数字、链接或一览的一行才弹出；
 卡片多的小窗可按类别、子类目筛，按月增量 / 售价 / 上架天数 / 评分排。图表见 charts.py。
 列出的商品去掉简单款、合并相近款（detect/showcase.py，pipeline.curated_lists）；报告上的规则只写一句话，完整口径见 README。
@@ -799,35 +800,6 @@ def _kpi(key: str, label: str, desc: str, rows: list[dict], total: int, folded: 
             f'<span class="kpi-th">{thumbs}</span>{extra}</button>')
 
 
-def _examples(pool: list[dict], test, n: int = 3) -> str:
-    """有这个特征的增长商品，取前 n 个的缩略图（pool = 列出的增长商品，按势头）。"""
-    picked = [i for i in pool if test(i)][:n]
-    return f'<div class="ths">{"".join(thumb(i) for i in picked)}</div>' if picked else ""
-
-
-def _material_box(m: dict, lookups: int) -> str:
-    """主材质：每类一行，实心点 = 增长商品里的占比，空心圈 = 持续热销对照组，右边是个数（增长 · 对照）。"""
-    rows = [r for r in m.get("rows") or [] if r["count"] or r["reference"]]
-    if not rows:
-        return ""
-    nf, nr = m["n_focus"], m["n_reference"]
-    lines = []
-    for r in rows:
-        df, dr = materials.denominators(m, r["label"])
-        tip = f"{r['label']}：增长商品 {r['count']}/{df}（{r['share']:.0%}）" + (
-            f" · 对照组 {r['reference']}/{dr}（{r['reference_share']:.0%}）" if dr and r["reference_share"] is not None else "")
-        lines.append(f'<div class="frow mrow"><b class="flab">{esc(r["label"])}</b>'
-                     f'<span class="fdb">{charts.dumbbell(r["share"], r["reference_share"] if dr else None, tip)}</span>'
-                     f'<span class="cnt">{r["count"]}/{df}' + (f' · {r["reference"]}/{dr}' if dr else "") + "</span></div>")
-    src = ""
-    if "amazon_focus" in m:
-        known = (f"知道具体材质的：增长 {m['known_focus']}/{nf}、对照 {m['known_reference']}/{nr}，占比只在这些里算（没查到的不猜）；"
-                 if "known_focus" in m else "")
-        src = (f'<p class="hint">{known}亚马逊 Material 属性：增长 {m["amazon_focus"]}/{nf}、对照 {m["amazon_reference"]}/{nr}，'
-               f'其余看标题、主图（主图只认得出金属，看不出实木还是板材；每期最多查 {lookups} 个，查过的缓存）</p>')
-    return f'<div class="dbox"><h4>主材质</h4>{src}{"".join(lines)}</div>'
-
-
 DIM_SHORT = {"功能卖点": "功能"}
 
 
@@ -843,67 +815,6 @@ def _tracks(f: dict, vision: dict) -> list[tuple[str, float, float | None, str]]
         t = f["title"]
         out.append(("ttl", t["share"], t["baseline_share"], f"标题：增长商品 {t['share']:.0%} · 全部头部商品 {t['baseline_share']:.0%}"))
     return out
-
-
-def _feature_rows(appearance: dict, vision: dict, pool: list[dict]) -> str:
-    """“比对照组更多”的特征，所有维度放在一起按差距（第一条依据的百分点）从大到小，一行一个。"""
-    rows = []
-    for dim, groups in appearance.items():
-        for f in groups.get("more") or []:
-            tracks = _tracks(f, vision)
-            if tracks:
-                gap = tracks[0][1] - (tracks[0][2] or 0)
-                rows.append((gap, dim, f, tracks))
-    rows.sort(key=lambda r: -r[0])
-    out = []
-    for gap, dim, f, tracks in rows:
-        bells = "".join(f'<span><span class="src {src}">{"图" if src == "img" else "题"}</span>{charts.dumbbell(g, o, tip)}</span>'
-                        for src, g, o, tip in tracks)
-        out.append(f'<div class="frow"><span class="fdim">{esc(DIM_SHORT.get(dim, dim))}</span><b class="flab">{esc(f["label"])}</b>'
-                   f'<span class="fdb">{bells}</span><span class="fgap">+{gap * 100:.0f}</span>'
-                   + _examples(pool, lambda i, label=f["label"], dim=dim: label in (i.get("design") or {}).get(dim, ())) + "</div>")
-    return "".join(out)
-
-
-def _common_lines(appearance: dict, vision: dict) -> str:
-    """常见但不比对照组多、也有：品类本来就这样做的，按维度一行，折叠起来。"""
-    def chip(f: dict) -> str:
-        t, i = f.get("title"), f.get("image")
-        if i:
-            ref = f" · {i['reference']}/{vision['n_reference']}" if vision.get("n_reference") else ""
-            return f'<span>{esc(f["label"])}<em>{i["focus"]}/{vision["n_focus"]}{ref}</em></span>'
-        return f'<span>{esc(f["label"])}<em>{t["share"]:.0%} · {t["baseline_share"]:.0%}</em></span>'
-    lines = []
-    for dim, groups in appearance.items():
-        chips = [chip(f) for f in (groups.get("common") or []) + (groups.get("also") or [])]
-        if chips:
-            lines.append(f'<div class="cline"><b>{esc(DIM_SHORT.get(dim, dim))}</b>{"".join(chips)}</div>')
-    if not lines:
-        return ""
-    return ("<details><summary>常见但不比对照组多的特征（品类本来就这样做，不算趋势）</summary>"
-            '<p class="hint">数字 = 增长商品 · 对照组</p>' + "".join(lines) + "</details>")
-
-
-def _structure(tr: dict) -> str:
-    rows = []
-    for f in tr.get("facts", []):
-        rows.append(
-            f"<tr><td>{esc(f['dimension'])}</td><td>{esc(f['value'])}</td>"
-            f"<td class=n>{f['share']:.0%}</td><td class=n>{f['baseline_share']:.0%}</td></tr>")
-    table = ("<div class=tbl><table><thead><tr><th>维度</th><th>特征</th><th class=n>增长商品</th>"
-             "<th class=n>全部头部商品</th></tr></thead><tbody>"
-             + "".join(rows) + "</tbody></table></div>") if rows else '<p class="empty">没有明显偏多的结构特征。</p>'
-    kws = "".join(f"<span title=\"增长商品 {k['share']:.0%}，全部头部商品 {k['baseline_share']:.0%}\">"
-                  f"{esc(k['term'])}<b>{k['share']:.0%}</b></span>" for k in tr.get("keywords", []))
-    numbers = []
-    for name, v in (tr.get("numbers") or {}).items():
-        if v.get("focus") is not None and v.get("baseline") is not None:
-            fmt = fmt_price if "价格" in name else (lambda x: fmt_num(x, 1))
-            numbers.append(f"<span class=chip>{esc(name)}：增长商品 {fmt(v['focus'])} · 全部头部商品 {fmt(v['baseline'])}</span>")
-    return (f"<details><summary>其他特征：子类目、价格段、上架时长、标题高频词</summary>{table}"
-            + (f"<div class=kw style=\"margin-top:10px\">{kws}</div>" if kws else "")
-            + (f"<div class=chips style=\"margin-top:10px\">{''.join(numbers)}</div>" if numbers else "")
-            + "</details>")
 
 
 DIRECTION_ROWS = (("主材质", None), ("风格", "风格"), ("造型", "造型"), ("工艺", "工艺"), ("颜色", "颜色"),
@@ -1447,8 +1358,8 @@ def _digest(ctx: dict, cur: dict, by_asin: dict) -> str:
     pool = cur["growth"]["shown"]
     focus = ctx.get("focus") or []
     legend = ('<i class="sw pg"></i>增长商品占比<i class="sw tk"></i>对照组 / 头部<span class="dsep">·</span>▲ 明显更多 ▼ 明显更少'
-              '<span class="dsep">·</span>金额 = 带这个特征的增长商品月增量<span class="dsep">·</span>点一行看商品 · '
-              '<a href="#traits">依据 ›</a>' if not tr.get("note") else "")
+              '<span class="dsep">·</span>金额 = 带这个特征的增长商品月增量<span class="dsep">·</span>点一行看商品'
+              if not tr.get("note") else "")
     cards, dir_sub = _dir_cards(tr, cfg, cur, focus, by_asin)
     groups = narrative.risks(ctx)
     n_risky = len({i["asin"] for g in groups for i, _w, _t in g["items"]})
@@ -1459,31 +1370,6 @@ def _digest(ctx: dict, cur: dict, by_asin: dict) -> str:
             + _dg("risk", "risk", "风险提醒", _risk_rows(groups),
                   f"列出的商品里 {n_risky} 个有风险标签，按类列全；悬停小图看品名和标签" if groups else "", "wide")
             + "</div>")
-
-
-def _traits(tr: dict, cfg: dict, pool: list[dict]) -> str:
-    if tr.get("note"):
-        return f'<p class="empty">{esc(tr["note"])}</p>'
-    vision = tr.get("vision") or {}
-    mats = tr.get("materials") or {}
-    appearance = tr.get("appearance") or {}
-    dot = '<svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" class="{}"/></svg>'
-    legend = (f'<div class="leg2"><span>{dot.format("gro")}增长商品</span><span>{dot.format("oth")}对照组</span>'
-              f'<span><span class="src img">图</span>主图：增长势头前 {vision.get("n_focus") or 0} 个 vs 持续热销对照 '
-              f'{vision.get("n_reference") or mats.get("n_reference") or 0} 个</span>'
-              f'<span><span class="src ttl">题</span>标题：增长商品 vs 全部头部商品 {tr["n_baseline"]} 个</span>'
-              '<span>+N = 差几个百分点</span></div>')
-    head = (f'<p class="hint">样本：<a href="#" data-pop="growth">全部增长商品 {tr["n_focus"]} 个</a>（含没列出的简单款、相近款）；'
-            '只列增长商品明显更多的特征，右边是带这个特征的增长商品。</p>')
-    rows = _feature_rows(appearance, vision, pool)
-    feats = (f'<div class="dbox"><h4>比对照组更多的外观与工艺</h4>{legend}<div class="flist">{rows}</div>'
-             f'{_common_lines(appearance, vision)}</div>') if rows else (
-        f'<div class="dbox"><h4>外观与工艺</h4><p class="empty">增长商品没有比对照组明显更多的特征。</p>'
-        f'{_common_lines(appearance, vision)}</div>')
-    if not appearance:
-        feats = '<div class="dbox"><p class="empty">增长商品没有明显偏多或常见的外观/工艺特征。</p></div>'
-    mat = _material_box(mats, int(cfg["budget"].get("material_lookups", 0)))
-    return f'{head}<div class="tgrid">{mat or "<div></div>"}{feats}</div>{_structure(tr)}'
 
 
 def _changes(diff: dict, by_asin: dict) -> str:
@@ -1808,9 +1694,8 @@ def render(ctx: dict) -> str:
 {_gallery(cur, cfg)}
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{_digest(ctx, cur, by_asin)}</section>
 {dirs_html}
-<section id="traits" style="--c:var(--potential)"><h2><span class="dot"></span>外观与工艺依据</h2>{_traits(ctx['traits'], cfg, pool)}</section>
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="about" style="--c:var(--muted)"><h2><span class="dot"></span>数据说明<a class="h-more" href="#" data-pop="all">全部 {counts['total']} 个追踪商品 ›</a></h2>
 {facts_html}{_method(cfg, ctx.get('repo_url') or '')}</section>
-<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 报告已加密，仅持有链接的人可查看</footer>
+<footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 仅持有链接的人可查看</footer>
 </div>{pops}{dir_pops}{POPUP}{HOVER_JS}{TIP_JS}{BOARD_JS}</body></html>"""
