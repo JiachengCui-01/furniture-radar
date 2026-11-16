@@ -462,6 +462,25 @@ def test_rerender_after_a_scope_change_keeps_the_runs_own_scope(cfg, master_key,
     assert pipeline.needs_discovery(after, wider, (START + timedelta(days=6)).date())  # 下一期照样按新范围重新发现
 
 
+def test_run_skips_quietly_when_the_month_has_too_few_calls_left(cfg, master_key, tmp_path):
+    """平分下来一期不够 min_run 次：剩下的够一期就这期全用掉；不够就安静跳过（不调用、不算失败），下月新额度到了再跑。"""
+    import copy
+
+    world = SyntheticWorld(START.date())
+    secrets = Secrets(report_key=master_key)
+    first = pipeline.run(cfg, secrets, tmp_path, transport=world, now=START)
+    master = crypto.parse_master_key(master_key)
+    used = sum(store.load(tmp_path, master)["calls"].values())
+    tight = copy.deepcopy(cfg)
+    tight["budget"].update(split="even", min_run=450, monthly_cap=used + 300, max_per_run=2500)
+    world.advance(3)
+    before = len(world.calls)
+    result = pipeline.run(tight, secrets, tmp_path, transport=world, now=START + timedelta(days=3), force=True)
+    assert result.skipped_reason and "本月额度只剩 300 次" in result.skipped_reason and not result.published
+    assert len(world.calls) == before  # 没有调用卖家精灵
+    assert store.load(tmp_path, master)["run_seq"] == 1 and first.published
+
+
 def test_rerender_keeps_tracked_blue_ocean_products_in_the_pool(cfg, master_key, tmp_path, monkeypatch):
     """蓝海产品只在蓝海产品里列出、不在运行记录的 labels 里（2026-11-07 起），另记在 ocean：
     重新生成时照样进池判一遍，不会变成“只有名单数据”、没有走势图的卡片。"""
@@ -931,7 +950,7 @@ def test_budget_is_split_evenly_over_the_runs_left(cfg, master_key, tmp_path):
     assert pipeline.runs_left(utc(12, 13), live) == 2 and pipeline.runs_left(datetime(2026, 10, 31, 17, 0, tzinfo=timezone.utc), live) == 3
     weekly = {**live, "schedule": {**live["schedule"], "min_days_between_runs": 7}}
     assert [pipeline.runs_left(utc(11, d), weekly) for d in (1, 8, 15, 22, 29, 30)] == [5, 4, 3, 2, 1, 1]
-    cfg["budget"].update(split="even", monthly_cap=2000, max_per_run=450)
+    cfg["budget"].update(split="even", monthly_cap=2000, max_per_run=450, min_run=0)  # 一期最少次数另有测试
     cfg["schedule"]["min_days_between_runs"] = 7
     world = SyntheticWorld(utc(11, 1).date())
     secrets = Secrets(report_key=master_key, report_base_url="https://demo.github.io/radar/")

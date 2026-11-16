@@ -245,6 +245,18 @@ def run(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike, *,
         # 最后一期（11-29，黑五那周）只剩约 1,200 次；12 月只有 4 期、又有 1,800 次用不上
         left = max(0, int(bcfg["monthly_cap"]) - used_this_month)
         limit = min(int(bcfg.get("max_per_run") or left), left // runs)
+        # 一期至少要 min_run 次才有用（全市场名单约 180 次、早期名单约 45 次，剩下的才拉日数据）。平分下来不够时：
+        # 剩下的还够一期就这期全用掉（本月后面的期跳过）；不够一期就安静跳过（不发失败告警），每天的定时检查接着看，
+        # 下月 1 号新额度到了就跑。2026-11-07 用户把 11 月剩下的 967 次提前用掉，11-21 那期就是这样跳过的
+        min_run = int(bcfg.get("min_run") or 0)
+        if min_run and limit < min_run:
+            if left >= min_run:
+                limit = min(int(bcfg.get("max_per_run") or left), left)
+            else:
+                why = (f"本月额度只剩 {left} 次，不够一期（至少 {min_run} 次），这期不跑；"
+                       f"之后每天的定时检查接着看，下月 1 号起用新额度")
+                log.info(f"跳过：{why}")
+                return RunResult(skipped_reason=why)
     else:
         # 要重新发现子类目、或者头一个月要拉上个月的全市场月度名单当基准的那一期，给多一点预算
         busy = needs_discovery(state, cfg, today) or universe.baseline_period(state, today) is not None
