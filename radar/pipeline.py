@@ -16,7 +16,7 @@ from . import (analyze, clock, crypto, discovery, log, materials, monthly_lists,
                store, tracking, universe, verify, vision)
 from .config import Secrets, github_repo_from_remote, report_base_url
 from .detect import diff as diffing
-from .detect import directions, market, showcase
+from .detect import directions, insights, market, showcase
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -675,6 +675,10 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         # 主图上看得出的特征（只看主图识别）：报告里配图的地方按它挑，图上看不出的特征不配这张图
         item["seen"] = {dim: sorted(set(v)) for dim, v in (vision.of(state, item["asin"]).get("tags") or {}).items() if v}
         item["room"] = narrative.room_of(item["title"]) if discovery.room_node(item.get("node"), cfg) else ""
+    # 卡片上的“可能原因”和“发现”：每个商品和同子类目的够量商品比（detect/insights.py，本期全市场名单，0 次调用）
+    peers = insights.context(state, today, cfg, growth)
+    for item in items + extra:
+        item["insight"] = insights.for_item(item, peers, cfg)
     trait["directions"] = directions.compute(growth, state, trait["appearance"], cfg, disc=disc)
     trait["direction_overview"] = directions.overview(items, growth, trait["directions"], disc, cfg)
     trait["market"] = market.summarize(state, today, cfg)  # 开发方向一览的价格带、新品占比、头部评论（本期全市场名单，0 次调用）

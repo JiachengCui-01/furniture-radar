@@ -150,6 +150,10 @@ text-decoration:none;color:inherit;background:var(--card)}
 .tile .kk b{color:var(--c)}
 .tile .inc{font-size:12.5px;white-space:nowrap}.tile .inc b{color:var(--text)}
 .tile .sim{font-size:11px;color:var(--muted)}
+.fx i.r{border-color:var(--c);color:var(--c);font-weight:600}
+.tile .why{font-size:11.5px;line-height:1.4;color:var(--text);background:var(--hl);border-radius:5px;padding:2px 6px;margin-top:1px}
+.ins{font-size:12px;line-height:1.5;margin:4px 0 2px}.ins b{display:block;font-size:11.5px;color:var(--muted);font-weight:600}
+.ins ul{margin:1px 0 0;padding-left:16px}.ins li{margin:1px 0}.ins.why li::marker{color:var(--c)}
 .fx{display:flex;flex-wrap:wrap;gap:3px;margin:2px 0}
 .fx i{font-style:normal;font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line);color:var(--text);
 background:var(--chip);white-space:nowrap}
@@ -644,7 +648,24 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
         sim = (f'<div class="simrow">相近款 {len(similar)} 个：' + "".join(thumb(x) for x in similar[:8])
                + ("…" if len(similar) > 8 else "") + "</div>")
     return (f'<article class="card" style="--c:var(--{c})"{_card_data(item, kind)}>{_head(item, group)}'
-            f'<div class="kv">{"".join(kv)}</div>{note}{_features(item)}{look}{_tags(item)}{signals}{sim}{chart}</div></article>')
+            f'<div class="kv">{"".join(kv)}</div>{note}{_insight(item, kind)}{_features(item)}{look}{_tags(item)}{signals}{sim}{chart}</div></article>')
+
+
+def _insight(item: dict, kind: str) -> str:
+    """卡片上的“可能原因”和“发现”（detect/insights.py）：和同子类目的够量商品比出来的，每条带数字，悬停看口径。"""
+    ins = item.get("insight") or {}
+    if not ins:
+        return ""
+    head = "可能为什么卖得稳" if kind == "hot" else "可能为什么在涨"
+
+    def rows(pairs):
+        return "".join(f'<li data-tip="{esc(tip)}">{esc(text)}</li>' for text, tip in pairs)
+    out = ""
+    if ins.get("reasons"):
+        out += f'<div class="ins why"><b>{head}</b><ul>{rows(ins["reasons"])}</ul></div>'
+    if ins.get("findings"):
+        out += f'<div class="ins find"><b>和同类比</b><ul>{rows(ins["findings"])}</ul></div>'
+    return out
 
 
 def _pop_src(key: str, title: str, color: str, inner: str) -> str:
@@ -767,7 +788,14 @@ def _trend(item: dict, kind: str) -> str:
 def _tile(item: dict, similar: list[dict]) -> str:
     kind = growth_kind(item) or item["label"]
     node = item.get("node_cn") or item.get("node_name") or ""
-    feats = "".join(f"<i>{esc(f)}</i>" for f in (item.get("features") or [])[:3])
+    ins = item.get("insight") or {}
+    rare = ins.get("rare") or {}
+    # 同类少见的元素标亮（悬停看同类里有的比例），排在前面
+    names = sorted((item.get("features") or [])[:4], key=lambda f: f not in rare)[:3]
+    def tip(share: float) -> str:
+        return "同类里没有" if share < 0.005 else f"同类里只有 {share:.0%} 有"
+    feats = "".join(f'<i class="r" data-tip="{tip(rare[f])}">{esc(f)}</i>' if f in rare else f"<i>{esc(f)}</i>"
+                    for f in names)
     sim = f'<span class="sim">另有相近款 {len(similar)} 个</span>' if similar else ""
     inc = increment_text(item)
     inc = f"月增量 {inc}" if inc in ("按 0", "无法估算") else f"<b>+{esc(inc)}</b>/月"
@@ -776,7 +804,9 @@ def _tile(item: dict, similar: list[dict]) -> str:
             f'<span class="bd"><span class="tt">{esc(short_name(item, 60))}</span>'
             f'<span class="mm">{esc(node)} · {fmt_price(item.get("price"))}</span>'
             f'<span class="kk"><span>{_tile_metric(item, kind)}</span><span class="inc">{inc}</span></span>{_trend(item, kind)}'
-            + (f'<span class="fx">{feats}</span>' if feats else "") + f"{sim}</span></a>")
+            + (f'<span class="fx">{feats}</span>' if feats else "")
+            + (f'<span class="why">{esc(more)}</span>' if (more := ins.get("more")) else "")
+            + f"{sim}</span></a>")
 
 
 def _gallery(cur: dict, cfg: dict) -> str:
