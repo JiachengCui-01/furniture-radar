@@ -598,7 +598,7 @@ def test_new_listings_first_reviews_may_be_vine(cfg):
     assert codes(35, 290, 25, 13.2) == {}                      # 35 条里 30 条可能是 Vine：两项都不到门槛
     got = codes(171, 633, 29, 12.0)
     assert set(got) == {"review_rate", "new_listing_reviews"}  # 171 条评论：扣掉 30 条照样 22%
-    assert "已扣掉 30 条可能的 Vine 评论" in got["new_listing_reviews"]
+    assert "已扣掉 30 条按 Vine 计划估的评论" in got["new_listing_reviews"]
     assert "当月新增评论 23 条" in got["review_rate"]            # 29 × (1 − 30/171)，按比例扣、不是全扣
 
 
@@ -1040,7 +1040,7 @@ def test_relisted_listing_compared_with_its_first_week_is_noted(cfg):
     state = {"asins": {"R": _rec(sales, 4.5, available=available, ratings=1500),
                        "N": _rec(sales, 4.5, available=available, ratings=10)}}
     by = {i["asin"]: i for i in analyze.analyze(state, None, ["R", "N"], cfg, END)["items"]}
-    note = "对比期包括它开卖的第一周（老品换链接：起量里可能有老链接转过来的流量）"
+    note = "对比期包括它开卖的第一周（老品换链接：起量里含老链接转过来的流量）"
     assert by["R"]["relist"] and by["R"]["label"] == "surge" and note in by["R"]["tags"]
     assert not by["N"]["relist"] and by["N"]["label"] == "surge" and note not in by["N"]["tags"]
 

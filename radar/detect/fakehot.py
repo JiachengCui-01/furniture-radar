@@ -127,7 +127,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
     if not (check and check.get("vine_share") is not None) and age_now is not None \
             and 0 <= age_now <= int(cfg.get("vine_days", 90)):
         vine, assumed = min(int(cfg.get("vine_allowance", 30)), int(total or 0)), True
-        vine_text = f"条可能的 Vine 评论（新品最多 {int(cfg.get('vine_allowance', 30))} 条，没抽查过评论）"
+        vine_text = f"条按 Vine 计划估的评论（新品最多 {int(cfg.get('vine_allowance', 30))} 条，没抽查过评论）"
     raw_flag = False  # 不扣 Vine 时评论信号是否成立
 
     # 1. 留评率（来自月度数据）：当月新增评论 ÷ 销量，都是整个父体的
@@ -218,7 +218,7 @@ def score(rec: dict, d: Daily | None, as_of: date | None, disc_row: dict | None,
             tags.append("销量区间不完整，评论增速暂不计分")
         if delta_ratings >= cfg["min_new_reviews"] and not merged and delta_units is not None:
             once = any(sig["code"] in ("review_rate", "new_listing_reviews") for sig in signals)
-            vine_note = f"，已扣掉 {run_vine} 条可能的 Vine 评论" if run_vine else ""
+            vine_note = f"，已扣掉 {run_vine} 条按 Vine 计划估的评论" if run_vine else ""
             once_note = "；和留评率 / 新品评论比是同一个证据，这一项只计 1 分" if once else ""
             if delta_units == 0:
                 add("reviews_without_sales", 1 if once else 2,

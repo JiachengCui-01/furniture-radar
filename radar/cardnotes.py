@@ -2,8 +2,8 @@
 规则尽量靠大模型和数据，现有的套规则作为辅助）。
 
   对比 = 它的外观、功能和同子类目的同类比有什么不同、哪里更突出；
-  原因 = 它可能为什么在涨（持续热销写为什么卖得稳）。
-给大模型的只有系统已经算好的事实（detect/insights.py 的外观功能对比、可能原因、市场位置，主图识别的外观要点，走势数字），
+  原因 = 它为什么在涨（持续热销写为什么卖得稳）。描述里不写“可能”（2026-11-16 用户要求），写“靠……”。
+给大模型的只有系统已经算好的事实（detect/insights.py 的外观功能对比、原因、市场位置，主图识别的外观要点，走势数字），
 不给它自己找数据。写回来以后逐条核对（check）：里面的每个数字、每个特征名都要在这个商品的事实里出现过，不超长、不写绝对化的话；
 对不上的不用，这张卡片照常显示规则算的句子。按事实的指纹缓存（state["card_notes"]），事实没变的下次不再调用。
 一次请求写 batch 个商品；连续 MAX_FAILED 次请求失败（接口挂了、余额不足）就不再写，剩下的用规则句子。"""
@@ -26,13 +26,13 @@ VOCAB = sorted({label for dims in design.LEXICON.values() for label, _rx in dims
 _NUM = re.compile(r"[$＄]?[0-9]+(?:[.][0-9]+)?[%％]?")
 
 SYSTEM_PROMPT = """你是亚马逊美国站家具选品顾问。下面是一组商品（JSON），每个商品都有系统已经算好的事实：
-它的外观和功能跟同子类目的同类比（同类多是什么、它不同在哪，括号里是同类里有这个特征的比例）、可能原因、市场位置、主图外观要点、走势。
+它的外观和功能跟同子类目的同类比（同类多是什么、它不同在哪，括号里是同类里有这个特征的比例）、原因、市场位置、主图外观要点、走势。
 为每个商品写两句中文：
 1. 对比：一句话说清它的外观和功能跟同类比哪里不一样、哪里更突出（同类多是什么，它多了什么）。外观和功能都要说到（数据里只有一边的就说一边）。
-2. 原因：一句话说它可能为什么在涨（板块是持续热销的写为什么卖得稳），从事实里挑最有说服力的一两点。
+2. 原因：一句话说它为什么在涨（板块是持续热销的写为什么卖得稳），从事实里挑最有说服力的一两点。
 要求：
 - 只用事实里出现过的特征名和数字，数字照抄事实里的写法，不编造事实里没有的卖点、数字、人群和场景；
-- 不写“一定”“保证”“绝对”这类话，原因用“可能”“靠……”这类说法；
+- 不写“一定”“保证”“绝对”这类话，也不写“可能”“或许”“也许”，原因直接用“靠……”的说法；
 - 写得像跟同事说话一样自然、具体，比例和数字只在最关键的地方写一个，不要把括号里的比例全抄一遍；
 - 和同类差不多的就直说差不多，再说它靠什么（价格、排名、同类爆品的共性……），不要硬找不同；
 - 对比不超过 70 个字，原因不超过 45 个字；不要重复商品名。
@@ -57,7 +57,7 @@ def facts_of(item: dict, kind_cn: str) -> dict | None:
             trend.append(f"{name} {round(v) if v >= 10 else round(v, 1):g} 件")
     return {"id": item["asin"], "子类目": item.get("node_cn") or item.get("node_name") or "", "板块": kind_cn,
             "外观要点": item.get("look") or "", "外观和功能和同类比": [t for t, _tip in ins.get("compare") or []],
-            "可能原因": [t for t, _tip in ins.get("reasons") or []], "市场位置": [t for t, _tip in ins.get("findings") or []],
+            "原因": [t for t, _tip in ins.get("reasons") or []], "市场位置": [t for t, _tip in ins.get("findings") or []],
             "走势": "，".join(trend)}
 
 
@@ -70,12 +70,22 @@ def _norm(text: str) -> str:
     return text.replace(" ", "").replace(",", "").replace("％", "%").replace("＄", "$")
 
 
+HEDGES = ("可能", "或许", "也许")
+
+
+def clean(text: str) -> str:
+    """去掉“可能”这类字眼（2026-11-16 用户：描述里的可能都删去）：“可能靠低价”→“靠低价”。"""
+    for word in HEDGES:
+        text = text.replace(word, "")
+    return text.replace("，，", "，").strip("，")
+
+
 def check(note: dict | None, facts: dict, cfg: dict) -> tuple[dict | None, str | None]:
     """核对大模型写的（对比、原因）：返回 (能用的 {"compare", "why"}, 不能用的原因)。"""
     c = (cfg.get("report") or {}).get("card_notes") or {}
     if not isinstance(note, dict):
         return None, "格式不对"
-    compare, why = str(note.get("对比") or "").strip(), str(note.get("原因") or "").strip()
+    compare, why = clean(str(note.get("对比") or "").strip()), clean(str(note.get("原因") or "").strip())
     if not compare or not why:
         return None, "缺句子"
     if len(compare) > int(c.get("compare_max", 80)) or len(why) > int(c.get("why_max", 55)):
@@ -134,7 +144,7 @@ def write(items: list[tuple[dict, str]], state: dict, cfg: dict, api_key: str, *
         keep.add(item["asin"])
         hit = cache.get(item["asin"])
         if hit and hit.get("key") == key and hit.get("note"):
-            item["insight"]["note"] = hit["note"]
+            item["insight"]["note"] = {k: clean(v) for k, v in hit["note"].items()}
             stats["cached"] += 1
         else:
             todo.append((item, facts, key))

@@ -16,6 +16,7 @@ import re
 
 from .. import materials, narrative, shipping
 from ..analyze import display_name, growth_kind, increment_note, usable_revision
+from .. import cardnotes
 from ..detect import blueocean, directions, events
 from ..detect.market import EDGES as market_edges
 from ..tracking import REASON_CN
@@ -660,7 +661,7 @@ def _insight(item: dict, kind: str) -> str:
     if not ins:
         return ""
     node = item.get("node_cn") or item.get("node_name") or ""
-    head = "可能为什么卖得稳" if kind == "hot" else "可能为什么在涨"
+    head = "为什么卖得稳" if kind == "hot" else "为什么在涨"  # 2026-11-16 用户：描述里不写“可能"
 
     def rows(pairs, tag="li"):
         return "".join(f'<{tag} data-tip="{esc(tip)}">{esc(text)}</{tag}>' for text, tip in pairs)
@@ -670,8 +671,8 @@ def _insight(item: dict, kind: str) -> str:
     note = ins.get("note")
     if note:
         tip = "大模型根据下面“依据”里的数据写的；里面的数字和特征名都和数据核对过，对不上的不用"
-        top = (f'<div class="ins cmp ai" data-tip="{esc(tip)}"><b>和同类{esc(node)}比</b><p>{esc(note["compare"])}</p>'
-               f'<p class="w"><em>{head}：</em>{esc(note["why"])}</p></div>')
+        top = (f'<div class="ins cmp ai" data-tip="{esc(tip)}"><b>和同类{esc(node)}比</b><p>{esc(cardnotes.clean(note["compare"]))}</p>'
+               f'<p class="w"><em>{head}：</em>{esc(cardnotes.clean(note["why"]))}</p></div>')
         basis = (f'<div class="ins cmp"><b>外观、功能和同类比</b>{cmp_html}</div>' if cmp_html else "") + why_html + find_html
         return top + (f'<details class="ins-more"><summary>依据</summary>{basis}</details>' if basis else "")
     top = f'<div class="ins cmp"><b>和同类{esc(node)}比</b>{cmp_html}</div>' if cmp_html else ""
@@ -815,7 +816,8 @@ def _tile(item: dict, similar: list[dict]) -> str:
             f'<span class="mm">{esc(node)} · {fmt_price(item.get("price"))}</span>'
             f'<span class="kk"><span>{_tile_metric(item, kind)}</span><span class="inc">{inc}</span></span>{_trend(item, kind)}'
             + (f'<span class="fx">{feats}</span>' if feats else "")
-            + (f'<span class="why">{esc(line)}</span>' if (line := ((ins.get("note") or {}).get("why") or ins.get("short"))) else "")
+            + (f'<span class="why">{esc(cardnotes.clean(line))}</span>'
+               if (line := ((ins.get("note") or {}).get("why") or ins.get("short"))) else "")
             + f"{sim}</span></a>")
 
 

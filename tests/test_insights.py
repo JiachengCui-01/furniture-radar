@@ -96,7 +96,8 @@ def test_ai_notes_are_checked_against_the_facts(cfg):
     item["insight"] = insights.for_item(item, insights.context(state, TODAY, cfg, []), cfg)
     facts = cardnotes.facts_of(item, "突然爆火")
     ok = {"对比": "同类电视柜多是开放格，它多了凹槽竖纹和电子壁炉。", "原因": "价格便宜 37%，可能靠低价和少见的凹槽竖纹。"}
-    assert cardnotes.check(ok, facts, cfg) == ({"compare": ok["对比"], "why": ok["原因"]}, None)
+    # 大模型写了“可能”也去掉（描述里不写“可能”）
+    assert cardnotes.check(ok, facts, cfg) == ({"compare": ok["对比"], "why": "价格便宜 37%，靠低价和少见的凹槽竖纹。"}, None)
     # 百分比要对上百分比：事实里有 FBA“$45”，但没有“45%”
     assert cardnotes.check({**ok, "原因": "价格便宜 45%，可能靠低价。"}, facts, cfg)[1] == "数字 45% 不在事实里"
     assert cardnotes.check({**ok, "原因": "价格才 $120，比同类中位 $190 便宜。"}, facts, cfg)[0] is not None
@@ -139,9 +140,10 @@ def test_card_shows_ai_note_with_rule_basis_folded(cfg):
            "findings": [("近 30 天销量排同类第 3 / 11", "口径")], "short": "比同类多：凹槽竖纹", "rare": {"凹槽竖纹": 0.1}}
     item = {"asin": "B0X", "node_cn": "电视柜", "insight": ins}
     html = render._insight(item, "surge")
-    assert "和同类电视柜比" in html and "可能为什么在涨" in html and "市场位置" in html and "ins-more" not in html
+    assert "和同类电视柜比" in html and "为什么在涨" in html and "市场位置" in html and "ins-more" not in html
+    assert "可能" not in html  # 描述里不写“可能”（2026-11-16 用户要求）
     item["insight"] = {**ins, "note": {"compare": "同类多是开放格，它多了凹槽竖纹。", "why": "可能靠少见的凹槽竖纹。"}}
     html = render._insight(item, "hot")
-    assert "同类多是开放格，它多了凹槽竖纹。" in html and "可能为什么卖得稳：" in html
+    assert "同类多是开放格，它多了凹槽竖纹。" in html and "为什么卖得稳：" in html and "可能" not in html
     assert '<details class="ins-more"><summary>依据</summary>' in html and "外观、功能和同类比" in html
     assert render._insight({"insight": None}, "surge") == ""

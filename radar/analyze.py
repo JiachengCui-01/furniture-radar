@@ -334,7 +334,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         tags.append(f"对比期只有 {shown['base_in']} 天在卖（之前 28 天里其余日子没在卖）")
     # 老品换链接、对比期还包括它开卖的第一周：照样判（回测：之后照样卖得好），但起量里可能有老链接转过来的流量
     if relist and shown is not None and shown is not potential             and relist_ramp(d, idx, relist.get("first_day"), shown.get("window") or 28, th["relist"]):
-        tags.append("对比期包括它开卖的第一周（老品换链接：起量里可能有老链接转过来的流量）")
+        tags.append("对比期包括它开卖的第一周（老品换链接：起量里含老链接转过来的流量）")
     if faded or (hot and mom and mom["fading"]):  # 持续热销正在回落的也标出来，但不影响上榜
         why = []
         if mom["falling"]:
