@@ -40,6 +40,8 @@ def cfg():
     # 线上的范围见 test_old_scope_fingerprint_is_migrated_not_treated_as_a_scope_change
     out["scope"]["max_nodes"] = 30
     out["scope"]["extra_nodes"] = []
+    # 突然爆火的销量倍数：合成场景按 2 倍写的（例如 ×2.8 ÷ 大盘 1.5 = 1.87 “不算”）；线上 2026-11-16 起 1.8 倍，见 test_live_surge_ratio
+    out["thresholds"]["surge"]["sales_ratio"] = 2.0
     return out
 
 

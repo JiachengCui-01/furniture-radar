@@ -1323,3 +1323,9 @@ def test_lookback_label_uses_the_previous_runs_tide(cfg):
     assert analyze.retro_labels(state, None, ["A"], cfg, END, END) == {"A": "surge"}
     assert analyze.retro_labels(state, None, ["A"], cfg, END, END, tides={"N": 1.5}) == {"A": "watch"}
 
+
+def test_live_surge_ratio():
+    """线上突然爆火的销量倍数门槛 1.8 倍（2026-11-16 回测定：比 2 倍多判 20%，之后 28 天守住八成 94% 对 95%）。"""
+    from radar.config import load_config
+
+    assert load_config()["thresholds"]["surge"]["sales_ratio"] == 1.8
