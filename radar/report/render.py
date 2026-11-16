@@ -154,6 +154,8 @@ text-decoration:none;color:inherit;background:var(--card)}
 .tile .why{font-size:11.5px;line-height:1.4;color:var(--text);background:var(--hl);border-radius:5px;padding:2px 6px;margin-top:1px}
 .ins{font-size:12px;line-height:1.5;margin:4px 0 2px}.ins b{display:block;font-size:11.5px;color:var(--muted);font-weight:600}
 .ins ul{margin:1px 0 0;padding-left:16px}.ins li{margin:1px 0}.ins.why li::marker{color:var(--c)}
+.ins.cmp p{margin:1px 0}.ins.cmp.ai{background:var(--row);border-radius:8px;padding:5px 8px}.ins.cmp .w em{font-style:normal;color:var(--muted)}
+.ins-more{margin:2px 0}.ins-more summary{font-size:11.5px;color:var(--muted)}
 .fx{display:flex;flex-wrap:wrap;gap:3px;margin:2px 0}
 .fx i{font-style:normal;font-size:11px;border-radius:5px;padding:0 6px;border:1px solid var(--line);color:var(--text);
 background:var(--chip);white-space:nowrap}
@@ -652,20 +654,28 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
 
 
 def _insight(item: dict, kind: str) -> str:
-    """卡片上的“可能原因”和“发现”（detect/insights.py）：和同子类目的够量商品比出来的，每条带数字，悬停看口径。"""
+    """卡片上和同类比的发现（detect/insights.py）：先是外观、功能和同类比的文字，再是可能原因、市场位置（每条带数字，悬停看口径）。
+    有大模型写的（insight["note"]，数字和特征都核对过）时它放最上面，规则算的几条收进“依据”里。"""
     ins = item.get("insight") or {}
     if not ins:
         return ""
+    node = item.get("node_cn") or item.get("node_name") or ""
     head = "可能为什么卖得稳" if kind == "hot" else "可能为什么在涨"
 
-    def rows(pairs):
-        return "".join(f'<li data-tip="{esc(tip)}">{esc(text)}</li>' for text, tip in pairs)
-    out = ""
-    if ins.get("reasons"):
-        out += f'<div class="ins why"><b>{head}</b><ul>{rows(ins["reasons"])}</ul></div>'
-    if ins.get("findings"):
-        out += f'<div class="ins find"><b>和同类比</b><ul>{rows(ins["findings"])}</ul></div>'
-    return out
+    def rows(pairs, tag="li"):
+        return "".join(f'<{tag} data-tip="{esc(tip)}">{esc(text)}</{tag}>' for text, tip in pairs)
+    cmp_html = rows(ins.get("compare") or [], "p")
+    why_html = f'<div class="ins why"><b>{head}</b><ul>{rows(ins["reasons"])}</ul></div>' if ins.get("reasons") else ""
+    find_html = f'<div class="ins find"><b>市场位置</b><ul>{rows(ins["findings"])}</ul></div>' if ins.get("findings") else ""
+    note = ins.get("note")
+    if note:
+        tip = "大模型根据下面“依据”里的数据写的；里面的数字和特征名都和数据核对过，对不上的不用"
+        top = (f'<div class="ins cmp ai" data-tip="{esc(tip)}"><b>和同类{esc(node)}比</b><p>{esc(note["compare"])}</p>'
+               f'<p class="w"><em>{head}：</em>{esc(note["why"])}</p></div>')
+        basis = (f'<div class="ins cmp"><b>外观、功能和同类比</b>{cmp_html}</div>' if cmp_html else "") + why_html + find_html
+        return top + (f'<details class="ins-more"><summary>依据</summary>{basis}</details>' if basis else "")
+    top = f'<div class="ins cmp"><b>和同类{esc(node)}比</b>{cmp_html}</div>' if cmp_html else ""
+    return top + why_html + find_html
 
 
 def _pop_src(key: str, title: str, color: str, inner: str) -> str:
@@ -805,7 +815,7 @@ def _tile(item: dict, similar: list[dict]) -> str:
             f'<span class="mm">{esc(node)} · {fmt_price(item.get("price"))}</span>'
             f'<span class="kk"><span>{_tile_metric(item, kind)}</span><span class="inc">{inc}</span></span>{_trend(item, kind)}'
             + (f'<span class="fx">{feats}</span>' if feats else "")
-            + (f'<span class="why">{esc(more)}</span>' if (more := ins.get("more")) else "")
+            + (f'<span class="why">{esc(line)}</span>' if (line := ((ins.get("note") or {}).get("why") or ins.get("short"))) else "")
             + f"{sim}</span></a>")
 
 

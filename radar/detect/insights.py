@@ -26,6 +26,13 @@ from statistics import median
 from .. import vision
 from ..discovery import keep_product
 from . import design
+from .directions import design_of
+
+APPEARANCE = ("风格", "颜色", "造型", "工艺")  # 外观
+FUNCTION = ("功能卖点",)                       # 功能
+GENERIC = set(vision.GENERIC_STYLES)           # 现代、极简：几乎每件都这样，比不出不同
+# 功能写进句子时的说法（“同类多有带储物/抽屉”读着别扭）
+SAY = {"带储物/抽屉": "储物/抽屉", "带挂钩": "挂钩", "带镜子": "镜子", "带轮可移动": "轮子", "带锁": "锁", "带拖床": "拖床"}
 
 
 def settings(cfg: dict) -> dict:
@@ -35,7 +42,13 @@ def settings(cfg: dict) -> dict:
             "trend_share": float(c.get("trend_share", 0.4)), "cheap": float(c.get("cheap", 0.2)),
             "new_days": int(c.get("new_days", 180)), "new_rank_share": float(c.get("new_rank_share", 0.1)),
             "head_n": int(c.get("head_n", 20)), "moat": float(c.get("moat", 2.0)), "band": float(c.get("band", 0.15)),
-            "fba_share": float(c.get("fba_share", 0.25)), "max_reasons": int(c.get("max_reasons", 4))}
+            "fba_share": float(c.get("fba_share", 0.25)), "max_reasons": int(c.get("max_reasons", 4)),
+            "common_share": float(c.get("common_share", 0.4)),
+            # 界线按同类的分布定（2026-11-16 用户：规则尽量靠数据定界线，固定数字只当下限保护）
+            "cheap_quantile": float(c.get("cheap_quantile", 0.25)), "cheap_floor": float(c.get("cheap_floor", 0.1)),
+            "premium_quantile": float(c.get("premium_quantile", 0.75)),
+            "moat_quantile": float(c.get("moat_quantile", 0.9)), "moat_floor": float(c.get("moat_floor", 1.5)),
+            "fba_quantile": float(c.get("fba_quantile", 0.75)), "fba_floor": float(c.get("fba_floor", 0.2))}
 
 
 def _num(v) -> float | None:
@@ -43,6 +56,17 @@ def _num(v) -> float | None:
         return float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def quantile(values: list[float], q: float) -> float | None:
+    """第 q 分位（线性插值）；没有数返回 None。"""
+    xs = sorted(values)
+    if not xs:
+        return None
+    pos = q * (len(xs) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
 def _money(v: float) -> str:
@@ -77,9 +101,11 @@ def context(state: dict, today: date, cfg: dict, focus: list[dict]) -> dict:
     out = {}
     for node, rows in fams.items():
         labels = {fam: _labels(state, r["asin"], r.get("title") or "") for fam, r in rows.items()}
+        # 各维度的特征（和商品自己同一个口径：标题 + 主图，颜色、风格有主图时只取主色、主风格）
+        designs = {fam: design_of(r, state) for fam, r in rows.items()}
         by_units = sorted(rows.values(), key=lambda r: -(_num(r.get("units")) or 0))
         heads = [_num(r.get("ratings")) for r in by_units[: c["head_n"]] if _num(r.get("ratings")) is not None]
-        out[node] = {"rows": rows, "labels": labels, "head_reviews": median(heads) if heads else None,
+        out[node] = {"rows": rows, "labels": labels, "designs": designs, "head_reviews": median(heads) if heads else None,
                      "revenue": sum(_num(r.get("revenue")) or 0 for r in rows.values()), "growth": []}
     for item in focus:
         node = item.get("node")
@@ -90,6 +116,76 @@ def context(state: dict, today: date, cfg: dict, focus: list[dict]) -> dict:
 
 def _peers(node_ctx: dict, fam: str) -> list[tuple[str, dict]]:
     return [(f, r) for f, r in node_ctx["rows"].items() if f != fam]
+
+
+def _share(label: str, dim: str, peers: list[str], node_ctx: dict, c: dict) -> tuple[float, int, int] | None:
+    """(同类里有这个特征的比例, 有的个数, 分母)：主图看得出的特征只在看过主图的同类里算（不够 min_seen 个返回 None），
+    只看标题的在全部同类里算。"""
+    pool = [f for f in peers if node_ctx["labels"][f][1]] if label in design.LABEL_DIM else list(peers)
+    if not pool or (label in design.LABEL_DIM and len(pool) < c["min_seen"]):
+        return None
+    have = sum(1 for f in pool if label in node_ctx["designs"][f].get(dim, ()))
+    return have / len(pool), have, len(pool)
+
+
+def _pct(share: float) -> str:
+    return "没有" if share < 0.005 else f"{share:.0%}"
+
+
+def compare(item: dict, node_ctx: dict, peers: list[str], c: dict) -> tuple[list[tuple[str, str]], list[tuple[str, float]]]:
+    """外观、功能各一句：同类多是什么（至少 common_share 的同类有），它不同在哪（它有、同类有的不超过 rare_share）。
+    返回 ([(句子, 依据)], [(它不同的特征, 同类比例)])。"""
+    own = item.get("design") or {}
+    node = item.get("node_cn") or item.get("node_name") or "商品"
+    lines, distinct_all = [], []
+    for name, dims in (("外观", APPEARANCE), ("功能", FUNCTION)):
+        common, distinct, plain, tips = [], [], [], []
+        seen_labels = set()
+        for dim in dims:
+            # 同类多是：同类里出现过的特征逐个算比例
+            counts = {}
+            for f in peers:
+                for label in node_ctx["designs"][f].get(dim, ()):
+                    counts[label] = counts.get(label, 0) + 1
+            for label in counts:
+                if label in GENERIC:
+                    continue
+                sh = _share(label, dim, peers, node_ctx, c)
+                if sh and sh[0] >= c["common_share"] - 1e-9:
+                    common.append((label, sh[0]))
+            for label in sorted(own.get(dim) or ()):
+                if label in GENERIC or label in seen_labels:
+                    continue
+                seen_labels.add(label)
+                sh = _share(label, dim, peers, node_ctx, c)
+                if sh is None:
+                    continue
+                if sh[0] <= c["rare_share"] + 1e-9:
+                    distinct.append((label, sh[0]))
+                    tips.append(f"{label}：{'看过主图的' if label in design.LABEL_DIM else '标题里'} {sh[2]} 个同类里 {sh[1]} 个有")
+                else:
+                    plain.append(label)
+        common.sort(key=lambda t: -t[1])
+        def say(label: str) -> str:  # “多有带储物/抽屉”→“多有储物/抽屉”
+            return SAY.get(label, label)
+        common_txt = "、".join(f"{say(label)}（{share:.0%}）" for label, share in common[:3])
+        distinct.sort(key=lambda t: t[1])
+        distinct_txt = "、".join(f"{say(label)}（同类{'' if share < 0.005 else ' '}{_pct(share)}）" for label, share in distinct[:3])
+        verb_common, verb_own = ("多是", "不同在") if name == "外观" else ("多有", "还有")
+        if distinct and common:
+            text = f"{name}：同类{node}{verb_common}{common_txt}；它{verb_own}{distinct_txt}。"
+        elif distinct:
+            text = f"{name}：它{verb_own}{distinct_txt}，同类里少见。"
+        elif plain:
+            text = f"{name}：和同类差不多（{'、'.join(say(x) for x in plain[:3])}）。"
+        else:
+            continue
+        tip = (f"同类多是 / 多有 = 至少 {c['common_share']:.0%} 的同类有（括号里是比例）；不同 = 它有、同类有的不超过 {c['rare_share']:.0%}。"
+               "主图看得出的特征只在看过主图的同类里算，只看标题的（电子壁炉、壁床……）在全部同类的标题里算"
+               + ("；" + "；".join(tips) if tips else ""))
+        lines.append((text, tip))
+        distinct_all += distinct[:3]
+    return lines, distinct_all
 
 
 def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
@@ -108,27 +204,10 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
     short: list[str] = []
     basis = (f"同类 = 本期全市场名单里同子类目、近 30 天 ≥300 件或 ≥4 万美元的 {n} 个商品（一个父体算一个，不含它自己）")
 
-    # 少见的元素
-    rare = []
-    seen_peers = [f for f, _r in peers if node_ctx["labels"][f][1]]
-    for label in item.get("features") or []:
-        if label in design.LABEL_DIM:  # 主图看得出：只在看过主图的同类里算
-            pool = seen_peers
-            if len(pool) < c["min_seen"]:
-                continue
-        else:
-            pool = [f for f, _r in peers]
-        have = sum(1 for f in pool if label in node_ctx["labels"][f][0])
-        share = have / len(pool)
-        if share <= c["rare_share"] + 1e-9:
-            rare.append((label, share, have, len(pool)))
-    rare.sort(key=lambda t: t[1])
-    if rare:
-        text = "、".join(f"{label}（同类{'没有' if share < 0.005 else f' {share:.0%}'}）" for label, share, _h, _p in rare[:3])
-        tip = basis + "；" + "；".join(
-            f"{label}：{'看过主图的' if label in design.LABEL_DIM else '标题里'} {p} 个同类里 {h} 个有" for label, _s, h, p in rare[:3])
-        reasons.append(("少见的元素：" + text, tip))
-        short.append("少见：" + "·".join(label for label, *_ in rare[:2]))
+    # 外观、功能和同类比（写成句子：同类多是什么、它不同在哪）
+    cmp_lines, distinct = compare(item, node_ctx, [f for f, _r in peers], c)
+    if distinct:
+        short.append("比同类多：" + "、".join(label for label, _s in distinct[:2]))
 
     # 同类爆品也有
     others = [(f, feats) for f, feats in node_ctx["growth"] if f != fam]
@@ -143,7 +222,7 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
             label, k = shared[0]
             reasons.append((f"同类爆品也有：同子类目另 {len(others)} 个增长商品里 {k} 个也有「{label}」",
                             "增长商品 = 本期突然爆火、潜力、上升中（不同父体）；多个一起涨、又都带这个元素，可能是这类商品现在的卖点"))
-            if not rare:
+            if not distinct:
                 short.append(f"同类爆品多有{label}")
 
     # 价格
@@ -152,10 +231,18 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
     if price and len(prices) >= 5:
         mid = median(prices)
         diff = price / mid - 1
-        if diff <= -c["cheap"] + 1e-9:
-            reasons.append((f"价格更低：{_money(price)}，比同类中位价 {_money(mid)} 低 {-diff:.0%}", basis))
+        low_cut = quantile(prices, c["cheap_quantile"])
+        high_cut = quantile(prices, c["premium_quantile"])
+        cheap_tip = basis + (f"；价格更低 = 在同类最便宜的 {c['cheap_quantile']:.0%} 里（≤ {_money(low_cut)}），"
+                             f"而且比中位价至少低 {c['cheap_floor']:.0%}")
+        if price <= low_cut + 1e-9 and diff <= -c["cheap_floor"] + 1e-9:
+            reasons.append((f"价格更低：{_money(price)}，在同类最便宜的 {c['cheap_quantile']:.0%} 里（同类中位 {_money(mid)}，便宜 {-diff:.0%}）",
+                            cheap_tip))
             short.append(f"比同类便宜 {-diff:.0%}")
-        elif abs(diff) < 0.1:
+        elif price >= high_cut - 1e-9 and diff >= c["cheap_floor"] - 1e-9:
+            findings.append((f"价格在同类最贵的 {1 - c['premium_quantile']:.0%} 里（{_money(price)}，同类中位 {_money(mid)}，贵 {diff:.0%}）",
+                             basis + f"；最贵的 {1 - c['premium_quantile']:.0%} = ≥ {_money(high_cut)}"))
+        elif abs(diff) < c["cheap_floor"]:
             findings.append((f"价格和同类中位价差不多（{_money(price)}，同类中位 {_money(mid)}）", basis))
         else:
             findings.append((f"价格比同类中位价{'高' if diff > 0 else '低'} {abs(diff):.0%}（{_money(price)}，同类中位 {_money(mid)}）",
@@ -191,21 +278,26 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
 
     # 评论护城河
     head = node_ctx.get("head_reviews")
-    if ratings and head and ratings >= c["moat"] * head:
-        reasons.append((f"评论护城河：评论 {ratings:,.0f} 条，是同类销量前 {c['head_n']} 名中位数（{head:,.0f}）的 {ratings / head:.1f} 倍",
-                        basis + "；评论多的老链接新品很难追上"))
+    moat_cut = quantile([v for v in (_num(r.get("ratings")) for _f, r in peers) if v is not None], c["moat_quantile"])
+    if ratings and head and moat_cut is not None and ratings >= moat_cut - 1e-9 and ratings >= c["moat_floor"] * head:
+        reasons.append((f"评论护城河：评论 {ratings:,.0f} 条，在同类前 {1 - c['moat_quantile']:.0%}，"
+                        f"是同类销量前 {c['head_n']} 名中位数（{head:,.0f}）的 {ratings / head:.1f} 倍",
+                        basis + f"；同类前 {1 - c['moat_quantile']:.0%} = 评论 ≥ {moat_cut:,.0f} 条，而且至少是头部中位数的 "
+                        f"{c['moat_floor']:g} 倍；评论多的老链接新品很难追上"))
         if len(short) < 2:
             short.append(f"评论是同类头部的 {ratings / head:.1f} 倍")
 
     # FBA 占售价
     fba = _num((item.get("pkg") or {}).get("fba"))
-    if fba and price and fba / price >= c["fba_share"] - 1e-9:
-        findings.append((f"FBA 约 {_money(fba)}，占售价 {fba / price:.0%}（利润空间要算清楚）",
-                         "卖家精灵给的 FBA 配送费估算 ÷ 当前售价"))
+    shares = [f_ / p_ for _f, r in peers if (f_ := _num((r.get("pkg") or {}).get("fba"))) and (p_ := _num(r.get("price")))]
+    fba_cut = quantile(shares, c["fba_quantile"]) if len(shares) >= 5 else None
+    if fba and price and fba_cut is not None and fba / price >= max(fba_cut, c["fba_floor"]) - 1e-9:
+        findings.append((f"FBA 约 {_money(fba)}，占售价 {fba / price:.0%}，比同类 {c['fba_quantile']:.0%} 的商品都高（利润空间要算清楚）",
+                         f"卖家精灵给的 FBA 配送费估算 ÷ 当前售价；同类 {c['fba_quantile']:.0%} 的商品不超过 {fba_cut:.0%}，"
+                         f"至少 {c['fba_floor']:.0%} 才写"))
 
-    if not reasons and not findings:
+    if not cmp_lines and not reasons and not findings:
         return None
-    # rare：少见的元素 {特征: 同类里有的比例}（图墙卡片上把这些特征标亮）；more：一句话里除少见元素以外的几条（图墙卡片用）
-    return {"reasons": reasons[: c["max_reasons"]], "findings": findings, "short": " · ".join(short[:3]),
-            "rare": {label: round(share, 3) for label, share, _h, _p in rare[:3]},
-            "more": " · ".join(x for x in short if not x.startswith("少见："))}
+    # compare：外观、功能各一句和同类比；rare：它不同的特征 {特征: 同类里有的比例}（图墙卡片上标亮）；short：图墙卡片上的一句话
+    return {"compare": cmp_lines, "reasons": reasons[: c["max_reasons"]], "findings": findings,
+            "short": " · ".join(short[:3]), "rare": {label: round(share, 3) for label, share in distinct}}

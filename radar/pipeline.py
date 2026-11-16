@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import (analyze, clock, crypto, discovery, log, materials, monthly_lists, narrative,
+from . import (analyze, cardnotes, clock, crypto, discovery, log, materials, monthly_lists, narrative,
                store, tracking, universe, verify, vision)
 from .config import Secrets, github_repo_from_remote, report_base_url
 from .detect import diff as diffing
@@ -615,6 +615,22 @@ def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: 
     return out
 
 
+KIND_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中", "hot": "持续热销", "fake": "异常信号"}
+
+
+def shown_with_kind(curated: dict) -> list[tuple[dict, str]]:
+    """报告里列出来的商品（各板块、增长商品、图墙，去重）和它的板块中文名（蓝海产品写蓝海产品）。"""
+    out, seen = [], set()
+    rows = [i for key in ("surge", "potential", "hot", "ocean", "growth") for i in (curated.get(key) or {}).get("shown") or []]
+    for item in rows + list(curated.get("gallery") or []):
+        if item["asin"] in seen:
+            continue
+        seen.add(item["asin"])
+        kind = "蓝海产品" if item.get("ocean") else KIND_CN.get(analyze.growth_kind(item) or item["label"], item.get("label_cn") or "")
+        out.append((item, kind))
+    return out
+
+
 def analysis_groups(items: list[dict], cfg: dict) -> tuple[list[dict], list[dict]]:
     """外观/材质分析的两组：增长商品（按势头）和持续热销对照组（按月销量）。
     持续热销里带“上升中”的也是增长商品，不进对照组：同一个商品两边都算，会把两组的差距抹小。"""
@@ -716,6 +732,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "repo_url": repo_url(),
     }
     # 本期要点里只有开发建议交给大模型（逐条核对，见 narrative.parse_tips）；趋势、开发方向、风险提醒在报告里直接取数据
+    # 卡片上大模型写的对比和原因（cardnotes.py）：只写列出来的商品，规则算的事实逐条核对，对不上的用规则句子
+    cardnotes.write(shown_with_kind(ctx["curated"]), state, cfg, secrets.llm_api_key)
     ctx["tips"], ctx["summary_source"] = narrative.tips(ctx, cfg, secrets.llm_api_key)
     # 往期链接指向网站上不加密的那份（2026-11-07 起，知道链接就能看）：点了直接打开，不用回钉钉找那一期的消息。
     # 从 r/ 下的网页和 reports/ 下的加密外壳打开都对（都是上一级目录下的 r/）
