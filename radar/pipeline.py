@@ -16,7 +16,7 @@ from . import (analyze, cardnotes, clock, crypto, discovery, log, materials, mon
                store, tracking, universe, verify, vision)
 from .config import Secrets, github_repo_from_remote, report_base_url
 from .detect import diff as diffing
-from .detect import directions, insights, market, showcase
+from .detect import directions, insights, market, potential_sku, showcase
 from .detect.traits import merge_appearance
 from .notify import dingtalk
 from .report import render as report_render
@@ -508,8 +508,8 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
 
     url = build_url(cfg, secrets, report_id, master)
     log.info(f"报告已生成：第 {run_seq} 期 {report_id}，调用 {vendor.billable_calls} 次；"
-             f"爆火 {sec['counts']['surge']} / 潜力 {sec['counts']['potential']} / "
-             f"热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']}")
+             f"爆火 {sec['counts']['surge']} / 新品潜力 {sec['counts']['potential']} / "
+             f"热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']} / 潜力SKU {sec['counts']['sku']}")
     log.detail(f"报告链接：{url}")
     out = RunResult(published=True, report_id=report_id, url=url, calls=vendor.billable_calls,
                     counts=sec["counts"])
@@ -593,10 +593,11 @@ def current_rows(rows: list[dict], items: list[dict]) -> list[dict]:
 
 
 def listed_items(items: list[dict]) -> list[dict]:
-    """上榜的商品：增长商品（势头顺序）+ 突然爆火、潜力、持续热销（含月度名单补判的），去重。
+    """上榜的商品：增长商品（势头顺序）+ 突然爆火、潜力、持续热销（含月度名单补判的）+ 蓝海产品 + 潜力SKU，去重。
     都要看主图：报告按主图挑出简单款、相近款（detect.showcase），卡片上写特色。"""
     out, seen = [], set()
-    for item in analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot") or i.get("ocean")]:
+    for item in analyze.focus_items(items) + [i for i in items if i["label"] in ("surge", "potential", "hot") or i.get("ocean")
+                                                  or i.get("sku")]:
         if item["asin"] not in seen:
             seen.add(item["asin"])
             out.append(item)
@@ -607,7 +608,7 @@ def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: 
     """报告、钉钉、本期要点列出的商品（detect.showcase.curate）：各板块和增长商品去掉简单款、合并相近款；
     gallery = 主体图墙（增长商品里列出的，按月增量排，每个子类目最多几个）。异常信号照常全部列出。
     common：各子类目的基本结构（showcase.common_features）。"""
-    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot", "ocean")}
+    out = {key: showcase.curate(sec[key], state, cfg, common) for key in ("surge", "potential", "hot", "ocean", "sku")}
     out["growth"] = showcase.curate(analyze.focus_items(items), state, cfg, common)
     c = (cfg["report"].get("showcase") or {})
     ranked = sorted(out["growth"]["shown"], key=lambda i: -round(analyze.increment(i)))
@@ -615,18 +616,20 @@ def curated_lists(items: list[dict], sec: dict, state: dict, cfg: dict, common: 
     return out
 
 
-KIND_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中", "hot": "持续热销", "fake": "异常信号"}
+KIND_CN = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中", "hot": "持续热销", "fake": "异常信号"}
 
 
 def shown_with_kind(curated: dict) -> list[tuple[dict, str]]:
     """报告里列出来的商品（各板块、增长商品、图墙，去重）和它的板块中文名（蓝海产品写蓝海产品）。"""
     out, seen = [], set()
-    rows = [i for key in ("surge", "potential", "hot", "ocean", "growth") for i in (curated.get(key) or {}).get("shown") or []]
+    rows = [i for key in ("surge", "potential", "hot", "ocean", "growth", "sku") for i in (curated.get(key) or {}).get("shown") or []]
     for item in rows + list(curated.get("gallery") or []):
         if item["asin"] in seen:
             continue
         seen.add(item["asin"])
         kind = "蓝海产品" if item.get("ocean") else KIND_CN.get(analyze.growth_kind(item) or item["label"], item.get("label_cn") or "")
+        if item["label"] == "watch" and not analyze.growth_kind(item) and item.get("sku"):
+            kind = item["sku"]["kind"] or item["sku"]["tier"]  # 只在潜力SKU里列出的：刚起势 / 新品起量 / 爆发苗头
         out.append((item, kind))
     return out
 
@@ -721,7 +724,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "scope_key": scope_key or discovery.scope_key(cfg),
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == (scope_key or discovery.scope_key(cfg))
                                 else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)},
-                                retro=retro, growth=growth_map(items)),
+                                retro=retro, growth=growth_map(items), sku=potential_sku.record(items)),
         "monthly": monthly or {},
         "monthly_judged": monthly_judged or [],
         "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
@@ -888,6 +891,8 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict, ocean: list[
         "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels, "ocean": list(ocean or []),
         # 下期“与上期对比”用：本期提示了大促后数据待修订（events.bsr_lift）时，下期写明这些增长商品哪些仍成立（diff.compare）
         "growth": growth_map(ctx["items"]), "lift": bool((ctx.get("events") or {}).get("lift")),
+        # 潜力SKU {ASIN: [层, 类型]}：下期“与上期对比”复查（detect/potential_sku.recheck），下期优先拉日数据（tracking.watchlist）
+        "sku": potential_sku.record(ctx["items"]),
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": ctx.get("scope_key") or discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
@@ -962,7 +967,8 @@ def rerender(cfg: dict, secrets: Secrets, site_dir: str | os.PathLike) -> RunRes
     store.save(site, master, state)
     sec = ctx["sections"]
     log.info(f"已重新生成第 {last['seq']} 期报告 {last['id']}（未调用卖家精灵）；爆火 {sec['counts']['surge']} / "
-             f"潜力 {sec['counts']['potential']} / 热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']}")
+             f"新品潜力 {sec['counts']['potential']} / 热销 {sec['counts']['hot']} / 异常 {sec['counts']['fake']} / "
+             f"潜力SKU {sec['counts']['sku']}")
     return RunResult(published=True, report_id=last["id"], url=build_url(cfg, secrets, last["id"], master),
                      counts=sec["counts"])
 

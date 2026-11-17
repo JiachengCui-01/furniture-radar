@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 
 from .. import materials, narrative, shipping
 from ..analyze import display_name, growth_kind, increment_note, usable_revision
 from .. import cardnotes
-from ..detect import blueocean, directions, events
+from ..detect import blueocean, directions, events, potential_sku, showcase
 from ..detect.market import EDGES as market_edges
 from ..tracking import REASON_CN
 from ..vision import small_image
@@ -25,8 +26,8 @@ from . import charts
 from .sparkline import HOVER_JS, bars, sparkline
 
 LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
-               "low": "muted", "rising": "accent", "ocean": "ocean"}
-GROUP_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
+               "low": "muted", "rising": "accent", "ocean": "ocean", "early": "sku", "boom": "sku", "sku": "sku"}
+GROUP_CN = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中"}
 LINK = 'target="_blank" rel="noopener noreferrer"'
 
 
@@ -95,10 +96,10 @@ def chip_link(item: dict, limit: int = 30) -> str:
 CSS = """
 :root{--bg:#f5f6f8;--card:#fff;--text:#1c2230;--muted:#667085;--line:#e4e7ec;--chip:#f0f2f5;
 --surge:#e8590c;--potential:#2b8a3e;--hot:#1c6dd0;--fake:#c92a2a;--ocean:#0c8599;--accent:#1c6dd0;--spark:#1c6dd0;
---hl:rgba(232,89,12,.10);--imgbg:#fff;--row:#f8f9fb;
+--sku:#7048e8;--hl:rgba(232,89,12,.10);--imgbg:#fff;--row:#f8f9fb;
 --k-surge:#eb6834;--k-potential:#1baf7a;--k-rising:#2a78d6;--ink-bar:#5b6578;--band:#d5d9e0;--idea:#c27c0e}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#181c24;--text:#e6e8ec;
---muted:#9aa3b2;--line:#2a303b;--chip:#232833;--surge:#ff8a4c;--potential:#5cc477;--hot:#6aa8ff;--fake:#ff6b6b;--ocean:#3bc9db;
+--muted:#9aa3b2;--line:#2a303b;--chip:#232833;--surge:#ff8a4c;--potential:#5cc477;--hot:#6aa8ff;--fake:#ff6b6b;--ocean:#3bc9db;--sku:#9775fa;
 --accent:#6aa8ff;--spark:#6aa8ff;--hl:rgba(255,138,76,.14);--imgbg:#f4f4f2;--row:#1d222b;
 --k-surge:#d95926;--k-potential:#199e70;--k-rising:#3987e5;--ink-bar:#aab3c2;--band:#3a4150;--idea:#f0b44c}}
 *{box-sizing:border-box}
@@ -114,7 +115,7 @@ img{display:block}
 .ph{display:flex;align-items:center;justify-content:center;background:var(--chip);color:var(--muted);font-weight:600;
 width:100%;height:100%}
 /* KPI */
-.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:14px 0 6px}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:14px 0 6px}
 @media (max-width:900px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:640px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;border-top:3px solid var(--c);
@@ -438,6 +439,19 @@ z-index:3;background:var(--bg);padding:6px 0}
 .seg button.on{background:var(--chip);color:var(--text);font-weight:600}
 .tools .cnt{color:var(--muted);margin-left:auto;font-size:12px}
 details.more-facts{margin-top:4px}
+/* 潜力SKU 表格（正文前几个 + 小窗全部，点一行展开卡片，可下载） */
+.skut td{vertical-align:middle}.skut th,.skut td.n,.skut td.nd{white-space:nowrap}
+.skut td.im{width:46px;padding:4px}.skut td.im img,.skut td.im .ph{width:40px;height:40px;object-fit:contain;background:var(--imgbg);border-radius:6px;border:1px solid var(--line)}
+.skut td.nm{min-width:180px}.skut td.nm a{font-weight:600;text-decoration:none;color:var(--text)}.skut td.nm a:hover{color:var(--accent)}
+.skut small{display:block;font-size:11.5px;color:var(--muted)}
+.skut td.why{min-width:180px;font-size:12.5px;line-height:1.45}
+.skut td.rk{font-size:12px;color:var(--fake)}
+.sb{display:inline-block;font-size:11.5px;font-weight:600;border-radius:6px;padding:1px 6px;white-space:nowrap}
+.sb.boom{background:var(--sku);color:#fff}.sb.steady{border:1px solid var(--sku);color:var(--sku)}
+.skut tr.sr{cursor:pointer}.skut tr.sr:hover td{background:var(--row)}.skut tr.sr.open td{background:var(--row);border-bottom:0}
+.skut tr.sc>td{padding:0 0 10px;background:var(--row)}.skut tr.sc .card{margin:0}
+.tools .dl{font:inherit;font-size:13px;border:1px solid var(--sku);color:var(--sku);background:var(--card);border-radius:8px;padding:3px 10px;cursor:pointer}
+@media (max-width:640px){.skut .opt{display:none}.skut td.nm{min-width:140px}}
 """
 
 
@@ -449,7 +463,7 @@ POPUP = """<div class="pop" id="pop" hidden><div class="pop-mask" data-close></d
 <script>(function(){
 var pop=document.getElementById('pop'),body=document.getElementById('pop-body'),title=document.getElementById('pop-title');
 function closest(el,sel){while(el&&el.nodeType===1){if(el.matches?el.matches(sel):el.msMatchesSelector(sel))return el;el=el.parentNode;}return null;}
-var KIND={surge:'突然爆火',potential:'潜力',rising:'上升中'};
+var KIND={surge:'突然爆火',potential:'新品潜力',rising:'上升中'};
 function el(tag,cls,text){var x=document.createElement(tag);if(cls)x.className=cls;if(text!=null)x.textContent=text;return x;}
 function num(c,k){var v=c.getAttribute('data-'+k);return v===null||v===''?NaN:+v;}
 // 卡片多的小窗：按类别、子类目筛，按月增量 / 售价 / 上架天数 / 评分排（卡片上的 data-*，见 render.card）
@@ -483,7 +497,8 @@ apply();}
 function open(key,f,ft){var src=document.getElementById('pop-'+key);if(!src)return false;
 title.textContent=src.getAttribute('data-title');body.innerHTML=src.innerHTML;
 pop.querySelector('.pop-panel').style.setProperty('--c','var(--'+src.getAttribute('data-c')+')');
-pop.hidden=false;document.documentElement.className+=' noscroll';body.scrollTop=0;tools(body,f,ft);return true;}
+pop.hidden=false;document.documentElement.className+=' noscroll';body.scrollTop=0;tools(body,f,ft);
+if(window.skuTable)window.skuTable(body);return true;}
 function close(){pop.hidden=true;document.documentElement.className=document.documentElement.className.replace(/\\s*noscroll/g,'');}
 document.addEventListener('click',function(e){var t=closest(e.target,'[data-pop]');
 if(t){if(open(t.getAttribute('data-pop'),t.getAttribute('data-filter'),t.getAttribute('data-ftext')))e.preventDefault();return;}
@@ -503,6 +518,46 @@ tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px';}
 document.addEventListener('mousemove',show);document.addEventListener('touchstart',show,{passive:true});
 window.addEventListener('scroll',function(){tip.hidden=true;},true);})();</script>"""
 
+# 潜力SKU 小窗的表格：按爆发苗头 / 稳步在涨、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行存成 CSV（带 BOM，Excel 直接打开）。
+# POPUP 的 open() 每次打开小窗都调用 window.skuTable(小窗内容)。用原始字符串：正则里的反斜杠原样进网页
+SKU_JS = r"""<script>(function(){
+function closest(el,sel){while(el&&el.nodeType===1){if(el.matches?el.matches(sel):el.msMatchesSelector(sel))return el;el=el.parentNode;}return null;}
+function el(tag,cls,text){var x=document.createElement(tag);if(cls)x.className=cls;if(text!=null)x.textContent=text;return x;}
+function num(r,k){var v=r.getAttribute('data-'+k);return v===null||v===''?NaN:+v;}
+function cell(v){v=v==null?'':String(v);return /[",\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+window.skuTable=function(root){var box=root.querySelector('[data-sku]');if(!box)return;var tb=box.querySelector('tbody');if(!tb)return;
+var rows=[].slice.call(tb.querySelectorAll('tr.sr'));var segs={},nodes={},order=[];
+rows.forEach(function(r){var s=r.getAttribute('data-seg'),n=r.getAttribute('data-node');segs[s]=(segs[s]||0)+1;
+if(n){if(!nodes[n]){nodes[n]=0;order.push(n);}nodes[n]++;}});
+var bar=el('div','tools'),st={g:'',n:'',s:''},cnt=el('span','cnt');
+var seg=el('span','seg');[''].concat(['爆发苗头','稳步在涨'].filter(function(k){return segs[k];})).forEach(function(k){
+var b=el('button',k?'':'on',k?k+' '+segs[k]:'全部 '+rows.length);b.type='button';b.setAttribute('data-g',k);seg.appendChild(b);});
+bar.appendChild(seg);seg.addEventListener('click',function(e){var b=closest(e.target,'button');if(!b)return;st.g=b.getAttribute('data-g');
+[].forEach.call(seg.children,function(x){x.className=x===b?'on':'';});apply();});
+if(order.length>1){var sel=el('select');sel.appendChild(new Option('全部子类目（'+rows.length+'）',''));
+order.sort(function(a,b){return nodes[b]-nodes[a];}).forEach(function(n){sel.appendChild(new Option(n+'（'+nodes[n]+'）',n));});
+sel.addEventListener('change',function(){st.n=sel.value;apply();});bar.appendChild(sel);}
+var so=el('select');[['','默认排序'],['-inc','月增量 高→低'],['-rev','近30天销售额 高→低'],['-a7','最近一周加速 高→低'],['-a14','最近两周加速 高→低'],
+['price','售价 低→高'],['-price','售价 高→低'],['age','上架天数 少→多'],['-rating','评分 高→低']].forEach(function(o){so.appendChild(new Option(o[1],o[0]));});
+so.addEventListener('change',function(){st.s=so.value;apply();});bar.appendChild(so);
+var dl=el('button','dl','下载表格');dl.type='button';bar.appendChild(dl);bar.appendChild(cnt);box.parentNode.insertBefore(bar,box);
+dl.addEventListener('click',function(){var lines=[JSON.parse(box.getAttribute('data-head')||'[]')];
+[].forEach.call(tb.querySelectorAll('tr.sr'),function(r){if(r.style.display!=='none')lines.push(JSON.parse(r.getAttribute('data-csv')||'[]'));});
+var text=lines.map(function(l){return l.map(cell).join(',');}).join('\r\n');
+var blob=new Blob(['\ufeff'+text],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');
+a.href=URL.createObjectURL(blob);a.download=(box.getAttribute('data-file')||'潜力SKU')+'.csv';document.body.appendChild(a);a.click();
+setTimeout(function(){URL.revokeObjectURL(a.href);a.parentNode.removeChild(a);},1000);});
+tb.addEventListener('click',function(e){if(closest(e.target,'a'))return;var r=closest(e.target,'tr.sr');if(!r)return;var c=r.nextElementSibling;
+if(c&&/\bsc\b/.test(c.className)){c.hidden=!c.hidden;r.className=c.hidden?'sr':'sr open';}});
+function apply(){var key=st.s.replace('-',''),dir=st.s.charAt(0)==='-'?-1:1,shown=0;
+var list=rows.slice().sort(function(a,b){if(!key)return num(a,'i')-num(b,'i');var x=num(a,key),y=num(b,key);
+if(isNaN(x)&&isNaN(y))return num(a,'i')-num(b,'i');if(isNaN(x))return 1;if(isNaN(y))return -1;return (x-y)*dir||num(a,'i')-num(b,'i');});
+list.forEach(function(r){var ok=(!st.g||r.getAttribute('data-seg')===st.g)&&(!st.n||r.getAttribute('data-node')===st.n);
+var c=r.nextElementSibling;r.style.display=ok?'':'none';tb.appendChild(r);
+if(c&&/\bsc\b/.test(c.className)){if(!ok){c.hidden=true;r.className='sr';}tb.appendChild(c);}if(ok)shown++;});
+cnt.textContent='显示 '+shown+' / '+rows.length;}
+apply();};})();</script>"""
+
 # 开发方向一览：点表头按那一列排（data-sort；data-asc = 从小到大）
 BOARD_JS = """<script>(function(){document.addEventListener('click',function(e){var b=e.target;
 while(b&&b.nodeType===1&&!(b.getAttribute('data-sort')&&b.tagName==='BUTTON'))b=b.parentNode;if(!b||b.nodeType!==1)return;
@@ -517,7 +572,7 @@ rows.forEach(function(r){board.appendChild(r);});
 def _tag_class(tag: str) -> str:
     if any(k in tag for k in narrative.WARN_WORDS):  # 红色标签每一个都归进本期要点风险提醒的某一类（narrative.risk_groups_of）
         return "warn"
-    if tag in ("稳在高位", "仍在上涨", "新品爆发", "潜力") or tag.startswith(("上升中", "新品起量快")):
+    if tag in ("稳在高位", "仍在上涨", "新品爆发", "新品潜力") or tag.startswith(("上升中", "新品起量快")):
         return "good"
     if any(k in tag for k in ("大促", "头部", "变体", "换链接", "老链接", "对比期", "随大盘")):
         return "info"
@@ -632,7 +687,18 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
         o = item["ocean"]
         kv.append(_pill("细分", f"<b>{esc(o['niche'])}</b> · 全市场 {fmt_int(o['n'])} 个"))
         kv.append(_pill("近30天", f"<b>{esc(directions.money_text(o['revenue']))}</b>"))
-    if kind in ("hot", "fake", "rising", "ocean") and item.get("recent_avg28") is not None:
+    if kind == "early" and (item.get("sku") or {}).get("type") == potential_sku.EARLY:  # 潜力SKU 的刚起势：最近两周开始加速
+        k = item["sku"]
+        kv.append(_pill("近14天÷近28天", f"<b>×{k['a14']:.2f}</b>"))
+        kv.append(_pill("近7天÷近28天", f"×{k['a7']:.2f}"))
+        kv.append(_pill("近28天÷之前28天", f"×{k['base']:.2f}"))
+    if kind == "boom" and (item.get("sku") or {}).get("type") == potential_sku.BOOM:  # 潜力SKU 的爆发苗头（不在增长板块里的）
+        k = item["sku"]
+        kv.append(_pill("近7天÷近28天", f"<b>×{k['a7']:.2f}</b>"))
+        kv.append(_pill("按近7天节奏一个月", f"{fmt_int(item['last7_avg'] * 30)} 件"))
+        if k.get("a14") is not None:
+            kv.append(_pill("近14天÷近28天", f"×{k['a14']:.2f}"))
+    if kind in ("hot", "fake", "rising", "ocean", "early", "boom") and item.get("recent_avg28") is not None:
         kv.append(_pill("近28天日均", fmt_num(item["recent_avg28"])))
     note = ""
     if kind in ("surge", "potential", "rising"):  # 爆火、潜力两个板块按它排（analyze.sections），和开发方向同一个口径
@@ -831,6 +897,171 @@ def _gallery(cur: dict, cfg: dict) -> str:
             f'<a class="h-more" href="#" data-pop="growth">全部 {len(growth["shown"])} 个 ›</a></h2>'
             f'<p class="hint">有特色的增长商品按月增量排，每个子类目 {per_node} 个。走势：近 56 天日销量，'
             f'阴影是判定比的最近几天，两段横线是前后两段的日均。点图打开亚马逊。</p><div class="gal">{body}</div></section>')
+
+
+# ---------------- 潜力SKU（detect/potential_sku.py）：正文放前几个，小窗里是完整表格（筛选、排序、展开卡片、下载） ----------------
+SKU_HEAD = ("", "商品", "子类目", "类型", "售价", "近30天", "月增量", "近7天÷近28天", "近14天÷近28天", "上架", "评分",
+            "为什么值得看", "风险")
+SKU_OPT = {2, 8, 9, 10, 12}  # 手机上收起的列（子类目、近14天÷近28天、上架、评分、风险）
+SKU_NUM = range(4, 11)  # 右对齐的数字列（售价 ~ 评分）
+SKU_CSV = ("ASIN", "亚马逊链接", "品牌", "标题", "子类目", "层", "类型", "售价($)", "近30天销量(件)", "近30天销售额($)",
+           "月增量($)", "近7天÷近28天", "近14天÷近28天", "上架天数", "评分", "评论数", "为什么值得看", "风险标签", "所在板块", "判定依据")
+
+
+def backtest_pct(v) -> str:
+    """回测比例：不到 10% 的写一位小数（3.0%、6.5%），其余取整。"""
+    v = float(v)
+    return f"{v:.1%}" if v < 0.1 else f"{v:.0%}"
+
+
+def sku_hint(cfg: dict) -> str:
+    """潜力SKU 小窗顶部的一句话：条件的数字取自 config.yaml，回测数取自 thresholds.potential_sku.backtest。"""
+    s = potential_sku.settings(cfg)
+    bt = s.get("backtest") or {}
+    floor = f"≥{s['min_units']:g} 件或 ≥{s['min_revenue'] / 1e4:g} 万美元"
+    text = (f"潜力SKU 分两层。爆发苗头：近 7 天日均 ≥ 近 28 天的 {float(s['boom_a7']):g} 倍、没回落、不是老品换链接，"
+            f"按这个节奏一个月 {floor}。稳步在涨（不是爆发苗头的）：本期的突然爆火、新品潜力、上升中、新品起量里近 14 天日均 ≥ 近 28 天 "
+            f"{float(s['steady_accel']):g} 倍的（最近两周还在加速），和刚起势（还没到增长门槛、没在跌，近 14 天和近 7 天日均都 ≥ "
+            f"近 28 天的 {float(s['early_accel']):g} 倍，近 30 天 {floor}）。")
+    if all(bt.get(k) for k in ("all", "boom", "steady")):
+        a, b, st = bt["all"], bt["boom"], bt["steady"]
+        text += (f"回测（{bt.get('span')} 每周按同样的规则倒推，{int(bt.get('products') or 0):,} 个商品；"
+                 f"卖爆 = 第 2 个月的 30 天销量 ≥ 现在 {float(bt.get('boom_ratio', 2)):g} 倍且 ≥{int(bt.get('boom_units', 300))} 件）："
+                 f"爆发苗头卖爆 {backtest_pct(b[0])}、新进子类目销量前 10% 的 {backtest_pct(b[1])}；"
+                 f"稳步在涨卖爆 {backtest_pct(st[0])}，但之后 28 天守住近 28 天八成的 {backtest_pct(st[1])}、比现在高的 {backtest_pct(st[2])}（会接着卖，很少会爆）；"
+                 f"全部商品卖爆 {backtest_pct(a[0])}、新进前 10% {backtest_pct(a[1])}、守住 {backtest_pct(a[2])}、比现在高 {backtest_pct(a[3])}。")
+    return text + "评分偏低、异常、蓝海、数据陈旧的不列；商品照样在原来的板块里。"
+
+
+def _sku_money(item: dict) -> tuple[float | None, float | None]:
+    """近 30 天销量和销售额（近 28 天日均 × 30，同刚起势的量门槛；去掉了大促日）。"""
+    a28, price = item.get("recent_avg28"), item.get("price")
+    units = a28 * 30 if a28 is not None else None
+    return units, (units * price if units is not None and price else None)
+
+
+def sku_reason(item: dict) -> str:
+    """“为什么值得看”：大模型按算好的事实写的原因（核对过）→ 规则算的第一条原因（同类爆品也有、价格更低……）→ 判定依据
+    （类型 + 最近两周加速多少）。不用图墙那句 short：它混着外观对比（“比同类多：黑色”），不是原因。"""
+    ins = item.get("insight") or {}
+    line = (ins.get("note") or {}).get("why") or ((ins.get("reasons") or [[""]])[0][0])
+    return cardnotes.clean(line) if line else potential_sku.why(item)
+
+
+def sku_risks(item: dict) -> list[str]:
+    """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）。"""
+    out: list[str] = []
+    for tag in item.get("tags") or []:
+        head = tag_head(tag)
+        if _tag_class(tag) == "warn" and head not in out:
+            out.append(head)
+    return out
+
+
+def _sku_card_kind(item: dict) -> str:
+    kind = growth_kind(item)
+    if kind:
+        return kind
+    sku_type = (item.get("sku") or {}).get("type")
+    return {potential_sku.EARLY: "early", potential_sku.BOOM: "boom"}.get(sku_type, "rising")
+
+
+def _sku_row(item: dict, n: int) -> str:
+    sku = item["sku"]
+    seg = sku["tier"]
+    growing = sku["type"] != potential_sku.EARLY and bool(sku["kind"])  # 在增长板块里的才有月增量
+    node = item.get("node_cn") or item.get("node_name") or ""
+    units, rev = _sku_money(item)
+    countable = growing and not item.get("baseline_unknown") and not increment_note(item).startswith("按 0")
+    inc = directions.increment(item) if countable else None
+    a7, a14 = sku.get("a7"), sku.get("a14")
+    reason, risks, basis = sku_reason(item), sku_risks(item), potential_sku.why(item)
+    csv = [item["asin"], amazon(item["asin"]), item.get("brand") or "", item["title"], node,
+           seg, sku["kind"], item.get("price") or "",
+           round(units) if units else "", round(rev) if rev else "",
+           round(inc) if inc is not None else (increment_text(item) if growing else ""),
+           a7 if a7 is not None else "", a14 if a14 is not None else "",
+           item.get("age_days") if item.get("age_days") is not None else "",
+           item.get("rating") if item.get("rating") is not None else "",
+           item.get("ratings") if item.get("ratings") is not None else "",
+           reason, "、".join(risks), item.get("label_cn") or "", basis]
+    data = {"seg": seg, "node": node, "inc": None if inc is None else f"{inc:.0f}", "rev": None if not rev else f"{rev:.0f}",
+            "price": item.get("price"), "a7": a7, "a14": a14, "age": item.get("age_days"), "rating": item.get("rating"), "i": n,
+            "csv": json.dumps(csv, ensure_ascii=False)}
+    attrs = "".join(f' data-{k}="{esc(v)}"' for k, v in data.items() if v not in (None, ""))
+    cls = "boom" if sku["type"] == potential_sku.BOOM else "steady"
+    rating = f"★{item['rating']}<small>{fmt_int(item['ratings'])} 条</small>" if item.get("rating") is not None else "—"
+    age = f"{item['age_days']} 天" if item.get("age_days") is not None else "—"
+    cells = [  # (class, 属性, 内容)；SKU_OPT 里的列手机上收起
+        ("im", "", _img(item, 100)),
+        ("nm", "", f'<a href="{amazon(item["asin"])}" {LINK}>{esc(short_name(item, 48))}</a>'
+                   f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
+        ("nd", "", esc(node)),
+        ("nd", f' data-tip="{esc(basis)}"', f'<span class="sb {cls}">{esc(seg)}</span>'
+                                          + (f"<small>{esc(sku['kind'])}</small>" if sku["kind"] else "")),
+        ("n", "", fmt_price(item.get("price"))),
+        ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
+        ("n", "", esc(increment_text(item)) if growing else "—"),
+        ("n", "", "—" if a7 is None else f"×{a7:.2f}"),
+        ("n", "", "—" if a14 is None else f"×{a14:.2f}"),
+        ("n", "", age),
+        ("n", "", rating),
+        ("why", "", esc(reason)),
+        ("rk", "", esc("、".join(risks))),
+    ]
+    tds = []
+    for i, (klass, extra, inner) in enumerate(cells):
+        names = " ".join(x for x in (klass, "opt" if i in SKU_OPT else "") if x)
+        klass_attr = f' class="{names}"' if names else ""
+        tds.append(f"<td{klass_attr}{extra}>{inner}</td>")
+    return f'<tr class="sr"{attrs}>{"".join(tds)}</tr>'
+
+
+def _sku_table(rows: list[dict], similar: dict | None = None, expand: bool = True) -> str:
+    def th(i: int, h: str) -> str:
+        names = " ".join(x for x in ("opt" if i in SKU_OPT else "", "n" if i in SKU_NUM else "") if x)
+        return f'<th class="{names}">{esc(h)}</th>' if names else f"<th>{esc(h)}</th>"
+    head = "".join(th(i, h) for i, h in enumerate(SKU_HEAD))
+    body = []
+    for n, item in enumerate(rows):
+        body.append(_sku_row(item, n))
+        if expand:
+            body.append(f'<tr class="sc" hidden><td colspan="{len(SKU_HEAD)}">'
+                        f'{card(item, _sku_card_kind(item), potential_sku.label_of(item["sku"]), similar=(similar or {}).get(item["asin"], []))}'
+                        "</td></tr>")
+    return f'<table class="skut"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table>'
+
+
+def _sku_shown_counts(rows: list[dict]) -> tuple[int, int]:
+    boom = sum(1 for i in rows if i["sku"]["type"] == potential_sku.BOOM)
+    return boom, len(rows) - boom
+
+
+def _sku_section(cur: dict, cfg: dict) -> str:
+    """正文：排在前面的几个（每个子类目最多 per_node 个），完整表格在小窗里。"""
+    c = cfg["report"].get("potential_sku") or {}
+    rows = cur.get("shown") or []
+    top = showcase.gallery(rows, int(c.get("body_rows", 10)), int(c.get("per_node", 2)))
+    boom, steady = _sku_shown_counts(rows)
+    table = (f'<div class="tbl">{_sku_table(top, expand=False)}</div>' if top
+             else '<p class="empty">本期没有潜力SKU。</p>')
+    return (f'<section id="sku" style="--c:var(--sku)"><h2><span class="dot"></span>潜力SKU'
+            f'<a class="h-more" href="#" data-pop="sku">全部 {len(rows)} 个 · 表格可下载 ›</a></h2>'
+            f'<p class="hint">列出 {len(rows)} 个：爆发苗头 {boom} 个、稳步在涨 {steady} 个。'
+            f'下面是排在前面的 {len(top)} 个（爆发苗头在前；每个子类目最多 {int(c.get("per_node", 2))} 个）。'
+            "点“全部”看完整表格，可按类型、子类目筛选，点一行看卡片，下载成 Excel 能打开的表格。</p>"
+            f"{table}</section>")
+
+
+def _sku_pop(cur: dict, hint: str, total: int, report_id: str) -> str:
+    rows = cur.get("shown") or []
+    boom, steady = _sku_shown_counts(rows)
+    summary = f'<div class="nich"><span><b>爆发苗头</b> {boom} 个</span><span><b>稳步在涨</b> {steady} 个</span></div>'
+    table = (f'<div class="tbl" data-sku data-head="{esc(json.dumps(list(SKU_CSV), ensure_ascii=False))}" '
+             f'data-file="潜力SKU-{esc(report_id)}">{_sku_table(rows, cur.get("similar"))}</div>'
+             if rows else '<div class="empty">本期没有潜力SKU。</div>')
+    return _pop_src("sku", "潜力SKU", "sku",
+                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p>{summary}{table}')
 
 
 def _kpi(key: str, label: str, desc: str, rows: list[dict], total: int, folded: str = "简单款、相近款") -> str:
@@ -1271,7 +1502,7 @@ def _trend_tiles(tr: dict, cfg: dict, focus: list[dict], pool: list[dict]) -> st
 def _ideas(tips: list[dict], by_asin: dict) -> str:
     """开发建议：参考商品的主图 + 特征（主图上看得出的）+ 这张主图的外观描述里说到这些特征的句子 + 商品链接。"""
     if not tips:
-        return '<p class="empty">本期没有既能当参考、主图上又看得出增长特征的爆火 / 潜力商品。</p>'
+        return '<p class="empty">本期没有既能当参考、主图上又看得出增长特征的爆火 / 新品潜力商品。</p>'
     out = []
     for t in tips:
         item = by_asin.get(t["asin"]) or {"asin": t["asin"], "brand": "", "title": t["name"], "image": ""}
@@ -1361,7 +1592,7 @@ def _dir_cards(tr: dict, cfg: dict, cur: dict, focus: list[dict], by_asin: dict)
 
 RISK_ICON = {"fake": "fake", "suspect": "fake", "price": "price", "data": "data", "base": "scale", "relist": "link", "deal": "clock",
              "weak": "down", "tide": "waves", "monthly": "cal", "other": "risk"}
-WHERE_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "ocean": "蓝海产品", "growth": "增长商品", "fake": "异常信号"}
+WHERE_CN = {"surge": "突然爆火", "potential": "新品潜力", "hot": "持续热销", "ocean": "蓝海产品", "growth": "增长商品", "fake": "异常信号"}
 RISK_CHIPS = 3  # 一类不超过几个商品时写品名，多了只放小图（悬停看品名、所在板块和标签）
 RISK_SHOW = 16  # 小图多于这么多时，其余的折叠
 
@@ -1417,7 +1648,7 @@ def _digest(ctx: dict, cur: dict, by_asin: dict) -> str:
 def _changes(diff: dict, by_asin: dict) -> str:
     if diff.get("first"):
         return '<p class="empty">本期没有可对比的上一期（首期或监控范围刚调整），从下一期开始显示变化。</p>'
-    names = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号"}
+    names = {"surge": "突然爆火", "potential": "新品潜力", "hot": "持续热销", "fake": "异常信号"}
     moved_from = diff.get("moved_from") or {}
 
     def plain(asin: str) -> bool:
@@ -1451,9 +1682,9 @@ def _changes(diff: dict, by_asin: dict) -> str:
     parts = [line("依旧爆火 ", diff["still"])] if diff.get("still") else []
     rc = diff.get("recheck")
     if rc:  # 上期提示了大促后数据待修订（“本期新出现的增长请等下期确认”）：放在最前面
-        kinds = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
+        kinds = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中"}
         lost = list(rc["lost"].items())
-        text = (f"<li>上期提示了大促后数据待修订：上期的 {rc['total']} 个增长商品（突然爆火 / 潜力 / 上升中），"
+        text = (f"<li>上期提示了大促后数据待修订：上期的 {rc['total']} 个增长商品（突然爆火 / 新品潜力 / 上升中），"
                 f"本期仍是增长商品 {len(rc['held'])} 个，不再是 {len(lost)} 个")
         named = [(a, k) for a, k in lost if not plain(a)]
         if named:
@@ -1466,6 +1697,17 @@ def _changes(diff: dict, by_asin: dict) -> str:
         recheck = f'<ul class="chg">{text}</li></ul>'
     else:
         recheck = ""
+    sc = diff.get("sku_check")
+    if sc:  # 上期列出的潜力SKU本期怎样了：每期都写，清单靠不靠谱看得到真实结果（detect/potential_sku.recheck）
+        lost = [a for a in sc["lost"] if not plain(a)]
+        text = (f"<li>上期潜力SKU {sc['total']} 个：本期仍在清单 {len(sc['held'])} 个，"
+                f"还在追踪但不再符合 {len(sc['lost'])} 个")
+        if lost:
+            text += "：" + " ".join(f'{link(a)}<span class="sub">（上期{esc(sc["lost"][a])}）</span>' for a in lost[:10]) \
+                + ("…" if len(lost) > 10 else "")
+        if sc.get("gone"):
+            text += f"；本期没追踪 {len(sc['gone'])} 个"
+        recheck += f'<ul class="chg">{text}</li></ul>'
     parts += [line(f"新进入「{names[label]}」", diff["new"][label])
               for label in ("surge", "potential", "fake", "hot") if diff["new"].get(label)]
     if diff.get("cooled"):
@@ -1514,7 +1756,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
     return {
         "surge": f"上架超过 {p['max_age_days']} 天（之前已经卖了一段时间），近 {windows} 天销量突然涨上来：对比之前 {s['base_days']} 天，"
                  f"排名升一倍以上、日均 ≥{s['sales_ratio']:g} 倍且 ≥{s['min_daily_sales']} 件{tide}；"
-                 f"稳在高位 / 仍在上涨 / 老链接重新起量，没有回落、不是短时脉冲。更新的达到这些算潜力。按月增量排。{scope}",
+                 f"稳在高位 / 仍在上涨 / 老链接重新起量，没有回落、不是短时脉冲。更新的达到这些算新品潜力。按月增量排。{scope}",
         "potential": f"上架 ≤{p['max_age_days']} 天（近期新上架）就卖得好、评论 <{p['max_ratings']} 条，满足一条：① 上架 ≥{p['min_age_days']} 天，"
                      f"近 28 天和近 7 天日均都 ≥ 之前 28 天的 {p['min_recent_ratio']} 倍{tide}、≥{p['min_daily_sales']} 件，"
                      f"近 3 个完整月月销平均每月涨 ≥{p['min_monthly_growth']:.0%}；② 近 {windows} 天就达到突然爆火的门槛"
@@ -1527,10 +1769,11 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                   f"≥{int(cfg['pool']['opportunity_min_units'])} 件或 ≥{float(cfg['pool']['opportunity_min_revenue']) / 1e4:g} 万美元），"
                   f"这一类全市场不超过 {o['max_products']} 个（老款也算）；太小、结构太简单的不算"
                   f"（包装不到 {o['tiny_weight']:g} 磅又没有升降折叠这类机构的，不到 {o['simple_weight']:g} 磅的开放书架、置物架）。"
-                  "同一类排在一起。只在这里列出，不进突然爆火、潜力、持续热销、增长商品和开发方向。"
+                  "同一类排在一起。只在这里列出，不进突然爆火、新品潜力、持续热销、增长商品和开发方向。"
                   if universe else "本期没翻成全市场名单，不判蓝海产品。"),
-        "growth": f"增长商品 = 突然爆火 + 潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
+        "growth": f"增长商品 = 突然爆火 + 新品潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
         "all": "本期拉了日数据的全部商品，简单款不列。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
+        "sku": sku_hint(cfg),
     }
 
 
@@ -1545,7 +1788,7 @@ def _method(cfg: dict, repo_url: str = "") -> str:
         ("数据", "全部来自卖家精灵：月度头部名单、近 30 天全市场名单、每个追踪商品约 400 天的日销量 / BSR / 价格；销量是按 BSR 估算的"),
         ("大促日", "全类目一起冲高的日子，所有比较都跳过这几天"),
         ("断货", f"BSR ≥{th['out_of_stock_bsr']:,} 或没有排名的日子不算对比期"),
-        ("回落", "最近几天明显低于近期高点或上一周；突然爆火、潜力、上升中都要求没有回落"),
+        ("回落", "最近几天明显低于近期高点或上一周；突然爆火、新品潜力、上升中都要求没有回落"),
         ("月增量", "（近 28 天日均 − 之前 28 天在卖日子的日均）× 售价 × 30；老品换链接、断货很久后恢复、跌下去又涨回来的按 0"),
         ("品类大盘", "子类目整体在涨时，增长倍数先除以大盘倍数再比门槛"),
         ("评分门槛", f"评分 <{th['min_rating']}（评论不到 {th['few_ratings']} 条时 <{th['few_ratings_min_rating']}）的不进任何板块"),
@@ -1560,6 +1803,18 @@ def _method(cfg: dict, repo_url: str = "") -> str:
         rows.append(("蓝海产品", f"某个小众兴趣爱好专用的家具 / 收纳（桌游桌、爬宠箱、鱼缸柜、唱片机柜、手办展示柜、缝纫桌、街机柜、台球桌……），"
                               f"近期新上架（≤{ob['max_age_days']} 天）、月售 ≥{ob['min_units']:g} 件、卖得够量，这一类全市场不超过 "
                               f"{ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
+    ps = potential_sku.settings(cfg)
+    bt = ps.get("backtest") or {}
+    rows += [("潜力SKU", "全市场有潜力的商品清单（不分店铺），分爆发苗头、稳步在涨两层，各写回测里之后卖爆的比例；"
+                        "商品照样在原板块里，表格可下载"),
+             ("卖爆", f"潜力SKU 回测用的标准：判定后第 2 个月的 30 天销量 ≥ 现在近 30 天的 {float(bt.get('boom_ratio', 2)):g} 倍，"
+                     f"而且 ≥{int(bt.get('boom_units', 300))} 件"),
+             ("爆发苗头", f"近 7 天日均 ≥ 近 28 天日均 {float(ps['boom_a7']):g} 倍、没回落、不是老品换链接，按这个节奏一个月 "
+                         f"≥{ps['min_units']:g} 件或 ≥{ps['min_revenue'] / 1e4:g} 万美元"),
+             ("稳步在涨", f"不是爆发苗头：突然爆火、新品潜力、上升中、新品起量里近 14 天日均 ≥ 近 28 天日均 "
+                         f"{float(ps['steady_accel']):g} 倍的（最近两周还在加速），或者刚起势"),
+             ("刚起势", f"还没到增长门槛、没在跌，近 14 天和近 7 天日均都 ≥ 近 28 天的 {float(ps['early_accel']):g} 倍，"
+                       f"近 30 天 ≥{ps['min_units']:g} 件或 ≥{ps['min_revenue'] / 1e4:g} 万美元")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
                             "2026-11-07 以前的旧识别结果误标多，只用标题也写了的（开放格、谷仓门、镜子照用）"))
@@ -1584,7 +1839,7 @@ def lift_text(lift: dict | None, cfg: dict) -> str:
     when = lift["start"][5:] if lift["start"] == lift["end"] else f"{lift['start'][5:]}~{lift['end'][5:]}"
     return (f"{when} 最多 {lift['peak']:.0%} 的商品排名同时好到自己前 {ev['base_days']} 天的 {ev['jump']:g} 倍以上（多是大促或圣诞后）。"
             "这几天的销量卖家精灵大约一周后才修订，修订前大促后的几天容易看成“冲上去后走平”"
-            "（Prime Big Deal Days 后那期，增长判定约三分之一修订后不成立），本期新出现的突然爆火、潜力、上升中请等下期确认（下期的“与上期对比”会写明哪些仍成立）")
+            "（Prime Big Deal Days 后那期，增长判定约三分之一修订后不成立），本期新出现的突然爆火、新品潜力、上升中请等下期确认（下期的“与上期对比”会写明哪些仍成立）")
 
 
 def _lift_alert(ctx: dict, cfg: dict) -> str:
@@ -1630,8 +1885,8 @@ def _facts(ctx: dict, counts: dict, cur: dict) -> list[tuple[str, str]]:
                                    f"{pre['plain']} 个是简单款、没拉日数据（DeepSeek 识别，不花卖家精灵次数）"))
     elif cov.get("candidates"):
         out.append(("机会候选", f"{cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"))
-    listed = [(label, len(cur[k]["shown"]), counts[k]) for k, label in (("surge", "突然爆火"), ("potential", "潜力"), ("hot", "持续热销"),
-                                                                       ("ocean", "蓝海产品")) if k in cur]
+    listed = [(label, len(cur[k]["shown"]), counts.get(k, 0)) for k, label in (
+        ("surge", "突然爆火"), ("potential", "新品潜力"), ("hot", "持续热销"), ("ocean", "蓝海产品"), ("sku", "潜力SKU")) if k in cur]
     if any(n != total for _l, n, total in listed):
         out.append(("列出", "、".join(f"{label} {n}/{total}" for label, n, total in listed)
                     + "（其余是简单款或相近款：简单款不列，相近款记在相似的卡片上）"))
@@ -1686,7 +1941,7 @@ def _curated(ctx: dict) -> dict:
     def every(rows):
         return {"shown": list(rows), "plain": [], "similar": {}}
     growth = ctx.get("focus") or []
-    return {**{k: every(sec.get(k) or []) for k in ("surge", "potential", "hot", "ocean")}, "growth": every(growth),
+    return {**{k: every(sec.get(k) or []) for k in ("surge", "potential", "hot", "ocean", "sku")}, "growth": every(growth),
             "gallery": growth[:12]}
 
 
@@ -1703,10 +1958,11 @@ def render(ctx: dict) -> str:
     young = cfg["thresholds"]["potential"]["max_age_days"]  # 突然爆火 / 潜力按上架天数分开（rules.new_days）
     kpi = "".join([
         _kpi("surge", "突然爆火", f"上架超 {young} 天，近 1~2 周销量突然翻倍", cur["surge"]["shown"], counts["surge"]),
-        _kpi("potential", "潜力产品", f"上架 ≤{young} 天的新品就卖得好", cur["potential"]["shown"], counts["potential"]),
+        _kpi("potential", "新品潜力", f"上架 ≤{young} 天的新品就卖得好", cur["potential"]["shown"], counts["potential"]),
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
         _kpi("ocean", "蓝海产品", "小众兴趣爱好专用的家具 / 收纳", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
+        _kpi("sku", "潜力SKU", "爆发苗头 + 稳步在涨，表格可下载", cur["sku"]["shown"], counts.get("sku", 0)),
     ])
     facts = _facts(ctx, counts, cur)
     history = ""
@@ -1714,11 +1970,12 @@ def render(ctx: dict) -> str:
         history = " · 往期 " + " ".join(f'<a href="{esc(h["href"])}">{esc(h["id"])}</a>' for h in ctx["history"])
     pops = "".join([
         _section_pop("surge", "突然爆火", hints["surge"], cur["surge"], counts["surge"]),
-        _section_pop("potential", "潜力产品", hints["potential"], cur["potential"], counts["potential"]),
+        _section_pop("potential", "新品潜力", hints["potential"], cur["potential"], counts["potential"]),
         _section_pop("hot", "持续热销", hints["hot"], cur["hot"], counts["hot"]),
         _ocean_pop(cur["ocean"], hints["ocean"], counts.get("ocean", 0), ctx["coverage"]),
         _section_pop("fake", "异常信号", hints["fake"], {"shown": sec["fake"]}, counts["fake"]),
         _growth_pop(cur["growth"], hints["growth"], len(ctx.get("focus") or [])),
+        _sku_pop(cur["sku"], hints["sku"], counts.get("sku", 0), ctx.get("report_id") or ""),
         _pop_src("all", f"全部追踪商品（{counts['total']} 个" + (f"，简单款 {n_plain} 个不列" if n_plain
                                                                else "") + "）", "muted",
                  f'<p class="hint">{esc(hints["all"])}</p>{_all_table(tracked)}'),
@@ -1738,10 +1995,11 @@ def render(ctx: dict) -> str:
 <div class="sub hist">{esc(ctx['generated_at'])} 生成 · 第 {ctx['run_seq']} 期 · 日数据截至 {esc(ctx['as_of'])}{history}</div></header>
 <div class="kpis">{kpi}</div>{_lift_alert(ctx, cfg)}
 {_gallery(cur, cfg)}
+{_sku_section(cur["sku"], cfg)}
 <section class="summary" style="--c:var(--accent)"><h2><span class="dot"></span>本期要点</h2>{_digest(ctx, cur, by_asin)}</section>
 {dirs_html}
 <section id="changes" style="--c:var(--hot)"><h2><span class="dot"></span>与上期对比</h2>{_changes(ctx['diff'], by_asin)}</section>
 <section id="about" style="--c:var(--muted)"><h2><span class="dot"></span>数据说明<a class="h-more" href="#" data-pop="all">全部 {counts['total']} 个追踪商品 ›</a></h2>
 {facts_html}{_method(cfg, ctx.get('repo_url') or '')}</section>
 <footer>{esc(ctx['title'])} · 数据来源：卖家精灵 · 仅持有链接的人可查看</footer>
-</div>{pops}{dir_pops}{POPUP}{HOVER_JS}{TIP_JS}{BOARD_JS}</body></html>"""
+</div>{pops}{dir_pops}{POPUP}{SKU_JS}{HOVER_JS}{TIP_JS}{BOARD_JS}</body></html>"""

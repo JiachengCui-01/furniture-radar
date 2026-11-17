@@ -19,7 +19,7 @@ SYSTEM_PROMPT = """你是亚马逊美国站家具类目的产品设计顾问。�
 请写报告“本期要点”里的“开发建议”：2~3 条可以用到不同品类上的设计手法。每条一行，格式固定为
 - <特征> + <特征>｜[<品牌> <简短中文品名>](<ASIN>)
 严格遵守：
-1. 参考商品只能从“突然爆火”“潜力”里选“可作参考”为 true 的商品；每条换一个商品。
+1. 参考商品只能从“突然爆火”“新品潜力”里选“可作参考”为 true 的商品；每条换一个商品。
    方括号里必须有品牌，ASIN 照抄这个商品的“ASIN”，例如 [Huuger 窄长玄关桌](B0H2XKVQ5L)。
 2. <特征> 只能照抄这个商品“可用特征”里的词（本期增长商品比对照组更多、而且这个商品主图上看得出的外观特征），
    每条 1~2 个，两个时用“ + ”连接；不要用别的词，不要自己造词。各条的特征组合不要重复，尽量覆盖不同的特征。
@@ -56,7 +56,7 @@ def build_facts(ctx: dict) -> dict:
                            "倍数": None if s["sales_ratio"] is None else round(s["sales_ratio"], 1),
                            "形态": s["kind"]}
         if item.get("potential"):
-            out["潜力"] = item["potential"]
+            out["新品潜力"] = item["potential"]
         if item["fake"]["signals"]:
             out["异常信号"] = [s["text"] for s in item["fake"]["signals"]]
         return out
@@ -66,7 +66,7 @@ def build_facts(ctx: dict) -> dict:
         "监控范围": "亚马逊美国站板材 / 实木 / 铁木为主的柜类、桌类、床架、置物架（不含沙发、床垫、椅子、衣帽架，也不含包装在亚马逊标准尺寸以内的小件）",
         # 只给列出的（去掉简单款、合并相近款，detect.showcase），本期要点点名的和报告里看到的一致
         "突然爆火": [brief(i) for i in listed(ctx, "surge")[:FACT_ITEMS]],
-        "潜力": [brief(i) for i in listed(ctx, "potential")[:FACT_ITEMS]],
+        "新品潜力": [brief(i) for i in listed(ctx, "potential")[:FACT_ITEMS]],
         "共性特点": design_facts(ctx["traits"]),
         # 报告里有画像的子类目全部列出，本期要点只放月增量合计占大头的几个（directions.highlight）
         "开发方向": direction_facts({"directions": directions.highlight(ctx["traits"].get("directions") or [], ctx["cfg"])}),
@@ -101,7 +101,7 @@ def design_facts(tr: dict) -> dict:
     n = tr.get("n_focus") or 0
     mats = tr.get("materials") or {}
     out = {
-        "样本说明": f"增长商品 {n} 个（突然爆火 + 潜力 + 上升中）。标题统计对比全部头部商品 {tr.get('n_baseline')} 个；"
+        "样本说明": f"增长商品 {n} 个（突然爆火 + 新品潜力 + 上升中）。标题统计对比全部头部商品 {tr.get('n_baseline')} 个；"
                 f"主图识别看增长商品里势头最强的 {(tr.get('vision') or {}).get('n_focus') or 0} 个，"
                 f"主材质看全部增长商品，二者都对比持续热销对照组 {mats.get('n_reference') or 0} 个",
         "主材质（每个商品一类，依次取亚马逊 Material 属性、标题、主图识别；占比只在知道具体材质的商品里算）": [

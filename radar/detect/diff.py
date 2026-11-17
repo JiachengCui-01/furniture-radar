@@ -7,22 +7,26 @@
 回看上期就已经是的不算新进入。
 上期提示了“大促后数据待修订”（events.bsr_lift，那期新出现的增长请等下期确认）时，再列上期的增长商品（突然爆火 / 潜力 / 上升中）
 本期还是不是增长商品（recheck）：只有“依旧爆火 / 不再爆火”时，潜力、上升中不再成立的哪里都看不到
-（实测 10-14 那期提示后，10-20 那期上期 51 个增长商品里 20 个不再成立，“不再爆火”只能看到其中 5 个）。"""
+（实测 10-14 那期提示后，10-20 那期上期 51 个增长商品里 20 个不再成立，“不再爆火”只能看到其中 5 个）。
+上期列了潜力SKU（detect/potential_sku.py）时，每期都复查它们本期还在不在清单里（sku_check），清单靠不靠谱每期都有真实结果。"""
 from __future__ import annotations
+
+from . import potential_sku
 
 LABELS = ("surge", "potential", "hot", "fake")
 
 
 def compare(prev_run: dict | None, current: dict[str, str], monthly: set[str] = frozenset(),
-            retro: dict[str, str] | None = None, growth: dict[str, str] | None = None) -> dict:
+            retro: dict[str, str] | None = None, growth: dict[str, str] | None = None,
+            sku: dict[str, list[str]] | None = None) -> dict:
     """monthly：本期月度名单补判出的持续热销；retro：上期没追踪的商品回看上期那天的判定；
     growth：本期的增长商品 {ASIN: surge / potential / rising}（analyze.growth_kind）。
     结果的 retro = 上期板块来自回看的商品（只列出现在依旧 / 新进入 / 不再爆火里的）；
     recheck = 上期提示了大促后数据待修订时，上期的增长商品本期 仍是（held）/ 不再是（lost，值是上期是哪种）/ 本期没追踪（gone），
-    其余时候为 None。"""
+    其余时候为 None。sku：本期的潜力SKU（potential_sku.record）→ sku_check（potential_sku.recheck，上期没记时为 None）。"""
     if not prev_run:
         return {"first": True, "still": [], "new": {label: [] for label in LABELS}, "moved_from": {}, "cooled": [],
-                "covered": [], "retro": [], "recheck": None}
+                "covered": [], "retro": [], "recheck": None, "sku_check": None}
     prev = {asin: value[0] for asin, value in (prev_run.get("labels") or {}).items()}
     seen = set(prev) | set(prev_run.get("monthly_judged") or [])
     looked = {a: label for a, label in (retro or {}).items() if a not in seen}
@@ -36,7 +40,8 @@ def compare(prev_run: dict | None, current: dict[str, str], monthly: set[str] = 
     shown = set(still) | set(cooled) | {a for asins in new.values() for a in asins}
     return {"first": False, "prev_id": prev_run.get("id"), "still": still, "new": new, "moved_from": moved_from,
             "cooled": cooled, "covered": covered, "retro": sorted(a for a in looked if a in shown),
-            "recheck": recheck(prev_run, current, growth or {})}
+            "recheck": recheck(prev_run, current, growth or {}),
+            "sku_check": potential_sku.recheck(prev_run, sku or {}, current)}
 
 
 def recheck(prev_run: dict, current: dict[str, str], growth: dict[str, str]) -> dict | None:

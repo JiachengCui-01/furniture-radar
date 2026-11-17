@@ -16,7 +16,8 @@ import httpx
 from .. import log
 from ..analyze import display_name, zero_increment_reason
 from ..detect.directions import headline, highlight, highlight_share, increment, money_text, skipped_big, skipped_text
-from ..report.render import growth_text, lift_text, ocean_group
+from ..report.render import backtest_pct as sku_pct, growth_text, lift_text, ocean_group, sku_reason, sku_risks
+from ..detect import potential_sku
 from ..vision import small_image
 from ..narrative import listed, top_design_labels
 
@@ -100,17 +101,18 @@ def increment_text(item: dict) -> str:
 DATA_TAGS = ("变体变多", "名单和日数据对不上", "最近 28 天有")  # analyze.data_tags 打的“数据可能有问题”的标签
 
 
-def build_text(ctx: dict, max_items: int = 3) -> str:
-    """ActionCard 正文（钉钉 markdown 子集）。"""
+def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> str:
+    """ActionCard 正文（钉钉 markdown 子集）。sku_items：潜力SKU 列前几个（默认 notify.sku_items，没有时 5）。"""
     sec = ctx["sections"]
     c = sec["counts"]
     # 和报告顶部一样只数列出的（去掉简单款、合并相近款）
     surge, potential, hot, ocean = listed(ctx, "surge"), listed(ctx, "potential"), listed(ctx, "hot"), listed(ctx, "ocean")
+    sku = listed(ctx, "sku")
     lines = [
         f"### {ctx['title']} · {ctx['report_id']}",
         f"追踪 {c['total']} 个家具 ASIN · 日数据截至 {ctx['as_of']}",
         "",
-        f"**🚀 突然爆火 {len(surge)}　🌱 潜力 {len(potential)}　🔥 持续热销 {len(hot)}　🌊 蓝海 {len(ocean)}　⚠️ 异常 {c['fake']}**",
+        f"**🚀 突然爆火 {len(surge)}　🌱 新品潜力 {len(potential)}　🔥 持续热销 {len(hot)}　🌊 蓝海 {len(ocean)}　⚠️ 异常 {c['fake']}　🎯 潜力SKU {len(sku)}**",
         "",
     ]
     hidden = sum(c.get(k, 0) - len(rows) for k, rows in (("surge", surge), ("potential", potential), ("hot", hot), ("ocean", ocean)))
@@ -143,9 +145,24 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
             lines.append(item_line(item, f" 日均{s['base_avg']:.0f}→{s['recent_avg']:.0f}（{ratio}，{increment_text(item)}）{tags}"))
         lines.append("")
     if potential:
-        lines.append("**🌱 潜力产品**")
+        lines.append("**🌱 新品潜力**")
         for item in potential[:max_items]:
             lines.append(item_line(item, f" {growth_text(item)}（{increment_text(item)}）"))
+        lines.append("")
+    if sku:  # 潜力SKU（detect/potential_sku.py）：爆发苗头在前，写层、为什么值得看、风险，和回测里之后卖爆的比例；完整表格在报告里（可下载）
+        cfg = ctx.get("cfg") or {}
+        n_sku = int(sku_items if sku_items is not None else (cfg.get("notify") or {}).get("sku_items", 5))
+        bt = potential_sku.settings(cfg).get("backtest") or {}
+        rate = lambda key: f"，回测 {sku_pct(bt[key][0])} 之后卖爆" if bt.get(key) else ""  # noqa: E731
+        boom = sum(1 for i in sku if i["sku"]["type"] == potential_sku.BOOM)
+        lines.append(f"**🎯 潜力SKU**（爆发苗头 {boom}{rate('boom')}；稳步在涨 {len(sku) - boom}{rate('steady')}；"
+                     "表格在报告里可下载）")
+        for item in sku[:n_sku]:
+            head = potential_sku.label_of(item["sku"])
+            price = f"${item['price']:.0f}，" if item.get("price") else ""
+            risks = sku_risks(item)
+            lines.append(item_line(item, f" {price}{head}：{_short(sku_reason(item), 40)}"
+                                         + (f"（风险：{'、'.join(risks[:2])}）" if risks else "")))
         lines.append("")
     if ocean:  # 蓝海产品：只在这份名单里（不进别的板块），写出是哪一类细分人群 / 用途
         lines.append("**🌊 蓝海产品**")
@@ -189,8 +206,12 @@ def build_text(ctx: dict, max_items: int = 3) -> str:
     diff = ctx["diff"]
     if not diff.get("first"):
         lines.append(f"较上期：依旧爆火 {len(diff['still'])}、新增爆火 {len(diff['new']['surge'])}、"
-                     f"新增潜力 {len(diff['new']['potential'])}、"
+                     f"新增新品潜力 {len(diff['new']['potential'])}、"
                      f"新增异常 {len(diff['new']['fake'])}、不再爆火 {len(diff.get('cooled', []))}")
+        sc = diff.get("sku_check")
+        if sc:  # 上期潜力SKU本期怎样了（报告“与上期对比”里有名单）
+            lines.append(f"上期潜力SKU {sc['total']} 个：本期仍在清单 {len(sc['held'])} 个、不再符合 {len(sc['lost'])} 个"
+                         + (f"、本期没追踪 {len(sc['gone'])} 个" if sc.get("gone") else ""))
         rc = diff.get("recheck")
         if rc:  # 上期提示了大促后数据待修订：那期的增长商品本期确认了几个（名单在报告“与上期对比”里）
             lines.append(f"上期待确认的增长商品 {rc['total']} 个：本期仍是 {len(rc['held'])} 个、不再是 {len(rc['lost'])} 个"

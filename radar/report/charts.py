@@ -14,7 +14,7 @@ from .sparkline import _raw
 
 NICE = (10, 15, 20, 25, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300, 400, 500, 600, 800, 1000, 1500, 2000, 3000)
 TICKS = (25, 50, 100, 200, 400, 800, 1600)
-KIND_CN = {"surge": "突然爆火", "potential": "潜力", "rising": "上升中"}
+KIND_CN = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中"}
 
 
 def _esc(value) -> str:

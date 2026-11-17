@@ -221,7 +221,7 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
         if shared:
             label, k = shared[0]
             reasons.append((f"同类爆品也有：同子类目另 {len(others)} 个增长商品里 {k} 个也有「{label}」",
-                            "增长商品 = 本期突然爆火、潜力、上升中（不同父体）；多个一起涨、又都带这个元素，是这类商品现在的卖点"))
+                            "增长商品 = 本期突然爆火、新品潜力、上升中（不同父体）；多个一起涨、又都带这个元素，是这类商品现在的卖点"))
             if not distinct:
                 short.append(f"同类爆品多有{label}")
 

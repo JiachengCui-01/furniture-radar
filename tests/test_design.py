@@ -228,10 +228,10 @@ def test_report_has_popups_and_design_section(cfg, master_key, tmp_path):
     _secrets, second = _two_runs(cfg, master_key, tmp_path)
     page = (tmp_path / "reports" / f"{second.report_id}.html").read_text(encoding="utf-8")
     plain = _decrypt_page(page, crypto.parse_master_key(master_key))
-    for kind in ("surge", "potential", "hot", "ocean", "fake", "growth", "all"):
+    for kind in ("surge", "potential", "hot", "ocean", "fake", "growth", "all", "sku"):
         assert f'data-pop="{kind}"' in plain and f'id="pop-{kind}"' in plain
     n_dirs = plain.count('class="dbox dir"')  # 每个开发方向一个小窗（点一览里的一行弹出）
-    assert plain.count('class="pop-src"') == 7 + n_dirs and 'id="pop"' in plain
+    assert plain.count('class="pop-src"') == 8 + n_dirs and 'id="pop"' in plain
     # 季节判断已经去掉：没有季节性商品、季节日历，也没有品类季节性标签
     assert "季节" not in plain
     # 主体里不放完整的商品卡片（都在隐藏的小窗内容里），但商品要有图：KPI 缩略图、本期增长商品图墙
@@ -758,7 +758,7 @@ def test_risk_reminders_list_every_risk_factor_of_listed_products(cfg):
 
     html_text = render._risk_rows(groups)
     assert html_text.count('class="rkg"') == 7 and "COMHOMA 五斗橱" in html_text  # 一类商品少时写品名
-    assert 'data-tip="Huuger 五斗橱 · 潜力 · 最近 28 天有 6 天没有日数据（断货或数据缺失，判断可能不准）"' in html_text
+    assert 'data-tip="Huuger 五斗橱 · 新品潜力 · 最近 28 天有 6 天没有日数据（断货或数据缺失，判断可能不准）"' in html_text
     assert "列出的商品都没有风险标签" in render._risk_rows([])
 
 

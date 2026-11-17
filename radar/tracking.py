@@ -38,10 +38,17 @@ REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "ocean": "蓝海
 
 
 def watchlist(state: dict, runs: int) -> list[str]:
+    """往期上榜的：近 runs 期被标为爆火 / 潜力 / 异常的，再加那几期的潜力SKU（detect/potential_sku.py：
+    下期要复查它们还在不在清单里，“与上期对比”写出真实结果，没拉到日数据就只能算“没追踪”）。"""
     out: list[str] = []
-    for run in (state.get("runs") or [])[-runs:][::-1]:
+    recent = (state.get("runs") or [])[-runs:][::-1]
+    for run in recent:
         for asin, (label, *_rest) in (run.get("labels") or {}).items():
             if label in FLAG_LABELS and asin not in out:
+                out.append(asin)
+    for run in recent:
+        for asin in run.get("sku") or {}:
+            if asin not in out:
                 out.append(asin)
     return out
 

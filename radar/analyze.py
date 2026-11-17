@@ -5,7 +5,7 @@ import math
 from datetime import date
 
 from . import clock, evidence, monthly_lists, universe
-from .detect import blueocean
+from .detect import blueocean, potential_sku
 from .detect import events as events_mod
 from .detect import fakehot, traits
 from .detect.design import main_material
@@ -98,7 +98,7 @@ def increment_note(item: dict) -> str:
     return "近 28 天不比再之前 28 天多" if increment(item) <= 0 else ""
 
 
-LABEL_CN = {"surge": "突然爆火", "potential": "潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
+LABEL_CN = {"surge": "突然爆火", "potential": "新品潜力", "hot": "持续热销", "fake": "异常信号", "watch": "观察",
             "low": "评分偏低"}
 # 不进入任何榜单和外观分析样本的标签
 UNLISTED = ("fake", "low")
@@ -226,7 +226,7 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         lost = list(tide_lost)
         if potential and potential.get("recent_ratio") is not None \
                 and potential["recent_ratio"] / tide < th["potential"]["min_recent_ratio"] - 1e-9:
-            lost.append(("潜力", potential["recent_ratio"], th["potential"]["min_recent_ratio"]))
+            lost.append(("新品潜力", potential["recent_ratio"], th["potential"]["min_recent_ratio"]))
             potential = None
         if rising and rising["ratio"] / tide < (th.get("rising") or {}).get("min_ratio", 1.3) - 1e-9:
             lost.append(("上升中", rising["ratio"], (th.get("rising") or {}).get("min_ratio", 1.3)))
@@ -253,13 +253,13 @@ def _judge_growth(d: Daily | None, idx: int | None, as_of: date | None, rec: dic
         last7 = mean([d.sales[k] for k in d.open_days(idx, 7, 14) if k < len(d.sales)])
         t = tide if tide and tide > 1 else 1.0
         lost = []
-        for name, judged, need in (("潜力", potential, th["potential"]["min_recent_ratio"]),
+        for name, judged, need in (("新品潜力", potential, th["potential"]["min_recent_ratio"]),
                                    ("上升中", rising, (th.get("rising") or {}).get("min_ratio", 1.3))):
             if judged and base and (last7 is None or last7 / base / t < need - 1e-9):
                 lost.append((name, need))
         if lost:
             names = [n for n, _ in lost]
-            potential = None if "潜力" in names else potential
+            potential = None if "新品潜力" in names else potential
             rising = None if "上升中" in names else rising
             stalled = {"lost": lost, "last7": last7, "base": base, "tide": t}
     return {"surge": surge, "restock": restock, "new_ramp": new_ramp, "unshaped": unshaped,
@@ -351,7 +351,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if restock:
         tags.append("断货恢复")
     if new_ramp and label != "potential":
-        tags.append("老链接重新起量（未达爆火门槛）" if g["revived"] else "新品起量（未达潜力门槛）")
+        tags.append("老链接重新起量（未达爆火门槛）" if g["revived"] else "新品起量（未达新品潜力门槛）")
     if deal_lift:
         tags.append("大促拉动（去掉大促日后不达标）")
     if g["tided"] and label not in ("surge", "potential") and not rising:
@@ -375,7 +375,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if hot and label != "hot":
         tags.append("长期头部")  # 符合持续热销条件，但本期归入了别的板块
     if potential and label not in ("potential",):
-        tags.append("潜力")
+        tags.append("新品潜力")
     if potential and potential.get("launch"):  # 潜力的第二条路：近期新上架、近 1~2 周就达到了突然爆火的门槛
         tags.append("新品爆发" if potential["from_zero"] else f"新品起量快（{potential['launch']}）")
     elif potential and potential.get("growth") is None:
@@ -397,7 +397,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
                 and 0 <= age <= new_days(th):
             recent = _avg(d, idx, 7)
             if recent is not None and recent >= th["surge"]["new_listing_min_daily"]:
-                tags.append("新品起量（对比数据不足，暂不确认潜力）")
+                tags.append("新品起量（对比数据不足，暂不确认新品潜力）")
     if relist and prev_in is not None:
         # 之前 28 天在卖不到 short_base_days 天：开发方向的增量按 0（之前那几天零星卖几件，现在的销量几乎都是从老链接转过来的）
         relist = {**relist, "base_short": prev_in < short}
@@ -457,6 +457,10 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "spark_start": full.day(max(0, idx - 89)).isoformat() if idx is not None else None,
         "monthly": [[k, s] for k, s in months[-12:]],
         "recent_avg7": (surge or {}).get("recent_avg") if surge else _avg(d, idx, 7),
+        # 近 7 天日均（去掉大促日，所有商品同一个口径；上面的 recent_avg7 对爆火商品是爆发窗口的日均）：潜力SKU 的爆发苗头
+        "last7_avg": _avg(d, idx, 7),
+        # 近 14 天日均（去掉大促日）：潜力SKU 的稳步在涨 / 刚起势看最近两周是不是还在加速（detect/potential_sku.py）
+        "recent_avg14": _avg(d, idx, 14),
         "recent_avg28": _avg(d, idx, 28),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
         "prev_avg28": _avg(d, idx - 28, 28, oos, zero_run) if idx is not None else None,
@@ -562,6 +566,8 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             kept.append(item)
     ocean["hobby_dropped"] = len(items) - len(kept) - len(ocean_items)
     items, ocean_extra = kept, ocean_items + ocean_extra
+    # 潜力SKU（detect/potential_sku.py）：正在涨 + 刚起势，另成一份清单，商品照样在原板块里
+    potential_sku.mark(items, cfg)
     check = None
     if usable_revision(revision, th):  # 数据说明里写：当期拉到的数偏不偏高、校正了没有
         need = 1 + (1 / float(revision["median"]) - 1) * float(th.get("revision_inflation_share", 0.5))
@@ -724,7 +730,7 @@ def lost_judgments(item: dict, alt: dict, with_fading: bool = True) -> list[str]
     if item["label"] == "surge" and alt["label"] != "surge":
         lost.append("突然爆火")
     if item["label"] == "potential" and not alt.get("potential"):
-        lost.append("潜力")
+        lost.append("新品潜力")
     if item.get("rising") and item["label"] in ("watch", "hot") and not alt.get("rising"):
         lost.append("上升中")
     if item["label"] == "hot" and not alt.get("hot"):
@@ -875,7 +881,7 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
                     + (["长期头部"] if label == "fake" else []) + fake["tags"],
             "surge": None, "restock": None, "rising": None, "material": main_material(title), "hot": hot,
             "potential": None, "fake": fake, "relist": None, "spark": [], "spark_start": None,
-            "monthly": [[k, u] for k, u, *_ in months], "recent_avg7": None, "recent_avg28": round(recent, 2),
+            "monthly": [[k, u] for k, u, *_ in months], "recent_avg7": None, "last7_avg": None, "recent_avg28": round(recent, 2),
             "prev_avg28": None, "pkg": r.get("pkg") or p.get("pkg"), "fetched_run": None, "source": "monthly",
             "daily": False,
         })
@@ -912,9 +918,24 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     # 同一类排在一起（合计销售额大的类在前），类里按近 30 天销售额
     ocean = sorted((i for i in every if i.get("ocean")),
                    key=lambda i: (-i["ocean"]["niche_revenue"], i["ocean"]["niche"], -i["ocean"]["revenue"]))
+    # 潜力SKU（detect/potential_sku.py）：爆发苗头 → 稳步在涨（正在涨）→ 稳步在涨（刚起势）。
+    # 爆发苗头按最近 7 天的节奏一个月的销售额（近 7 天日均 × 30 × 售价）排；正在涨按月增量排（同爆火、潜力）；
+    # 刚起势还没有像样的增量，按近 30 天销售额（近 28 天日均 × 30 × 售价）排
+    def sku_key(i: dict):
+        kind = i["sku"]["type"]
+        if kind == potential_sku.BOOM:
+            money = (i.get("last7_avg") or 0) * (i.get("price") or 0) * MONTH_DAYS
+        elif kind == potential_sku.RISING:
+            money = increment(i)
+        else:
+            money = (i.get("recent_avg28") or 0) * (i.get("price") or 0) * MONTH_DAYS
+        return potential_sku.tier(i), -round(money)
+    sku = sorted((i for i in items if i.get("sku")), key=sku_key)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot), "ocean": cut(ocean),
+            "sku": cut(sku),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
-                       "ocean": len(ocean),
+                       "ocean": len(ocean), "sku": len(sku),
+                       "sku_boom": sum(1 for i in sku if i["sku"]["type"] == potential_sku.BOOM),
                        # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
                        "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
                        "low": sum(1 for i in items if i["label"] == "low"),

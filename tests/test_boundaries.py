@@ -19,7 +19,7 @@ def test_unknown_baseline_does_not_become_a_new_surge_or_full_increment(cfg):
     assert item['label'] == 'watch' and item['surge'] is None
     assert item['baseline_unknown'] and analyze.increment(item) == 0
     assert '无法估算增量' in analyze.increment_note(item)
-    assert '新品起量（对比数据不足，暂不确认潜力）' in item['tags']  # 上架 60 天：近期新上架的算潜力，不算突然爆火
+    assert '新品起量（对比数据不足，暂不确认新品潜力）' in item['tags']  # 上架 60 天：近期新上架的算潜力，不算突然爆火
 
 
 def test_known_zero_sales_still_allow_launch_and_positive_short_baseline_still_counts(cfg):

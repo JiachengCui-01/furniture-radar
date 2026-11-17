@@ -323,7 +323,7 @@ def test_low_rated_potential_is_dropped(cfg):
     rec["months"] = _months([90, 200, 420])
     assert evaluate_potential(rec, Daily.from_record(rec["series"]), END, cfg["thresholds"]["potential"])
     item = analyze.analyze({"asins": {"B1": rec}}, None, ["B1"], cfg, END)["items"][0]
-    assert item["label"] == "low" and "潜力" in item["tags"]
+    assert item["label"] == "low" and "新品潜力" in item["tags"]
 
 
 def test_rating_prefers_latest_daily_data():
@@ -760,7 +760,7 @@ def test_after_a_lift_warning_the_next_diff_says_which_growth_items_held():
     assert d["recheck"] == {"total": 4, "held": ["B"], "lost": {"A": "surge", "C": "rising"}, "gone": ["E"]}
     assert d["cooled"] == ["A"]  # 不再爆火照旧
     text = _changes(d, {})
-    assert "上期提示了大促后数据待修订：上期的 4 个增长商品（突然爆火 / 潜力 / 上升中），本期仍是增长商品 1 个，不再是 2 个：" in text
+    assert "上期提示了大促后数据待修订：上期的 4 个增长商品（突然爆火 / 新品潜力 / 上升中），本期仍是增长商品 1 个，不再是 2 个：" in text
     assert "（上期上升中）" in text and "另有 1 个本期没追踪" in text
     assert diff.compare({**prev, "lift": False}, now, growth={"B": "potential"})["recheck"] is None  # 没提示的那期不写
     assert diff.compare({k: v for k, v in prev.items() if k != "growth"}, now)["recheck"] is None  # 旧的记录没记增长商品
@@ -1263,7 +1263,7 @@ def test_rising_and_potential_need_the_last_7_days_too(cfg):
     young = dict(available=(END - timedelta(days=80)).isoformat(), ratings=50)
     gone = item([3] * 64 + [4] * 28 + [12] * 14 + [4] * 14, **young)
     assert gone["label"] == "watch" and not gone["potential"] and not gone["rising"]
-    assert "近 7 天没涨够（日均 4.0 件，是之前 28 天日均 4.0 件的 ×1.00，不到 1.2 倍，不算潜力、上升中）" in gone["tags"]
+    assert "近 7 天没涨够（日均 4.0 件，是之前 28 天日均 4.0 件的 ×1.00，不到 1.2 倍，不算新品潜力、上升中）" in gone["tags"]
     assert item([3] * 64 + [4] * 28 + [8] * 14 + [9] * 14, **young)["label"] == "potential"
 
 
