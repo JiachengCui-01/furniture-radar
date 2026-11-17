@@ -442,16 +442,16 @@ details.more-facts{margin-top:4px}
 /* 潜力SKU 表格（正文前几个 + 小窗全部，点一行展开卡片，可下载） */
 .skut td{vertical-align:middle}.skut th,.skut td.n,.skut td.nd{white-space:nowrap}
 .skut td.im{width:46px;padding:4px}.skut td.im img,.skut td.im .ph{width:40px;height:40px;object-fit:contain;background:var(--imgbg);border-radius:6px;border:1px solid var(--line)}
-.skut td.nm{min-width:180px}.skut td.nm a{font-weight:600;text-decoration:none;color:var(--text)}.skut td.nm a:hover{color:var(--accent)}
+.skut td.nm{width:170px;min-width:140px;max-width:170px;text-align:left;white-space:normal}.skut td.nm a{font-weight:600;text-decoration:none;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.35}.skut td.nm a:hover{color:var(--accent)}
 .skut small{display:block;font-size:11.5px;color:var(--muted)}
-.skut td.why{min-width:180px;font-size:12.5px;line-height:1.45}
+.skut td.nc{min-width:60px;max-width:96px;white-space:normal;word-break:keep-all;line-height:1.35}.skut td.why{min-width:140px;font-size:12.5px;line-height:1.45}
 .skut td.rk{font-size:12px;color:var(--fake)}
 .sb{display:inline-block;font-size:11.5px;font-weight:600;border-radius:6px;padding:1px 6px;white-space:nowrap}
 .sb.top{background:var(--sku);color:#fff}.sb.mid{border:1px solid var(--sku);color:var(--sku)}
 .skut tr.sr{cursor:pointer}.skut tr.sr:hover td{background:var(--row)}.skut tr.sr.open td{background:var(--row);border-bottom:0}
 .skut tr.sc>td{padding:0 0 10px;background:var(--row)}.skut tr.sc .card{margin:0}
 .tools .dl{font:inherit;font-size:13px;border:1px solid var(--sku);color:var(--sku);background:var(--card);border-radius:8px;padding:3px 10px;cursor:pointer}
-@media (max-width:640px){.skut .opt{display:none}.skut td.nm{min-width:140px}}
+@media (max-width:640px){.skut .opt{display:none}.skut td.nm{min-width:130px;width:150px}}
 """
 
 
@@ -974,7 +974,7 @@ def _sku_row(item: dict, n: int) -> str:
         ("im", "", _img(item, 100)),
         ("nm", "", f'<a href="{amazon(item["asin"])}" {LINK}>{esc(short_name(item, 48))}</a>'
                    f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
-        ("nd", "", esc(node)),
+        ("nc", "", esc(node).replace("、", "、<wbr>")),  # 只在顿号处换行
         ("nd", f' data-tip="{esc(basis)}"', f'<span class="sb {cls}">{esc(seg)}</span>'
                                           + f"<small>{esc(sku['kind'])}</small>"),
         ("n", "", fmt_price(item.get("price"))),
@@ -998,7 +998,8 @@ def _sku_row(item: dict, n: int) -> str:
 def _sku_table(rows: list[dict], similar: dict | None = None, expand: bool = True) -> str:
     def th(i: int, h: str) -> str:
         names = " ".join(x for x in ("opt" if i in SKU_OPT else "", "n" if i in SKU_NUM else "") if x)
-        return f'<th class="{names}">{esc(h)}</th>' if names else f"<th>{esc(h)}</th>"
+        text = esc(h).replace("÷", "÷<br>")
+        return f'<th class="{names}">{text}</th>' if names else f"<th>{text}</th>"
     head = "".join(th(i, h) for i, h in enumerate(SKU_HEAD))
     body = []
     for n, item in enumerate(rows):
