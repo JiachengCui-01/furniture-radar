@@ -457,9 +457,9 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "spark_start": full.day(max(0, idx - 89)).isoformat() if idx is not None else None,
         "monthly": [[k, s] for k, s in months[-12:]],
         "recent_avg7": (surge or {}).get("recent_avg") if surge else _avg(d, idx, 7),
-        # 近 7 天日均（去掉大促日，所有商品同一个口径；上面的 recent_avg7 对爆火商品是爆发窗口的日均）：潜力SKU 的爆发苗头
+        # 近 7 天日均（去掉大促日，所有商品同一个口径；上面的 recent_avg7 对爆火商品是爆发窗口的日均）：潜力SKU 按它挑、分档
         "last7_avg": _avg(d, idx, 7),
-        # 近 14 天日均（去掉大促日）：潜力SKU 的稳步在涨 / 刚起势看最近两周是不是还在加速（detect/potential_sku.py）
+        # 近 14 天日均（去掉大促日）：潜力SKU 表格里的“近14天÷近28天”（detect/potential_sku.py）
         "recent_avg14": _avg(d, idx, 14),
         "recent_avg28": _avg(d, idx, 28),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
@@ -566,7 +566,7 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             kept.append(item)
     ocean["hobby_dropped"] = len(items) - len(kept) - len(ocean_items)
     items, ocean_extra = kept, ocean_items + ocean_extra
-    # 潜力SKU（detect/potential_sku.py）：正在涨 + 刚起势，另成一份清单，商品照样在原板块里
+    # 潜力SKU（detect/potential_sku.py）：增长商品里最近一周加速的，另成一份清单，商品照样在原板块里
     potential_sku.mark(items, cfg)
     check = None
     if usable_revision(revision, th):  # 数据说明里写：当期拉到的数偏不偏高、校正了没有
@@ -918,24 +918,15 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     # 同一类排在一起（合计销售额大的类在前），类里按近 30 天销售额
     ocean = sorted((i for i in every if i.get("ocean")),
                    key=lambda i: (-i["ocean"]["niche_revenue"], i["ocean"]["niche"], -i["ocean"]["revenue"]))
-    # 潜力SKU（detect/potential_sku.py）：爆发苗头 → 稳步在涨（正在涨）→ 稳步在涨（刚起势）。
-    # 爆发苗头按最近 7 天的节奏一个月的销售额（近 7 天日均 × 30 × 售价）排；正在涨按月增量排（同爆火、潜力）；
-    # 刚起势还没有像样的增量，按近 30 天销售额（近 28 天日均 × 30 × 售价）排
+    # 潜力SKU（detect/potential_sku.py）：一周翻倍 → 一周涨五成，同档里按近 7 天 ÷ 近 28 天从高到低（加速越猛，回测里后续越容易卖爆）
     def sku_key(i: dict):
-        kind = i["sku"]["type"]
-        if kind == potential_sku.BOOM:
-            money = (i.get("last7_avg") or 0) * (i.get("price") or 0) * MONTH_DAYS
-        elif kind == potential_sku.RISING:
-            money = increment(i)
-        else:
-            money = (i.get("recent_avg28") or 0) * (i.get("price") or 0) * MONTH_DAYS
-        return potential_sku.tier(i), -round(money)
+        return potential_sku.tier(i), -i["sku"]["a7"]
     sku = sorted((i for i in items if i.get("sku")), key=sku_key)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot), "ocean": cut(ocean),
             "sku": cut(sku),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),
                        "ocean": len(ocean), "sku": len(sku),
-                       "sku_boom": sum(1 for i in sku if i["sku"]["type"] == potential_sku.BOOM),
+                       "sku_top": sum(1 for i in sku if i["sku"]["tier"] == potential_sku.TOP),
                        # 上升中：只数不在爆火/潜力里的（爆火、潜力本来就在增长，不重复计数）
                        "rising": sum(1 for i in items if i.get("rising") and i["label"] in ("watch", "hot")),
                        "low": sum(1 for i in items if i["label"] == "low"),

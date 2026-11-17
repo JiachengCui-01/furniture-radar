@@ -628,8 +628,6 @@ def shown_with_kind(curated: dict) -> list[tuple[dict, str]]:
             continue
         seen.add(item["asin"])
         kind = "蓝海产品" if item.get("ocean") else KIND_CN.get(analyze.growth_kind(item) or item["label"], item.get("label_cn") or "")
-        if item["label"] == "watch" and not analyze.growth_kind(item) and item.get("sku"):
-            kind = item["sku"]["kind"] or item["sku"]["tier"]  # 只在潜力SKU里列出的：刚起势 / 新品起量 / 爆发苗头
         out.append((item, kind))
     return out
 
@@ -891,7 +889,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict, ocean: list[
         "id": ctx["report_id"], "seq": ctx["run_seq"], "date": date_text, "labels": labels, "ocean": list(ocean or []),
         # 下期“与上期对比”用：本期提示了大促后数据待修订（events.bsr_lift）时，下期写明这些增长商品哪些仍成立（diff.compare）
         "growth": growth_map(ctx["items"]), "lift": bool((ctx.get("events") or {}).get("lift")),
-        # 潜力SKU {ASIN: [层, 类型]}：下期“与上期对比”复查（detect/potential_sku.recheck），下期优先拉日数据（tracking.watchlist）
+        # 潜力SKU {ASIN: [档, 类型]}：下期“与上期对比”复查（detect/potential_sku.recheck），下期优先拉日数据（tracking.watchlist）
         "sku": potential_sku.record(ctx["items"]),
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": ctx.get("scope_key") or discovery.scope_key(cfg),

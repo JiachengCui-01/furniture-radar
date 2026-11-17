@@ -149,13 +149,13 @@ def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> s
         for item in potential[:max_items]:
             lines.append(item_line(item, f" {growth_text(item)}（{increment_text(item)}）"))
         lines.append("")
-    if sku:  # 潜力SKU（detect/potential_sku.py）：爆发苗头在前，写层、为什么值得看、风险，和回测里之后卖爆的比例；完整表格在报告里（可下载）
+    if sku:  # 潜力SKU（detect/potential_sku.py）：一周翻倍在前，写档、为什么值得看、风险，和回测里后续卖爆的比例；完整表格在报告里（可下载）
         cfg = ctx.get("cfg") or {}
         n_sku = int(sku_items if sku_items is not None else (cfg.get("notify") or {}).get("sku_items", 5))
         bt = potential_sku.settings(cfg).get("backtest") or {}
-        rate = lambda key: f"，回测 {sku_pct(bt[key][0])} 之后卖爆" if bt.get(key) else ""  # noqa: E731
-        boom = sum(1 for i in sku if i["sku"]["type"] == potential_sku.BOOM)
-        lines.append(f"**🎯 潜力SKU**（爆发苗头 {boom}{rate('boom')}；稳步在涨 {len(sku) - boom}{rate('steady')}；"
+        rate = lambda key: f"，回测 {sku_pct(bt[key][0])} 后续卖爆" if bt.get(key) else ""  # noqa: E731
+        top = sum(1 for i in sku if i["sku"]["tier"] == potential_sku.TOP)
+        lines.append(f"**🎯 潜力SKU**（增长商品里最近一周加速的：一周翻倍 {top}{rate('top')}；一周涨五成 {len(sku) - top}{rate('mid')}；"
                      "表格在报告里可下载）")
         for item in sku[:n_sku]:
             head = potential_sku.label_of(item["sku"])

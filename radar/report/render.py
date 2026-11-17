@@ -26,7 +26,7 @@ from . import charts
 from .sparkline import HOVER_JS, bars, sparkline
 
 LABEL_COLOR = {"surge": "surge", "potential": "potential", "hot": "hot", "fake": "fake", "watch": "muted",
-               "low": "muted", "rising": "accent", "ocean": "ocean", "early": "sku", "boom": "sku", "sku": "sku"}
+               "low": "muted", "rising": "accent", "ocean": "ocean", "sku": "sku"}
 GROUP_CN = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中"}
 LINK = 'target="_blank" rel="noopener noreferrer"'
 
@@ -447,7 +447,7 @@ details.more-facts{margin-top:4px}
 .skut td.why{min-width:180px;font-size:12.5px;line-height:1.45}
 .skut td.rk{font-size:12px;color:var(--fake)}
 .sb{display:inline-block;font-size:11.5px;font-weight:600;border-radius:6px;padding:1px 6px;white-space:nowrap}
-.sb.boom{background:var(--sku);color:#fff}.sb.steady{border:1px solid var(--sku);color:var(--sku)}
+.sb.top{background:var(--sku);color:#fff}.sb.mid{border:1px solid var(--sku);color:var(--sku)}
 .skut tr.sr{cursor:pointer}.skut tr.sr:hover td{background:var(--row)}.skut tr.sr.open td{background:var(--row);border-bottom:0}
 .skut tr.sc>td{padding:0 0 10px;background:var(--row)}.skut tr.sc .card{margin:0}
 .tools .dl{font:inherit;font-size:13px;border:1px solid var(--sku);color:var(--sku);background:var(--card);border-radius:8px;padding:3px 10px;cursor:pointer}
@@ -518,7 +518,7 @@ tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px';}
 document.addEventListener('mousemove',show);document.addEventListener('touchstart',show,{passive:true});
 window.addEventListener('scroll',function(){tip.hidden=true;},true);})();</script>"""
 
-# 潜力SKU 小窗的表格：按爆发苗头 / 稳步在涨、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行存成 CSV（带 BOM，Excel 直接打开）。
+# 潜力SKU 小窗的表格：按一周翻倍 / 一周涨五成、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行存成 CSV（带 BOM，Excel 直接打开）。
 # POPUP 的 open() 每次打开小窗都调用 window.skuTable(小窗内容)。用原始字符串：正则里的反斜杠原样进网页
 SKU_JS = r"""<script>(function(){
 function closest(el,sel){while(el&&el.nodeType===1){if(el.matches?el.matches(sel):el.msMatchesSelector(sel))return el;el=el.parentNode;}return null;}
@@ -530,7 +530,7 @@ var rows=[].slice.call(tb.querySelectorAll('tr.sr'));var segs={},nodes={},order=
 rows.forEach(function(r){var s=r.getAttribute('data-seg'),n=r.getAttribute('data-node');segs[s]=(segs[s]||0)+1;
 if(n){if(!nodes[n]){nodes[n]=0;order.push(n);}nodes[n]++;}});
 var bar=el('div','tools'),st={g:'',n:'',s:''},cnt=el('span','cnt');
-var seg=el('span','seg');[''].concat(['爆发苗头','稳步在涨'].filter(function(k){return segs[k];})).forEach(function(k){
+var seg=el('span','seg');[''].concat(['一周翻倍','一周涨五成'].filter(function(k){return segs[k];})).forEach(function(k){
 var b=el('button',k?'':'on',k?k+' '+segs[k]:'全部 '+rows.length);b.type='button';b.setAttribute('data-g',k);seg.appendChild(b);});
 bar.appendChild(seg);seg.addEventListener('click',function(e){var b=closest(e.target,'button');if(!b)return;st.g=b.getAttribute('data-g');
 [].forEach.call(seg.children,function(x){x.className=x===b?'on':'';});apply();});
@@ -687,18 +687,7 @@ def card(item: dict, kind: str, group: str = "", similar: list[dict] = ()) -> st
         o = item["ocean"]
         kv.append(_pill("细分", f"<b>{esc(o['niche'])}</b> · 全市场 {fmt_int(o['n'])} 个"))
         kv.append(_pill("近30天", f"<b>{esc(directions.money_text(o['revenue']))}</b>"))
-    if kind == "early" and (item.get("sku") or {}).get("type") == potential_sku.EARLY:  # 潜力SKU 的刚起势：最近两周开始加速
-        k = item["sku"]
-        kv.append(_pill("近14天÷近28天", f"<b>×{k['a14']:.2f}</b>"))
-        kv.append(_pill("近7天÷近28天", f"×{k['a7']:.2f}"))
-        kv.append(_pill("近28天÷之前28天", f"×{k['base']:.2f}"))
-    if kind == "boom" and (item.get("sku") or {}).get("type") == potential_sku.BOOM:  # 潜力SKU 的爆发苗头（不在增长板块里的）
-        k = item["sku"]
-        kv.append(_pill("近7天÷近28天", f"<b>×{k['a7']:.2f}</b>"))
-        kv.append(_pill("按近7天节奏一个月", f"{fmt_int(item['last7_avg'] * 30)} 件"))
-        if k.get("a14") is not None:
-            kv.append(_pill("近14天÷近28天", f"×{k['a14']:.2f}"))
-    if kind in ("hot", "fake", "rising", "ocean", "early", "boom") and item.get("recent_avg28") is not None:
+    if kind in ("hot", "fake", "rising", "ocean") and item.get("recent_avg28") is not None:
         kv.append(_pill("近28天日均", fmt_num(item["recent_avg28"])))
     note = ""
     if kind in ("surge", "potential", "rising"):  # 爆火、潜力两个板块按它排（analyze.sections），和开发方向同一个口径
@@ -904,7 +893,7 @@ SKU_HEAD = ("", "商品", "子类目", "类型", "售价", "近30天", "月增�
             "为什么值得看", "风险")
 SKU_OPT = {2, 8, 9, 10, 12}  # 手机上收起的列（子类目、近14天÷近28天、上架、评分、风险）
 SKU_NUM = range(4, 11)  # 右对齐的数字列（售价 ~ 评分）
-SKU_CSV = ("ASIN", "亚马逊链接", "品牌", "标题", "子类目", "层", "类型", "售价($)", "近30天销量(件)", "近30天销售额($)",
+SKU_CSV = ("ASIN", "亚马逊链接", "品牌", "标题", "子类目", "档", "类型", "售价($)", "近30天销量(件)", "近30天销售额($)",
            "月增量($)", "近7天÷近28天", "近14天÷近28天", "上架天数", "评分", "评论数", "为什么值得看", "风险标签", "所在板块", "判定依据")
 
 
@@ -918,23 +907,21 @@ def sku_hint(cfg: dict) -> str:
     """潜力SKU 小窗顶部的一句话：条件的数字取自 config.yaml，回测数取自 thresholds.potential_sku.backtest。"""
     s = potential_sku.settings(cfg)
     bt = s.get("backtest") or {}
-    floor = f"≥{s['min_units']:g} 件或 ≥{s['min_revenue'] / 1e4:g} 万美元"
-    text = (f"潜力SKU 分两层。爆发苗头：近 7 天日均 ≥ 近 28 天的 {float(s['boom_a7']):g} 倍、没回落、不是老品换链接，"
-            f"按这个节奏一个月 {floor}。稳步在涨（不是爆发苗头的）：本期的突然爆火、新品潜力、上升中、新品起量里近 14 天日均 ≥ 近 28 天 "
-            f"{float(s['steady_accel']):g} 倍的（最近两周还在加速），和刚起势（还没到增长门槛、没在跌，近 14 天和近 7 天日均都 ≥ "
-            f"近 28 天的 {float(s['early_accel']):g} 倍，近 30 天 {floor}）。")
-    if all(bt.get(k) for k in ("all", "boom", "steady")):
-        a, b, st = bt["all"], bt["boom"], bt["steady"]
+    top, low = float(s["top_a7"]), float(s["min_a7"])
+    text = (f"潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天的 {low:g} 倍。"
+            f"分两档：一周翻倍（≥{top:g} 倍）、一周涨五成（{low:g}~{top:g} 倍）。")
+    if all(bt.get(k) for k in ("top", "mid", "slow", "growth", "all")):
         text += (f"回测（{bt.get('span')} 每周按同样的规则倒推，{int(bt.get('products') or 0):,} 个商品；"
                  f"卖爆 = 第 2 个月的 30 天销量 ≥ 现在 {float(bt.get('boom_ratio', 2)):g} 倍且 ≥{int(bt.get('boom_units', 300))} 件）："
-                 f"爆发苗头卖爆 {backtest_pct(b[0])}、新进子类目销量前 10% 的 {backtest_pct(b[1])}；"
-                 f"稳步在涨卖爆 {backtest_pct(st[0])}，但之后 28 天守住近 28 天八成的 {backtest_pct(st[1])}、比现在高的 {backtest_pct(st[2])}（会接着卖，很少会爆）；"
-                 f"全部商品卖爆 {backtest_pct(a[0])}、新进前 10% {backtest_pct(a[1])}、守住 {backtest_pct(a[2])}、比现在高 {backtest_pct(a[3])}。")
-    return text + "评分偏低、异常、蓝海、数据陈旧的不列；商品照样在原来的板块里。"
+                 f"一周翻倍的 {backtest_pct(bt['top'][0])} 后续卖爆、一周涨五成的 {backtest_pct(bt['mid'][0])}；"
+                 f"增长商品里加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
+                 f"（增长商品平均 {backtest_pct(bt['growth'])}，全部商品 {backtest_pct(bt['all'])}）。"
+                 "评分、评论数、上架天数、价格都分不出谁更容易爆。")
+    return text + "蓝海、数据陈旧、只有月度数据的不列；商品照样在原来的板块里。"
 
 
 def _sku_money(item: dict) -> tuple[float | None, float | None]:
-    """近 30 天销量和销售额（近 28 天日均 × 30，同刚起势的量门槛；去掉了大促日）。"""
+    """近 30 天销量和销售额（近 28 天日均 × 30；去掉了大促日）。"""
     a28, price = item.get("recent_avg28"), item.get("price")
     units = a28 * 30 if a28 is not None else None
     return units, (units * price if units is not None and price else None)
@@ -942,7 +929,7 @@ def _sku_money(item: dict) -> tuple[float | None, float | None]:
 
 def sku_reason(item: dict) -> str:
     """“为什么值得看”：大模型按算好的事实写的原因（核对过）→ 规则算的第一条原因（同类爆品也有、价格更低……）→ 判定依据
-    （类型 + 最近两周加速多少）。不用图墙那句 short：它混着外观对比（“比同类多：黑色”），不是原因。"""
+    （类型 + 最近一周加速多少）。不用图墙那句 short：它混着外观对比（“比同类多：黑色”），不是原因。"""
     ins = item.get("insight") or {}
     line = (ins.get("note") or {}).get("why") or ((ins.get("reasons") or [[""]])[0][0])
     return cardnotes.clean(line) if line else potential_sku.why(item)
@@ -958,28 +945,19 @@ def sku_risks(item: dict) -> list[str]:
     return out
 
 
-def _sku_card_kind(item: dict) -> str:
-    kind = growth_kind(item)
-    if kind:
-        return kind
-    sku_type = (item.get("sku") or {}).get("type")
-    return {potential_sku.EARLY: "early", potential_sku.BOOM: "boom"}.get(sku_type, "rising")
-
-
 def _sku_row(item: dict, n: int) -> str:
     sku = item["sku"]
     seg = sku["tier"]
-    growing = sku["type"] != potential_sku.EARLY and bool(sku["kind"])  # 在增长板块里的才有月增量
     node = item.get("node_cn") or item.get("node_name") or ""
     units, rev = _sku_money(item)
-    countable = growing and not item.get("baseline_unknown") and not increment_note(item).startswith("按 0")
+    countable = not item.get("baseline_unknown") and not increment_note(item).startswith("按 0")
     inc = directions.increment(item) if countable else None
     a7, a14 = sku.get("a7"), sku.get("a14")
     reason, risks, basis = sku_reason(item), sku_risks(item), potential_sku.why(item)
     csv = [item["asin"], amazon(item["asin"]), item.get("brand") or "", item["title"], node,
            seg, sku["kind"], item.get("price") or "",
            round(units) if units else "", round(rev) if rev else "",
-           round(inc) if inc is not None else (increment_text(item) if growing else ""),
+           round(inc) if inc is not None else increment_text(item),
            a7 if a7 is not None else "", a14 if a14 is not None else "",
            item.get("age_days") if item.get("age_days") is not None else "",
            item.get("rating") if item.get("rating") is not None else "",
@@ -989,7 +967,7 @@ def _sku_row(item: dict, n: int) -> str:
             "price": item.get("price"), "a7": a7, "a14": a14, "age": item.get("age_days"), "rating": item.get("rating"), "i": n,
             "csv": json.dumps(csv, ensure_ascii=False)}
     attrs = "".join(f' data-{k}="{esc(v)}"' for k, v in data.items() if v not in (None, ""))
-    cls = "boom" if sku["type"] == potential_sku.BOOM else "steady"
+    cls = "top" if sku["tier"] == potential_sku.TOP else "mid"
     rating = f"★{item['rating']}<small>{fmt_int(item['ratings'])} 条</small>" if item.get("rating") is not None else "—"
     age = f"{item['age_days']} 天" if item.get("age_days") is not None else "—"
     cells = [  # (class, 属性, 内容)；SKU_OPT 里的列手机上收起
@@ -998,10 +976,10 @@ def _sku_row(item: dict, n: int) -> str:
                    f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
         ("nd", "", esc(node)),
         ("nd", f' data-tip="{esc(basis)}"', f'<span class="sb {cls}">{esc(seg)}</span>'
-                                          + (f"<small>{esc(sku['kind'])}</small>" if sku["kind"] else "")),
+                                          + f"<small>{esc(sku['kind'])}</small>"),
         ("n", "", fmt_price(item.get("price"))),
         ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
-        ("n", "", esc(increment_text(item)) if growing else "—"),
+        ("n", "", esc(increment_text(item))),
         ("n", "", "—" if a7 is None else f"×{a7:.2f}"),
         ("n", "", "—" if a14 is None else f"×{a14:.2f}"),
         ("n", "", age),
@@ -1027,36 +1005,36 @@ def _sku_table(rows: list[dict], similar: dict | None = None, expand: bool = Tru
         body.append(_sku_row(item, n))
         if expand:
             body.append(f'<tr class="sc" hidden><td colspan="{len(SKU_HEAD)}">'
-                        f'{card(item, _sku_card_kind(item), potential_sku.label_of(item["sku"]), similar=(similar or {}).get(item["asin"], []))}'
+                        f'{card(item, growth_kind(item) or "rising", potential_sku.label_of(item["sku"]), similar=(similar or {}).get(item["asin"], []))}'
                         "</td></tr>")
     return f'<table class="skut"><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table>'
 
 
 def _sku_shown_counts(rows: list[dict]) -> tuple[int, int]:
-    boom = sum(1 for i in rows if i["sku"]["type"] == potential_sku.BOOM)
-    return boom, len(rows) - boom
+    top = sum(1 for i in rows if i["sku"]["tier"] == potential_sku.TOP)
+    return top, len(rows) - top
 
 
 def _sku_section(cur: dict, cfg: dict) -> str:
     """正文：排在前面的几个（每个子类目最多 per_node 个），完整表格在小窗里。"""
     c = cfg["report"].get("potential_sku") or {}
     rows = cur.get("shown") or []
-    top = showcase.gallery(rows, int(c.get("body_rows", 10)), int(c.get("per_node", 2)))
-    boom, steady = _sku_shown_counts(rows)
-    table = (f'<div class="tbl">{_sku_table(top, expand=False)}</div>' if top
+    shown = showcase.gallery(rows, int(c.get("body_rows", 10)), int(c.get("per_node", 2)))
+    top, mid = _sku_shown_counts(rows)
+    table = (f'<div class="tbl">{_sku_table(shown, expand=False)}</div>' if shown
              else '<p class="empty">本期没有潜力SKU。</p>')
     return (f'<section id="sku" style="--c:var(--sku)"><h2><span class="dot"></span>潜力SKU'
             f'<a class="h-more" href="#" data-pop="sku">全部 {len(rows)} 个 · 表格可下载 ›</a></h2>'
-            f'<p class="hint">列出 {len(rows)} 个：爆发苗头 {boom} 个、稳步在涨 {steady} 个。'
-            f'下面是排在前面的 {len(top)} 个（爆发苗头在前；每个子类目最多 {int(c.get("per_node", 2))} 个）。'
-            "点“全部”看完整表格，可按类型、子类目筛选，点一行看卡片，下载成 Excel 能打开的表格。</p>"
+            f'<p class="hint">列出 {len(rows)} 个：一周翻倍 {top} 个、一周涨五成 {mid} 个。'
+            f'下面是排在前面的 {len(shown)} 个（按最近一周加速排；每个子类目最多 {int(c.get("per_node", 2))} 个）。'
+            "点“全部”看完整表格，可按档、子类目筛选，点一行看卡片，下载成 Excel 能打开的表格。</p>"
             f"{table}</section>")
 
 
 def _sku_pop(cur: dict, hint: str, total: int, report_id: str) -> str:
     rows = cur.get("shown") or []
-    boom, steady = _sku_shown_counts(rows)
-    summary = f'<div class="nich"><span><b>爆发苗头</b> {boom} 个</span><span><b>稳步在涨</b> {steady} 个</span></div>'
+    top, mid = _sku_shown_counts(rows)
+    summary = f'<div class="nich"><span><b>一周翻倍</b> {top} 个</span><span><b>一周涨五成</b> {mid} 个</span></div>'
     table = (f'<div class="tbl" data-sku data-head="{esc(json.dumps(list(SKU_CSV), ensure_ascii=False))}" '
              f'data-file="潜力SKU-{esc(report_id)}">{_sku_table(rows, cur.get("similar"))}</div>'
              if rows else '<div class="empty">本期没有潜力SKU。</div>')
@@ -1805,16 +1783,12 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                               f"{ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
     ps = potential_sku.settings(cfg)
     bt = ps.get("backtest") or {}
-    rows += [("潜力SKU", "全市场有潜力的商品清单（不分店铺），分爆发苗头、稳步在涨两层，各写回测里之后卖爆的比例；"
-                        "商品照样在原板块里，表格可下载"),
+    rows += [("潜力SKU", "本期增长商品里最容易后续卖爆的一份清单（不分店铺）：最近一周在加速的，分一周翻倍、一周涨五成两档，"
+                        "各写回测里后续卖爆的比例；商品照样在原板块里，表格可下载"),
              ("卖爆", f"潜力SKU 回测用的标准：判定后第 2 个月的 30 天销量 ≥ 现在近 30 天的 {float(bt.get('boom_ratio', 2)):g} 倍，"
                      f"而且 ≥{int(bt.get('boom_units', 300))} 件"),
-             ("爆发苗头", f"近 7 天日均 ≥ 近 28 天日均 {float(ps['boom_a7']):g} 倍、没回落、不是老品换链接，按这个节奏一个月 "
-                         f"≥{ps['min_units']:g} 件或 ≥{ps['min_revenue'] / 1e4:g} 万美元"),
-             ("稳步在涨", f"不是爆发苗头：突然爆火、新品潜力、上升中、新品起量里近 14 天日均 ≥ 近 28 天日均 "
-                         f"{float(ps['steady_accel']):g} 倍的（最近两周还在加速），或者刚起势"),
-             ("刚起势", f"还没到增长门槛、没在跌，近 14 天和近 7 天日均都 ≥ 近 28 天的 {float(ps['early_accel']):g} 倍，"
-                       f"近 30 天 ≥{ps['min_units']:g} 件或 ≥{ps['min_revenue'] / 1e4:g} 万美元")]
+             ("一周翻倍", f"增长商品里近 7 天日均 ≥ 近 28 天日均 {float(ps['top_a7']):g} 倍的"),
+             ("一周涨五成", f"增长商品里近 7 天日均是近 28 天日均 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 倍的")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
                             "2026-11-07 以前的旧识别结果误标多，只用标题也写了的（开放格、谷仓门、镜子照用）"))
@@ -1962,7 +1936,7 @@ def render(ctx: dict) -> str:
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
         _kpi("ocean", "蓝海产品", "小众兴趣爱好专用的家具 / 收纳", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
-        _kpi("sku", "潜力SKU", "爆发苗头 + 稳步在涨，表格可下载", cur["sku"]["shown"], counts.get("sku", 0)),
+        _kpi("sku", "潜力SKU", "增长商品里一周涨五成以上的，表格可下载", cur["sku"]["shown"], counts.get("sku", 0)),
     ])
     facts = _facts(ctx, counts, cur)
     history = ""
