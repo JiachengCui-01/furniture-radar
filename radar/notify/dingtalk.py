@@ -154,10 +154,12 @@ def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> s
         n_sku = int(sku_items if sku_items is not None else (cfg.get("notify") or {}).get("sku_items", 5))
         note_cfg = (cfg.get("report") or {}).get("card_notes") or {}
         bt = potential_sku.settings(cfg).get("backtest") or {}
-        rate = lambda key: f"，回测 {sku_pct(bt[key][0])} 后续卖爆" if bt.get(key) else ""  # noqa: E731
+        # 回测比例写前后两段时间的范围（样本有幸存者偏差，见 potential_sku 的说明），不只写平均
+        rate = lambda key: (f"，回测 {sku_pct(bt[key][0])}~{sku_pct(bt[key][1])} 后续卖爆"  # noqa: E731
+                            if bt.get(key) else "")
         top = sum(1 for i in sku if i["sku"]["tier"] == potential_sku.TOP)
-        lines.append(f"**🎯 潜力SKU**（增长商品里最近一周加速的：一周翻倍 {top}{rate('top')}；一周涨五成 {len(sku) - top}{rate('mid')}；"
-                     "表格在报告里可下载）")
+        lines.append(f"**🎯 潜力SKU**（增长商品里最近一周加速的，子类目整体在涨的已扣掉：一周翻倍 {top}{rate('top_range')}；"
+                     f"一周涨五成 {len(sku) - top}{rate('mid_range')}；表格在报告里可下载）")
         for item in sku[:n_sku]:
             head = potential_sku.label_of(item["sku"])
             price = f"${item['price']:.0f}，" if item.get("price") else ""

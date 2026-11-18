@@ -918,9 +918,10 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     # 同一类排在一起（合计销售额大的类在前），类里按近 30 天销售额
     ocean = sorted((i for i in every if i.get("ocean")),
                    key=lambda i: (-i["ocean"]["niche_revenue"], i["ocean"]["niche"], -i["ocean"]["revenue"]))
-    # 潜力SKU（detect/potential_sku.py）：一周翻倍 → 一周涨五成，同档里按近 7 天 ÷ 近 28 天从高到低（加速越猛，回测里后续越容易卖爆）
+    # 潜力SKU（detect/potential_sku.py）：一周翻倍 → 一周涨五成，同档里按加速倍数从高到低（近 7 天 ÷ 近 28 天，
+    # 子类目整体在涨的扣掉整体的；加速越猛，回测里后续越容易卖爆）
     def sku_key(i: dict):
-        return potential_sku.tier(i), -i["sku"]["a7"]
+        return potential_sku.tier(i), -i["sku"].get("net", i["sku"]["a7"])
     sku = sorted((i for i in items if i.get("sku")), key=sku_key)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot), "ocean": cut(ocean),
             "sku": cut(sku),

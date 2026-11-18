@@ -3,19 +3,31 @@
 “卖爆” = 判定后第 2 个月的 30 天销量 ≥ 现在近 30 天的 2 倍，而且 ≥300 件。
 
   潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中，同 analyze.growth_kind）里，
-            近 7 天日均 ≥ 近 28 天日均 × min_a7（最近一周在加速）的，分两档：
-    一周翻倍   = 近 7 天日均 ≥ 近 28 天日均 × top_a7；
+            加速倍数 ≥ min_a7（最近一周在加速）的，分两档：
+    一周翻倍   = 加速倍数 ≥ top_a7；
     一周涨五成 = 其余（min_a7 ~ top_a7 倍）。
+  加速倍数 = 近 7 天日均 ÷ 近 28 天日均，所在子类目这周整体也在加速的先扣掉整体的（除以子类目的倍数，只除大于 1 的）。
+  子类目的倍数（node_pace）= 本期追踪的同子类目商品（有日数据、不陈旧、近 28 天日均 × 30 ≥ node_min_units 件）
+  各自近 7 天 ÷ 近 28 天的中位数，不到 node_min 个的子类目不算（不扣）。
 日均都去掉大促日（同 analyze），最近几天按修订幅度校正过的就用校正后的。
 
-回测（10-23 全市场试跑 6,458 个商品各 418 天的日数据，2025-11-15~2026-09-26 每周用现在的规则倒推判一次，看之后的真实销量），
-只看增长商品 13,135 次：后续卖爆 5.6%（全部商品 3.0%）。
-  一周翻倍 486 次：卖爆 26.5%、2 个月内新进子类目销量前 10% 13.6%；各月 9%~40%。
-  一周涨五成 1,927 次：卖爆 11.8%、新进前 10% 6.3%；各月 9%~24%。
-  加速 1.2~1.5 倍的 5.8%，和增长商品平均一样；不到 1.2 倍的 2.2% → 都不列。
+为什么扣子类目整体（2026-11-18 复核回测发现）：整个子类目一起涨的那几周（年底节日这类），单个商品的加速不是它自己的，
+很快回落——子类目中位数 ≥1.25 时一周翻倍只有 6.3% 后续卖爆（79 次），子类目没在涨（<1.0）时 38.8%（183 次）；
+一周涨五成 5.7% 对 15.7%。现有的“跑赢大盘”（universe.node_tide）比的是近 30 天和约 30 天前的整月，管不到这一周。
+子类目的倍数用本期追踪的商品算（全市场名单没有日数据）：11-16 那期各子类目 0.97~1.14；回测里 2025-11 各子类目周的中位 1.08
+（P10~P90 1.00~1.16），同一个季节对得上，追踪商品偏向候选、把中位数抬高的影响看不出来。
+
+回测（10-23 全市场试跑 6,458 个商品各 418 天的日数据，2025-11-15~2026-09-26 每周用现在的规则倒推判一次，看之后的真实销量；
+第 2 个月的结果要到判定后 57 天才有，所以算进比例的只到 2026-08-22 判的），只看增长商品 13,135 次：后续卖爆 5.6%（全部商品 3.1%）。
+  一周翻倍 359 次：卖爆 32.0%（2025-11~2026-03 判的 26.5%、2026-04~08 的 38.2%），2 个月内新进子类目销量前 10% 17.3%。
+  一周涨五成 1,495 次：卖爆 13.3%（前段 12.0%、后段 14.5%），新进前 10% 6.5%。
+  加速 1.2~1.5 倍的 6.7%；不到 1.2 倍的 2.3% → 都不列。
+  不扣子类目整体时一周翻倍 486 次 26.5%、一周涨五成 1,927 次 11.8%；扣了以后少了约四分之一，抓到的后续卖爆从 48% 降到 42%。
   评分、评论数、上架天数、价格、降价与否、是爆火 / 新品潜力 / 上升中，叠加上去都提不高多少（组合最好的也就 3 成左右），所以只按这一条。
-  （之后 28 天“守住”的比例 93%~96% 是算出来就会高的：最近 7 天已经高出近 28 天一截，不拿来说。）
-  样本是 10-23 那天近 30 天 ≥60 件的商品（往前看有幸存者偏差），所以只比各组之间的差，不看绝对数。
+“卖爆”的标准（第 2 个月 ≥ 现在近 30 天的 2 倍）和一周翻倍有一半是重合的：一周翻倍的最近一周已经是近 28 天的 2 倍，
+只要把这个速度保持两个月就够标准；在这周的速度上再翻一倍的只有 8.1%（不到 1.2 倍的 1.7%）。报告里写明这一点。
+样本是 10-23 那天还在全市场名单里的商品（幸存者偏差：越靠近 10-23 判的比例越高，后段比前段高一截），实际会低一些，
+报告和钉钉里写前后两段的范围，不只写平均。
 这些数写在 config.yaml thresholds.potential_sku.backtest，报告提示、钉钉里照抄；改了门槛要重新回测再改这些数。
 
 之前试过、用户否掉的（都在 2026-11-17）：“有空间没发力”（回测起量不比基准高）、“把握大 / 待观察”（按会不会接着涨分，不是按会不会爆）、
@@ -25,9 +37,11 @@
 评分偏低、异常信号本来就不是增长商品。原有板块都不动，商品照样在原板块里。"""
 from __future__ import annotations
 
+from statistics import median
+
 TOP, MID = "一周翻倍", "一周涨五成"
 KIND_CN = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中"}
-DEFAULTS = {"top_a7": 2.0, "min_a7": 1.5}
+DEFAULTS = {"top_a7": 2.0, "min_a7": 1.5, "node_min": 10, "node_min_units": 60}
 
 
 def settings(cfg: dict) -> dict:
@@ -49,32 +63,53 @@ def growth_kind(item: dict) -> str | None:
     return None
 
 
-def classify(item: dict, s: dict) -> dict | None:
-    """这个商品算不算潜力SKU：返回 {tier, kind, a7, a14}，不算的返回 None。s = settings(cfg)。"""
+def node_pace(items: list[dict], s: dict) -> dict[str, float]:
+    """{子类目: 这周整体加速多少}：本期追踪的同子类目商品（有日数据、不陈旧、近 28 天日均 × 30 ≥ node_min_units 件）
+    各自近 7 天 ÷ 近 28 天的中位数；不到 node_min 个的子类目不算。量的下限同回测样本（判定时近 30 天 ≥60 件）。"""
+    by: dict[str, list[float]] = {}
+    for item in items:
+        a28 = item.get("recent_avg28")
+        a7 = _ratio(item.get("last7_avg"), a28)
+        if a7 is None or item.get("stale") or item.get("daily") is False or not item.get("node")                 or a28 * 30 < float(s["node_min_units"]) - 1e-9:
+            continue
+        by.setdefault(item["node"], []).append(a7)
+    return {node: round(median(v), 3) for node, v in by.items() if len(v) >= int(s["node_min"])}
+
+
+def classify(item: dict, s: dict, pace: dict[str, float] | None = None) -> dict | None:
+    """这个商品算不算潜力SKU：返回 {tier, kind, a7, net, pace, a14}，不算的返回 None。s = settings(cfg)。
+    a7 = 近 7 天 ÷ 近 28 天（表格里显示的）；pace = 所在子类目这周整体的倍数（大于 1 才有，见 node_pace）；
+    net = a7 ÷ pace（没有 pace 时就是 a7），按它分档、排序。"""
     growth = growth_kind(item)
     if not growth or item.get("ocean") or item.get("stale") or item.get("daily") is False:
         return None
     a28 = item.get("recent_avg28")
     a7 = _ratio(item.get("last7_avg"), a28)
-    if a7 is None or a7 < float(s["min_a7"]) - 1e-9:
+    if a7 is None:
+        return None
+    tide = (pace or {}).get(item.get("node") or "")
+    tide = tide if tide and tide > 1 + 1e-9 else None
+    net = a7 / tide if tide else a7
+    if net < float(s["min_a7"]) - 1e-9:
         return None
     a14 = _ratio(item.get("recent_avg14"), a28)
-    return {"tier": TOP if a7 >= float(s["top_a7"]) - 1e-9 else MID, "kind": KIND_CN[growth],
-            "a7": round(a7, 2), "a14": None if a14 is None else round(a14, 2)}
+    return {"tier": TOP if net >= float(s["top_a7"]) - 1e-9 else MID, "kind": KIND_CN[growth],
+            "a7": round(a7, 2), "net": round(net, 2), "pace": tide, "a14": None if a14 is None else round(a14, 2)}
 
 
 def mark(items: list[dict], cfg: dict) -> int:
-    """给本期商品标上 item["sku"]（不算的是 None），返回个数。"""
+    """给本期商品标上 item["sku"]（不算的是 None），返回个数。子类目整体的倍数用传进来的全部商品算。"""
     s = settings(cfg)
+    pace = node_pace(items, s)
     n = 0
     for item in items:
-        item["sku"] = classify(item, s)
+        item["sku"] = classify(item, s, pace)
         n += bool(item["sku"])
     return n
 
 
 def tier(item: dict) -> int:
-    """清单里的顺序：一周翻倍 → 一周涨五成（同档里按近 7 天 ÷ 近 28 天从高到低，见 analyze.sections）。"""
+    """清单里的顺序：一周翻倍 → 一周涨五成（同档里按加速倍数 net 从高到低，见 analyze.sections）。"""
     return 0 if (item.get("sku") or {}).get("tier") == TOP else 1
 
 
@@ -84,10 +119,12 @@ def label_of(sku: dict | None) -> str:
 
 
 def why(item: dict) -> str:
-    """为什么算（规则一句话，数字取自商品）：表格、钉钉、卡片上都用这一句。"""
+    """为什么算（规则一句话，数字取自商品）：表格、钉钉、卡片上都用这一句。子类目整体在涨的写明扣掉以后是多少。"""
     sku = item.get("sku") or {}
     tail = "，最近一周翻倍了" if sku.get("tier") == TOP else "，最近一周涨了五成以上"
-    return f"{sku.get('kind', '')}；近 7 天日均是近 28 天的 ×{sku['a7']:.2f}{tail}"
+    pace = (f"（所在子类目这周整体 ×{sku['pace']:.2f}，扣掉后 ×{sku.get('net', sku['a7']):.2f}）"
+            if sku.get("pace") else "")
+    return f"{sku.get('kind', '')}；近 7 天日均是近 28 天的 ×{sku['a7']:.2f}{pace}{tail}"
 
 
 def record(items: list[dict]) -> dict[str, list[str]]:

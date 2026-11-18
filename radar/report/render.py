@@ -1047,6 +1047,8 @@ SKU_COLS = (
     ("近30天销售额($)", 12, "money", "近 30 天销量 × 售价"),
     ("月增量($)", 11, "delta", "（近 28 天日均 − 再之前 28 天正常在售日均）× 同一售价 × 30；按 0 算、对比数据不足的写“按 0”“无法估算”"),
     ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天日均（日均去掉大促日），条越长最近一周加速越多"),
+    ("扣子类目整体后", 11, "ratio", "近 7 天 ÷ 近 28 天，再除以所在子类目这周整体的倍数（本期追踪的同子类目商品的中位数，"
+                             "整体没在涨的不扣，和左边一样）；按它分档：≥2 倍一周翻倍、1.5~2 倍一周涨五成"),
     ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天日均"),
     ("上架天数", 8, "days", ""),
     ("评分", 7, "rating", ""),
@@ -1055,7 +1057,7 @@ SKU_COLS = (
                               "没有的按同样顺序用规则拼"),
     ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）"),
     ("所在板块", 10, "text", "商品在报告里原来的板块"),
-    ("判定依据", 34, "muted", "类型 + 最近一周加速多少"),
+    ("判定依据", 34, "muted", "类型 + 最近一周加速多少（子类目整体在涨的写明扣掉以后是多少）"),
 )
 
 
@@ -1066,19 +1068,27 @@ def backtest_pct(v) -> str:
 
 
 def sku_hint(cfg: dict) -> str:
-    """潜力SKU 小窗顶部的一句话：条件的数字取自 config.yaml，回测数取自 thresholds.potential_sku.backtest。"""
+    """潜力SKU 小窗顶部的一句话：条件的数字取自 config.yaml，回测数取自 thresholds.potential_sku.backtest。
+    2026-11-18 复核后：写明“卖爆”和一周翻倍有一半重合（守住最近一周的速度两个月就够）、回测比例写前后两段时间的范围
+    （样本有幸存者偏差，越靠近取样那天判的越高），不只写平均。"""
     s = potential_sku.settings(cfg)
     bt = s.get("backtest") or {}
     top, low = float(s["top_a7"]), float(s["min_a7"])
-    text = (f"潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天的 {low:g} 倍。"
+    text = (f"潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天的 {low:g} 倍"
+            "（所在子类目这周整体也在涨的，先扣掉整体的涨幅：整类一起涨时单个商品的加速多半是跟着涨，回测里很快回落）。"
             f"分两档：一周翻倍（≥{top:g} 倍）、一周涨五成（{low:g}~{top:g} 倍）。")
-    if all(bt.get(k) for k in ("top", "mid", "slow", "growth", "all")):
+    if all(bt.get(k) for k in ("top_range", "mid_range", "top_again", "slow", "growth", "all", "halves")):
+        halves = bt["halves"]
         text += (f"回测（{bt.get('span')} 每周按同样的规则倒推，{int(bt.get('products') or 0):,} 个商品；"
-                 f"卖爆 = 第 2 个月的 30 天销量 ≥ 现在 {float(bt.get('boom_ratio', 2)):g} 倍且 ≥{int(bt.get('boom_units', 300))} 件）："
-                 f"一周翻倍的 {backtest_pct(bt['top'][0])} 后续卖爆、一周涨五成的 {backtest_pct(bt['mid'][0])}；"
-                 f"增长商品里加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
+                 f"卖爆 = 第 2 个月的 30 天销量 ≥ 现在近 30 天的 {float(bt.get('boom_ratio', 2)):g} 倍且 ≥{int(bt.get('boom_units', 300))} 件，"
+                 "一周翻倍的只要把最近一周的速度保持两个月就够这个标准）："
+                 f"一周翻倍的 {backtest_pct(bt['top_range'][0])}~{backtest_pct(bt['top_range'][1])} 后续卖爆，"
+                 f"其中在最近一周的速度上再翻一倍的 {backtest_pct(bt['top_again'])}；"
+                 f"一周涨五成的 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}；"
+                 f"加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
                  f"（增长商品平均 {backtest_pct(bt['growth'])}，全部商品 {backtest_pct(bt['all'])}）。"
-                 "评分、评论数、上架天数、价格都分不出谁更容易爆。")
+                 f"范围的两头是 {halves[0]} 和 {halves[1]} 判的；样本是 {bt.get('sample_date')} 还在全市场名单里的商品，"
+                 "越靠近这天判的比例越高，实际会低一些。评分、评论数、上架天数、价格都分不出谁更容易爆。")
     return text + "蓝海、数据陈旧、只有月度数据的不列；商品照样在原来的板块里。"
 
 
@@ -1123,7 +1133,7 @@ def _sku_row(item: dict, n: int) -> str:
           [item["asin"], url], node, seg, sku["kind"], item.get("price") or "",
           round(units) if units else "", round(rev) if rev else "",
           round(inc) if inc is not None else increment_text(item),
-          a7 if a7 is not None else "", a14 if a14 is not None else "",
+          a7 if a7 is not None else "", sku.get("net", a7) if a7 is not None else "", a14 if a14 is not None else "",
           item.get("age_days") if item.get("age_days") is not None else "",
           item.get("rating") if item.get("rating") is not None else "",
           item.get("ratings") if item.get("ratings") is not None else "",
@@ -1145,7 +1155,8 @@ def _sku_row(item: dict, n: int) -> str:
         ("n", "", fmt_price(item.get("price"))),
         ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
         ("n", "", esc(increment_text(item))),
-        ("n", "", "—" if a7 is None else f"×{a7:.2f}"),
+        ("n", f' data-tip="{esc(basis)}"' if sku.get("pace") else "",  # 子类目整体在涨的：下面写扣掉以后的倍数（按它分档）
+         "—" if a7 is None else f"×{a7:.2f}" + (f"<small>扣子类目后 ×{sku['net']:.2f}</small>" if sku.get("pace") else "")),
         ("n", "", "—" if a14 is None else f"×{a14:.2f}"),
         ("n", "", age),
         ("n", "", rating),
@@ -1950,12 +1961,15 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                               f"{ob['max_products']} 个，而且不是太小、结构太简单的：和常规款不同，做的卖家少"))
     ps = potential_sku.settings(cfg)
     bt = ps.get("backtest") or {}
-    rows += [("潜力SKU", "本期增长商品里最容易后续卖爆的一份清单（不分店铺）：最近一周在加速的，分一周翻倍、一周涨五成两档，"
-                        "各写回测里后续卖爆的比例；商品照样在原板块里，表格可下载"),
+    rows += [("潜力SKU", "本期增长商品里最容易后续卖爆的一份清单（不分店铺，只在本期追踪的商品里挑）：最近一周在加速的，"
+                        "分一周翻倍、一周涨五成两档，各写回测里后续卖爆的比例；商品照样在原板块里，表格可下载"),
              ("卖爆", f"潜力SKU 回测用的标准：判定后第 2 个月的 30 天销量 ≥ 现在近 30 天的 {float(bt.get('boom_ratio', 2)):g} 倍，"
-                     f"而且 ≥{int(bt.get('boom_units', 300))} 件"),
-             ("一周翻倍", f"增长商品里近 7 天日均 ≥ 近 28 天日均 {float(ps['top_a7']):g} 倍的"),
-             ("一周涨五成", f"增长商品里近 7 天日均是近 28 天日均 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 倍的")]
+                     f"而且 ≥{int(bt.get('boom_units', 300))} 件。一周翻倍的最近一周已经是近 28 天的 2 倍，保持这个速度两个月就够"),
+             ("加速倍数", "近 7 天日均 ÷ 近 28 天日均（去掉大促日）；所在子类目这周整体也在涨的再除以子类目的倍数"
+                        f"（本期追踪的同子类目商品、近 30 天 ≥{float(ps['node_min_units']):g} 件的，各自近 7 天 ÷ 近 28 天的中位数；"
+                        f"不到 {int(ps['node_min'])} 个的子类目不扣，整体没在涨的也不扣）"),
+             ("一周翻倍", f"增长商品里加速倍数 ≥ {float(ps['top_a7']):g} 的"),
+             ("一周涨五成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
                             "2026-11-07 以前的旧识别结果误标多，只用标题也写了的（开放格、谷仓门、镜子照用）"))
