@@ -6,7 +6,12 @@
 给大模型的只有系统已经算好的事实（detect/insights.py 的外观功能对比、原因、市场位置，主图识别的外观要点，走势数字），
 不给它自己找数据。写回来以后逐条核对（check）：里面的每个数字、每个特征名都要在这个商品的事实里出现过，不超长、不写绝对化的话；
 对不上的不用，这张卡片照常显示规则算的句子。按事实的指纹缓存（state["card_notes"]），事实没变的下次不再调用。
-一次请求写 batch 个商品；连续 MAX_FAILED 次请求失败（接口挂了、余额不足）就不再写，剩下的用规则句子。"""
+一次请求写 batch 个商品；连续 MAX_FAILED 次请求失败（接口挂了、余额不足）就不再写，剩下的用规则句子。
+
+潜力SKU 表格（和下载的 Excel、钉钉）里的“为什么值得看”另写一句（write_worth，2026-11-18 用户：要聚焦元素和功能，价格是次要的，
+放最后说）：给大模型的只有它自己的外观和功能、和同类比、同类爆品也有、价格这几组事实（不给走势，写不出销量数字）；
+核对同上，另要求至少说到一个它自己的外观或功能、提价格的话放在最后。对不上的用规则句子（insights.worth_rule，同样的顺序）。
+卡片上的“为什么在涨”不变。按事实的指纹另存一份缓存（state["sku_worth"]）。"""
 from __future__ import annotations
 
 import hashlib
@@ -17,9 +22,10 @@ import httpx
 
 from . import log
 from .detect import design
-from .detect.insights import SAY
+from .detect.insights import GENERIC, SAY
 
 STATE_KEY = "card_notes"
+WORTH_KEY = "sku_worth"
 MAX_FAILED = 3
 FORBIDDEN = ("一定", "保证", "必然", "肯定", "绝对", "100%", "秘诀", "稳赚", "最好的")
 VOCAB = sorted({label for dims in design.LEXICON.values() for label, _rx in dims} | set(design.LABEL_DIM), key=len, reverse=True)
@@ -90,9 +96,14 @@ def check(note: dict | None, facts: dict, cfg: dict) -> tuple[dict | None, str |
         return None, "缺句子"
     if len(compare) > int(c.get("compare_max", 80)) or len(why) > int(c.get("why_max", 55)):
         return None, "太长"
-    text = compare + why
+    why_not = _verify(compare + why, facts)
+    return (None, why_not) if why_not else ({"compare": compare, "why": why}, None)
+
+
+def _verify(text: str, facts: dict) -> str | None:
+    """大模型写的句子里不能有绝对化的话，每个数字、每个特征名都要在事实里出现过；返回不能用的原因，能用返回 None。"""
     if any(w in text for w in FORBIDDEN):
-        return None, "绝对化"
+        return "绝对化"
     source = json.dumps(facts, ensure_ascii=False)
     plain = _norm(source)
     for token in _NUM.findall(_norm(text)):
@@ -103,20 +114,21 @@ def check(note: dict | None, facts: dict, cfg: dict) -> tuple[dict | None, str |
         else:
             ok = re.search(r"(?<![0-9.])" + re.escape(bare) + r"(?![0-9])", plain) is not None
         if not ok:
-            return None, f"数字 {token} 不在事实里"
+            return f"数字 {token} 不在事实里"
     rest = text
     for label in VOCAB:  # 先长后短：“L 形/U 形”“带储物/抽屉”不会被拆成短词
         if label in rest:
             if label not in source and SAY.get(label, label) not in source:  # “带储物/抽屉”和事实里的“储物/抽屉”是同一个
-                return None, f"特征 {label} 不在事实里"
+                return f"特征 {label} 不在事实里"
             rest = rest.replace(label, "")
-    return {"compare": compare, "why": why}, None
+    return None
 
 
-def _ask(client: httpx.Client, cfg: dict, api_key: str, batch: list[dict]) -> dict:
+def _ask(client: httpx.Client, cfg: dict, api_key: str, batch: list[dict], prompt: str = SYSTEM_PROMPT,
+         per_item: int = 220) -> dict:
     llm = cfg["llm"]
-    body = {"model": llm["model"], "temperature": 0.3, "max_tokens": 220 * len(batch) + 200,
-            "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+    body = {"model": llm["model"], "temperature": 0.3, "max_tokens": per_item * len(batch) + 200,
+            "messages": [{"role": "system", "content": prompt},
                          {"role": "user", "content": json.dumps(batch, ensure_ascii=False)}],
             **(llm.get("extra_body") or {})}
     response = client.post(llm["base_url"].rstrip("/") + "/chat/completions", json=body,
@@ -186,4 +198,128 @@ def write(items: list[tuple[dict, str]], state: dict, cfg: dict, api_key: str, *
             client.close()
     log.info(f"卡片文字：大模型写了 {stats['written']} 张、沿用 {stats['cached']} 张；没通过核对 {stats['rejected']} 张、"
              f"没写成 {stats['skipped']} 张（这些用规则句子）")
+    return stats
+
+
+# ---------------- 潜力SKU 的“为什么值得看”（先外观、功能，价格最后） ----------------
+WORTH_PROMPT = """你是亚马逊美国站家具选品顾问。下面是一组最近一周在加速的增长商品（JSON），每个商品都有系统已经算好的事实：
+它自己的外观和功能、和同子类目的同类比（同类多是什么、它不同在哪，括号里是同类里有这个特征的比例）、同类爆品也有的特色、
+主图外观要点、价格。为每个商品写一句中文“为什么值得看”：
+- 重点说外观元素和功能：它靠哪些外观元素（造型、风格、颜色、工艺）和功能卖点吸引人，优先说同类少见的、同类爆品也有的；
+- 价格是次要的，放在句子最后顺带说（比同类中位价低多少）；价格没有优势的不提价格；句子开头不要说价格；
+- 只用事实里出现过的特征名和数字，数字照抄事实里的写法，不编造事实里没有的卖点、数字、人群和场景；
+- 不写“一定”“保证”“绝对”这类话，也不写“可能”“或许”“也许”；
+- 写得像跟同事说话一样自然、具体，不超过 50 个字，不要重复商品名。
+只输出一个 JSON 对象，键是商品的 id：{"<id>": "...", ...}"""
+PRICE_WORDS = ("$", "＄", "价", "便宜", "实惠")
+
+
+def worth_facts(item: dict) -> dict | None:
+    """给大模型写“为什么值得看”的事实：只有外观、功能和价格（不给走势：表格里已有，句子里也不该写销量数字）。
+    它自己没有外观、功能特征时返回 None（不写，用规则句子）。"""
+    ins = item.get("insight") or {}
+    own = {dim: [x for x in labels if x not in GENERIC] for dim, labels in (item.get("design") or {}).items()}
+    own = {dim: labels for dim, labels in own.items() if labels}
+    if not own:
+        return None
+    reasons = [t for t, _tip in ins.get("reasons") or []]
+    return {"id": item["asin"], "子类目": item.get("node_cn") or item.get("node_name") or "",
+            "它的外观和功能": own, "外观要点": item.get("look") or "",
+            "和同类比": [t for t, _tip in ins.get("compare") or []],
+            "同类爆品也有": [t for t in reasons if t.startswith("同类爆品也有")],
+            "价格": [t for t in reasons if t.startswith("价格")]
+                    + [t for t, _tip in ins.get("findings") or [] if t.startswith(("价格", "同价位"))]}
+
+
+def _pieces(labels: list[str]) -> set[str]:
+    """一个特征的几种说法（去掉空格；“谷仓门/推拉门”拆成两半；“带储物/抽屉”也认“储物”），一个字的不算。"""
+    out = set()
+    for label in labels:
+        for name in (label, SAY.get(label, label)):
+            name = name.replace(" ", "")
+            out |= {name, *name.split("/")}
+            out |= {x[1:] for x in name.split("/") if x.startswith("带")}
+    return {x for x in out if len(x) >= 2}
+
+
+def check_worth(text, facts: dict, cfg: dict) -> tuple[str | None, str | None]:
+    """核对“为什么值得看”：返回 (能用的句子, 不能用的原因)。除了 _verify，至少要说到一个它自己的外观或功能，
+    提价格的话要放在最后（第一次提价格的地方后面不再出现外观、功能）。"""
+    c = (cfg.get("report") or {}).get("card_notes") or {}
+    if isinstance(text, dict):  # 大模型偶尔写成 {"为什么值得看": "..."}
+        text = next((v for v in text.values() if isinstance(v, str)), "")
+    text = clean(str(text or "").strip())
+    if not text:
+        return None, "缺句子"
+    if len(text) > int(c.get("worth_max", 60)):
+        return None, "太长"
+    why_not = _verify(text, facts)
+    if why_not:
+        return None, why_not
+    flat = text.replace(" ", "")
+    said = [flat.rfind(p) for p in _pieces([x for labels in facts["它的外观和功能"].values() for x in labels]) if p in flat]
+    if not said:
+        return None, "没说外观和功能"
+    price = [flat.find(w) for w in PRICE_WORDS if w in flat]
+    if price and min(price) < max(said):
+        return None, "价格没放最后"
+    return text, None
+
+
+def write_worth(items: list[dict], state: dict, cfg: dict, api_key: str, *, client: httpx.Client | None = None) -> dict:
+    """潜力SKU 的“为什么值得看”：写好、核对过的放进 item["insight"]["worth"]；没有的表格用 insight["worth_rule"]。返回统计。"""
+    c = (cfg.get("report") or {}).get("card_notes") or {}
+    cache = state.setdefault(WORTH_KEY, {})
+    stats = {"cached": 0, "written": 0, "rejected": 0, "skipped": 0}
+    todo: list[tuple[dict, dict, str]] = []
+    keep = set()
+    for item in items:
+        facts = worth_facts(item) if item.get("insight") else None
+        if facts is None:
+            continue
+        key = fingerprint(facts)
+        keep.add(item["asin"])
+        hit = cache.get(item["asin"])
+        if hit and hit.get("key") == key and hit.get("text"):
+            item["insight"]["worth"] = clean(hit["text"])
+            stats["cached"] += 1
+        else:
+            todo.append((item, facts, key))
+    for asin in [a for a in cache if a not in keep]:
+        del cache[asin]
+    if not todo or not enabled(cfg, api_key):
+        stats["skipped"] = len(todo)
+        return stats
+    size = max(1, int(c.get("batch", 10)))
+    own = client is None
+    client = client or httpx.Client()
+    failed = 0
+    try:
+        for start in range(0, len(todo), size):
+            chunk = todo[start:start + size]
+            try:
+                answer = _ask(client, cfg, api_key, [facts for _i, facts, _k in chunk], WORTH_PROMPT, 120)
+                failed = 0
+            except Exception as exc:  # noqa: BLE001 — 写不出来就用规则句子
+                failed += 1
+                stats["skipped"] += len(chunk)
+                log.warn(f"为什么值得看：大模型这批没写成（{type(exc).__name__}），用规则句子")
+                if failed >= MAX_FAILED:
+                    stats["skipped"] += len(todo) - start - len(chunk)
+                    break
+                continue
+            for item, facts, key in chunk:
+                text, why_not = check_worth(answer.get(item["asin"]), facts, cfg)
+                if text:
+                    item["insight"]["worth"] = text
+                    cache[item["asin"]] = {"key": key, "text": text}
+                    stats["written"] += 1
+                else:
+                    stats["rejected"] += 1
+                    log.detail(f"为什么值得看没通过核对（{why_not}）：{item['asin']}")
+    finally:
+        if own:
+            client.close()
+    log.info(f"潜力SKU 为什么值得看：大模型写了 {stats['written']} 个、沿用 {stats['cached']} 个；没通过核对 {stats['rejected']} 个、"
+             f"没写成 {stats['skipped']} 个（这些用规则句子）")
     return stats

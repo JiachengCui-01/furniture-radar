@@ -17,7 +17,8 @@
   价格位置     = 比同类中位价高 / 低多少（不到 10% 写“和同类中位价差不多”）；
   同价位竞品   = 售价在它 ±band 以内的同类有几个、占同类销售额多少；
   FBA 占售价   = 卖家精灵给的 FBA 费 ÷ 售价（≥ fba_share 才写）。
-卡片和图墙上的一句话（short）从原因里取前几条拼成。"""
+卡片和图墙上的一句话（short）从原因里取前几条拼成。
+潜力SKU 表格的“为什么值得看”没有大模型写的句子时用 worth_rule（先同类少见的外观、功能，价格放最后）。"""
 from __future__ import annotations
 
 from datetime import date
@@ -132,12 +133,13 @@ def _pct(share: float) -> str:
     return "没有" if share < 0.005 else f"{share:.0%}"
 
 
-def compare(item: dict, node_ctx: dict, peers: list[str], c: dict) -> tuple[list[tuple[str, str]], list[tuple[str, float]]]:
+def compare(item: dict, node_ctx: dict, peers: list[str], c: dict
+            ) -> tuple[list[tuple[str, str]], list[tuple[str, float]], dict[str, list[tuple[str, float]]]]:
     """外观、功能各一句：同类多是什么（至少 common_share 的同类有），它不同在哪（它有、同类有的不超过 rare_share）。
-    返回 ([(句子, 依据)], [(它不同的特征, 同类比例)])。"""
+    返回 ([(句子, 依据)], [(它不同的特征, 同类比例)], {"外观" / "功能": 它不同的特征（同类比例从低到高，最多 3 个）})。"""
     own = item.get("design") or {}
     node = item.get("node_cn") or item.get("node_name") or "商品"
-    lines, distinct_all = [], []
+    lines, distinct_all, by_kind = [], [], {}
     for name, dims in (("外观", APPEARANCE), ("功能", FUNCTION)):
         common, distinct, plain, tips = [], [], [], []
         seen_labels = set()
@@ -185,7 +187,38 @@ def compare(item: dict, node_ctx: dict, peers: list[str], c: dict) -> tuple[list
                + ("；" + "；".join(tips) if tips else ""))
         lines.append((text, tip))
         distinct_all += distinct[:3]
-    return lines, distinct_all
+        if distinct:
+            by_kind[name] = distinct[:3]
+    return lines, distinct_all, by_kind
+
+
+def _rare_txt(pairs: list[tuple[str, float]]) -> str:
+    return "、".join(f"{SAY.get(label, label)}（同类{'' if share < 0.005 else ' '}{_pct(share)}）" for label, share in pairs)
+
+
+def worth_rule(by_kind: dict[str, list[tuple[str, float]]], features: list[str], trend: str | None,
+               cheaper: float | None) -> str:
+    """潜力SKU 表格里“为什么值得看”的规则句子（没有大模型写的、或没通过核对时用）。2026-11-18 用户：要聚焦元素和功能，
+    价格是次要的，放最后。顺序：同类少见的外观（最多 2 个）→ 同类少见的功能（最多 2 个）
+    （都没有时写它自己的特色 showcase.features）→ 同类爆品也有的特色 → 价格更低的话最后补一句。
+    说不出外观、功能的返回 ""（只有价格也不写）。trend：同类爆品也有的特色；cheaper：比同类中位价便宜多少（够“价格更低”才给）。"""
+    parts, said = [], set()
+    for name, head in (("外观", "外观少见："), ("功能", "功能多了")):
+        pairs = by_kind.get(name) or []
+        if pairs:
+            parts.append(head + _rare_txt(pairs[:2]))
+            said |= {label for label, _s in pairs[:2]}
+    if not said:
+        own = [f for f in features if f not in GENERIC and f != trend][:3]
+        if own:
+            parts.append("特色：" + "、".join(SAY.get(f, f) for f in own))
+    if trend and trend not in said:
+        parts.append(f"同类爆品也有「{trend}」")
+    if not parts:  # 说不出外观、功能的不写（只剩价格就不是“聚焦元素和功能”了），表格用判定依据
+        return ""
+    if cheaper is not None:
+        parts.append(f"价格也比同类中位低 {cheaper:.0%}")
+    return "；".join(parts) + "。"
 
 
 def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
@@ -205,7 +238,8 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
     basis = (f"同类 = 本期全市场名单里同子类目、近 30 天 ≥300 件或 ≥4 万美元的 {n} 个商品（一个父体算一个，不含它自己）")
 
     # 外观、功能和同类比（写成句子：同类多是什么、它不同在哪）
-    cmp_lines, distinct = compare(item, node_ctx, [f for f, _r in peers], c)
+    cmp_lines, distinct, by_kind = compare(item, node_ctx, [f for f, _r in peers], c)
+    trend, cheaper = None, None  # 给 worth_rule：同类爆品也有的特色、比同类中位便宜多少
     if distinct:
         short.append("比同类多：" + "、".join(label for label, _s in distinct[:2]))
 
@@ -220,6 +254,7 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
         shared.sort(key=lambda t: -t[1])
         if shared:
             label, k = shared[0]
+            trend = label
             reasons.append((f"同类爆品也有：同子类目另 {len(others)} 个增长商品里 {k} 个也有「{label}」",
                             "增长商品 = 本期突然爆火、新品潜力、上升中（不同父体）；多个一起涨、又都带这个元素，是这类商品现在的卖点"))
             if not distinct:
@@ -239,6 +274,7 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
             reasons.append((f"价格更低：{_money(price)}，在同类最便宜的 {c['cheap_quantile']:.0%} 里（同类中位 {_money(mid)}，便宜 {-diff:.0%}）",
                             cheap_tip))
             short.append(f"比同类便宜 {-diff:.0%}")
+            cheaper = -diff
         elif price >= high_cut - 1e-9 and diff >= c["cheap_floor"] - 1e-9:
             findings.append((f"价格在同类最贵的 {1 - c['premium_quantile']:.0%} 里（{_money(price)}，同类中位 {_money(mid)}，贵 {diff:.0%}）",
                              basis + f"；最贵的 {1 - c['premium_quantile']:.0%} = ≥ {_money(high_cut)}"))
@@ -298,6 +334,8 @@ def for_item(item: dict, ctx: dict, cfg: dict) -> dict | None:
 
     if not cmp_lines and not reasons and not findings:
         return None
-    # compare：外观、功能各一句和同类比；rare：它不同的特征 {特征: 同类里有的比例}（图墙卡片上标亮）；short：图墙卡片上的一句话
+    # compare：外观、功能各一句和同类比；rare：它不同的特征 {特征: 同类里有的比例}（图墙卡片上标亮）；short：图墙卡片上的一句话；
+    # worth_rule：潜力SKU 表格“为什么值得看”的规则句子（先外观、功能，价格最后）
     return {"compare": cmp_lines, "reasons": reasons[: c["max_reasons"]], "findings": findings,
-            "short": " · ".join(short[:3]), "rare": {label: round(share, 3) for label, share in distinct}}
+            "short": " · ".join(short[:3]), "rare": {label: round(share, 3) for label, share in distinct},
+            "worth_rule": worth_rule(by_kind, list(item.get("features") or []), trend, cheaper)}

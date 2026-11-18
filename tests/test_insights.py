@@ -65,6 +65,21 @@ def test_written_comparison_reasons_and_market_position(cfg):
     assert "FBA 约 $45，占售价 38%，比同类 75% 的商品都高（利润空间要算清楚）" in finds
     assert ins["short"] == "比同类多：凹槽竖纹、电子壁炉 · 比同类便宜 37%"
     assert ins["rare"] == {"凹槽竖纹": 0.1, "电子壁炉": 0.2}
+    # 潜力SKU“为什么值得看”的规则句子：先同类少见的外观、功能，价格放最后（同类爆品也有的电子壁炉已经说了，不重复）
+    assert ins["worth_rule"] == "外观少见：凹槽竖纹（同类 10%）；功能多了电子壁炉（同类 20%）；价格也比同类中位低 37%。"
+
+
+def test_worth_rule_puts_elements_and_features_first_price_last():
+    """2026-11-18 用户：为什么值得看要聚焦元素和功能，价格是次要的，放最后说。"""
+    rare = {"外观": [("锥形/外八腿", 0.04), ("中古风", 0.09), ("棕色", 0.2)], "功能": [("带轮可移动", 0.0)]}
+    assert (insights.worth_rule(rare, [], None, 0.37)
+            == "外观少见：锥形/外八腿（同类 4%）、中古风（同类 9%）；功能多了轮子（同类没有）；价格也比同类中位低 37%。")
+    # 没有同类少见的：写它自己的特色，再写同类爆品也有的
+    assert (insights.worth_rule({}, ["金色金属件", "配凳子"], "配凳子", 0.18)
+            == "特色：金色金属件；同类爆品也有「配凳子」；价格也比同类中位低 18%。")
+    assert insights.worth_rule({}, ["配凳子"], "配凳子", None) == "同类爆品也有「配凳子」。"
+    # 说不出外观、功能的不写（只剩价格也不写），表格用判定依据
+    assert insights.worth_rule({}, ["现代"], None, 0.3) == ""
 
 
 def test_moat_new_listing_premium_and_missing_data(cfg):
@@ -132,6 +147,63 @@ def test_ai_notes_are_cached_and_fall_back_to_rules(cfg):
     assert stats["cached"] == 1 and len(calls) == 1 and item2["insight"]["note"]
     # 没有大模型密钥：全部用规则句子
     assert cardnotes.write([(other, "潜力")], {}, cfg, "")["skipped"] == 1
+
+
+def _sku_item(cfg, **kw):
+    state, me = _world()
+    growth = [{"asin": "G1", "parent": None, "node": NODE, "features": ["电子壁炉"]},
+              {"asin": "G2", "parent": None, "node": NODE, "features": ["电子壁炉", "LED 灯"]}]
+    item = _item(me, sku={"tier": "一周翻倍", "kind": "突然爆火", "a7": 2.1, "a14": 1.5}, label="surge", **kw)
+    item["insight"] = insights.for_item(item, insights.context(state, TODAY, cfg, growth), cfg)
+    return item
+
+
+def test_worth_sentence_is_checked_for_order_numbers_and_features(cfg):
+    """潜力SKU 的“为什么值得看”另写一句：只给外观、功能和价格的事实（不给走势），核对数字、特征，
+    另要求说到它自己的外观或功能、提价格的话放在最后。"""
+    item = _sku_item(cfg)
+    facts = cardnotes.worth_facts(item)
+    assert facts["它的外观和功能"] == {"工艺": ["凹槽竖纹"], "功能卖点": ["电子壁炉"]} and "走势" not in facts
+    assert facts["同类爆品也有"] == ["同类爆品也有：同子类目另 2 个增长商品里 2 个也有「电子壁炉」"]
+    assert facts["价格"][0] == "价格更低：$120，在同类最便宜的 25% 里（同类中位 $190，便宜 37%）"
+    ok = "凹槽竖纹在同类少见，还带电子壁炉，可能价格也比同类中位低 37%。"
+    assert cardnotes.check_worth(ok, facts, cfg) == ("凹槽竖纹在同类少见，还带电子壁炉，价格也比同类中位低 37%。", None)
+    assert cardnotes.check_worth({"为什么值得看": ok}, facts, cfg)[0] is not None  # 写成对象的也认
+    assert cardnotes.check_worth("带壁炉和凹槽竖纹。", facts, cfg)[0] is not None  # 不用价格也行
+    assert cardnotes.check_worth("价格便宜 37%，还有凹槽竖纹。", facts, cfg)[1] == "价格没放最后"
+    assert cardnotes.check_worth("靠$120 低价和凹槽竖纹。", facts, cfg)[1] == "价格没放最后"
+    assert cardnotes.check_worth("外观很新颖，价格便宜 37%。", facts, cfg)[1] == "没说外观和功能"
+    assert cardnotes.check_worth("凹槽竖纹少见，日均 30 件。", facts, cfg)[1] == "数字 30 不在事实里"  # 不给走势，写不出销量
+    assert cardnotes.check_worth("凹槽竖纹配 LED 灯。", facts, cfg)[1] == "特征 LED 灯 不在事实里"
+    assert cardnotes.check_worth("凹槽竖纹" + "很好看" * 20, facts, cfg)[1] == "太长"
+    assert cardnotes.worth_facts({**item, "design": {"风格": ["现代"]}}) is None  # 没有能说的外观、功能：用规则句子
+
+
+def test_worth_sentences_cached_and_table_falls_back_to_rule(cfg):
+    item = _sku_item(cfg)
+    other = {**copy.deepcopy(item), "asin": "ME2"}
+    replies = {"ME": "凹槽竖纹在同类少见，还带电子壁炉，价格也比同类中位低 37%。", "ME2": "价格便宜 37%，还有凹槽竖纹。"}
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(replies, ensure_ascii=False)}}]})
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    store = {}
+    stats = cardnotes.write_worth([item, other], store, cfg, "k", client=client)
+    assert stats == {"cached": 0, "written": 1, "rejected": 1, "skipped": 0} and len(calls) == 1
+    assert calls[0]["messages"][0]["content"] == cardnotes.WORTH_PROMPT
+    # 表格：大模型写的 → 没通过核对的用规则句子（同样先外观、功能，价格最后）；卡片上的“为什么在涨”不拿来用
+    item["insight"]["note"] = other["insight"]["note"] = {"compare": "…", "why": "靠价格便宜 37%。"}
+    assert render.sku_reason(item) == replies["ME"]
+    assert render.sku_reason(other) == "外观少见：凹槽竖纹（同类 10%）；功能多了电子壁炉（同类 20%）；价格也比同类中位低 37%。"
+    assert render.sku_reason({**other, "insight": None}).startswith("突然爆火；近 7 天日均是近 28 天的 ×2.10")
+    # 事实没变：下次直接用缓存；不再列出的商品不留
+    again = _sku_item(cfg)
+    assert cardnotes.write_worth([again], store, cfg, "k", client=client)["cached"] == 1 and len(calls) == 1
+    assert again["insight"]["worth"] == replies["ME"] and list(store[cardnotes.WORTH_KEY]) == ["ME"]
+    # 没有大模型密钥：全部用规则句子
+    assert cardnotes.write_worth([{**copy.deepcopy(item), "asin": "ME3"}], {}, cfg, "")["skipped"] == 1
 
 
 def test_card_shows_ai_note_with_rule_basis_folded(cfg):

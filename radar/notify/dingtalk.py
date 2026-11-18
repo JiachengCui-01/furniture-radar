@@ -152,6 +152,7 @@ def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> s
     if sku:  # 潜力SKU（detect/potential_sku.py）：一周翻倍在前，写档、为什么值得看、风险，和回测里后续卖爆的比例；完整表格在报告里（可下载）
         cfg = ctx.get("cfg") or {}
         n_sku = int(sku_items if sku_items is not None else (cfg.get("notify") or {}).get("sku_items", 5))
+        note_cfg = (cfg.get("report") or {}).get("card_notes") or {}
         bt = potential_sku.settings(cfg).get("backtest") or {}
         rate = lambda key: f"，回测 {sku_pct(bt[key][0])} 后续卖爆" if bt.get(key) else ""  # noqa: E731
         top = sum(1 for i in sku if i["sku"]["tier"] == potential_sku.TOP)
@@ -161,7 +162,8 @@ def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> s
             head = potential_sku.label_of(item["sku"])
             price = f"${item['price']:.0f}，" if item.get("price") else ""
             risks = sku_risks(item)
-            lines.append(item_line(item, f" {price}{head}：{_short(sku_reason(item), 40)}"
+            # 为什么值得看：先外观、功能，价格在最后（cardnotes.write_worth）；整句放得下（worth_max），不在价格处截断
+            lines.append(item_line(item, f" {price}{head}：{_short(sku_reason(item), int(note_cfg.get('worth_max', 60)))}"
                                          + (f"（风险：{'、'.join(risks[:2])}）" if risks else "")))
         lines.append("")
     if ocean:  # 蓝海产品：只在这份名单里（不进别的板块），写出是哪一类细分人群 / 用途

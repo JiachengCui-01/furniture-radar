@@ -735,6 +735,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     # 本期要点里只有开发建议交给大模型（逐条核对，见 narrative.parse_tips）；趋势、开发方向、风险提醒在报告里直接取数据
     # 卡片上大模型写的对比和原因（cardnotes.py）：只写列出来的商品，规则算的事实逐条核对，对不上的用规则句子
     cardnotes.write(shown_with_kind(ctx["curated"]), state, cfg, secrets.llm_api_key)
+    # 潜力SKU 表格的“为什么值得看”另写一句：先外观、功能，价格最后（同样核对，对不上的用规则句子）
+    cardnotes.write_worth((ctx["curated"].get("sku") or {}).get("shown") or [], state, cfg, secrets.llm_api_key)
     ctx["tips"], ctx["summary_source"] = narrative.tips(ctx, cfg, secrets.llm_api_key)
     # 往期链接指向网站上不加密的那份（2026-11-07 起，知道链接就能看）：点了直接打开，不用回钉钉找那一期的消息。
     # 从 r/ 下的网页和 reports/ 下的加密外壳打开都对（都是上一级目录下的 r/）

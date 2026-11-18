@@ -700,6 +700,7 @@ report:
     batch: 10
     compare_max: 80
     why_max: 55
+    worth_max: 60       # 潜力SKU 表格“为什么值得看”那一句（先外观、功能，价格最后）
   # 潜力SKU（radar/detect/potential_sku.py）：正文放前 body_rows 个（每个子类目最多 per_node 个），全部在小窗表格里（可下载）
   potential_sku:
     body_rows: 10
