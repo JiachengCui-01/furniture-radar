@@ -81,7 +81,7 @@ def test_next_run_rechecks_last_runs_list_and_fetches_it_first(cfg):
 
 
 def test_report_block_table_and_download(cfg):
-    """第 6 张 KPI、正文前几个（每个子类目最多 per_node 个）、小窗表格：每行带筛选 / 排序用的 data-*，CSV 一行一个商品，
+    """第 6 张 KPI、正文前几个（每个子类目最多 per_node 个）、小窗表格：每行带筛选 / 排序用的 data-*，下载的 Excel 表一行一个商品（列和 SKU_COLS 一一对应），
     点一行展开完整卡片；提示里的数字取自 config.yaml。"""
     items = [_item("M1"), _item("M2", node_cn="书架"), _item("T1", last7_avg=20.0, node_cn="电视柜"),
              _item("M3", node_cn="电视柜"), _item("M4", node_cn="床架", tags=["降价驱动"], label="potential", rising=None)]
@@ -97,12 +97,15 @@ def test_report_block_table_and_download(cfg):
     assert 'id="pop-sku"' in pop and "data-sku" in pop and 'data-file="潜力SKU-2026-11-16"' in pop
     assert pop.count('class="sc" hidden') == 5
     assert 'class="grp">一周翻倍·上升中<' in pop and 'class="grp">一周涨五成·新品潜力<' in pop
-    head = json.loads(re.search(r'data-head="([^"]+)"', pop).group(1).replace("&quot;", '"'))
-    assert head[:7] == ["ASIN", "亚马逊链接", "品牌", "标题", "子类目", "档", "类型"] and len(head) == len(render.SKU_CSV)
-    assert head[11:13] == ["近7天÷近28天", "近14天÷近28天"]
-    rows = [json.loads(m.replace("&quot;", '"')) for m in re.findall(r'data-csv="([^"]+)"', pop)]
-    assert len(rows) == 5 and all(len(r) == len(head) for r in rows) and rows[0][0] == "T1"
-    m4 = next(r for r in rows if r[0] == "M4")
+    cols = json.loads(re.search(r'data-cols="([^"]+)"', pop).group(1).replace("&quot;", '"'))
+    assert [c[0] for c in cols[:7]] == ["主图", "商品", "品牌", "ASIN", "子类目", "档", "类型"] and len(cols) == len(render.SKU_COLS)
+    assert [c[0] for c in cols[11:13]] == ["近7天÷近28天", "近14天÷近28天"] and [c[2] for c in cols[11:13]] == ["bar", "ratio"]
+    assert all(len(c) == 4 and isinstance(c[1], int) for c in cols)
+    assert 'data-title="潜力SKU · 2026-11-16"' in pop
+    rows = [json.loads(m.replace("&quot;", '"')) for m in re.findall(r'data-xl="([^"]+)"', pop)]
+    assert len(rows) == 5 and all(len(r) == len(cols) for r in rows) and rows[0][3][0] == "T1"
+    m4 = next(r for r in rows if r[3][0] == "M4")
+    assert m4[1][1] == m4[3][1] == "https://www.amazon.com/dp/M4"  # 商品名、ASIN 都链到商品页
     assert m4[5:7] == ["一周涨五成", "新品潜力"] and m4[8] == 300 and m4[9] == 45000
     assert m4[11:13] == [1.6, 1.3] and m4[17] == "降价驱动"
     assert 'data-seg="一周翻倍"' in pop and 'data-seg="一周涨五成"' in pop and 'data-a7="2.0"' in pop
@@ -113,7 +116,8 @@ def test_report_block_table_and_download(cfg):
     for old in ("把握大", "待观察", "爆发苗头", "稳步在涨", "刚起势"):
         assert old not in hint and old not in pop and old not in body, old
     js = render.SKU_JS
-    assert "window.skuTable" in js and "\\ufeff" in js and "/\\bsc\\b/" in js and "'-a7'" in js and "'一周翻倍','一周涨五成'" in js
+    assert "window.skuTable" in js and "/\\bsc\\b/" in js and "'-a7'" in js and "'一周翻倍','一周涨五成'" in js
+    assert ".xlsx'" in js and "twoCellAnchor" in js and "dataBar" in js and "'data-xl'" in js and "text/csv" not in js
 
 
 def test_dingtalk_lists_potential_skus(cfg):

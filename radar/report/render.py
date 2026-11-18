@@ -451,6 +451,7 @@ details.more-facts{margin-top:4px}
 .skut tr.sr{cursor:pointer}.skut tr.sr:hover td{background:var(--row)}.skut tr.sr.open td{background:var(--row);border-bottom:0}
 .skut tr.sc>td{padding:0 0 10px;background:var(--row)}.skut tr.sc .card{margin:0}
 .tools .dl{font:inherit;font-size:13px;border:1px solid var(--sku);color:var(--sku);background:var(--card);border-radius:8px;padding:3px 10px;cursor:pointer}
+.tools .dl:disabled{opacity:.6;cursor:progress}
 @media (max-width:640px){.skut .opt{display:none}.skut td.nm{min-width:130px;width:150px}}
 """
 
@@ -518,13 +519,141 @@ tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px';}
 document.addEventListener('mousemove',show);document.addEventListener('touchstart',show,{passive:true});
 window.addEventListener('scroll',function(){tip.hidden=true;},true);})();</script>"""
 
-# 潜力SKU 小窗的表格：按一周翻倍 / 一周涨五成、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行存成 CSV（带 BOM，Excel 直接打开）。
+# 潜力SKU 小窗的表格：按一周翻倍 / 一周涨五成、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行（按当前排序）存成 .xlsx：
+# 每行嵌主图（亚马逊图床允许跨域读取，统一画成 200px 白底方图）、商品名和 ASIN 带超链接、档 / 类型按报告配色、数字带格式、
+# 近7天÷近28天画条形图、冻结表头和前两列、可筛选，第二张“说明”表放判定规则（小窗顶部那段）和各列含义（SKU_COLS）。
+# 不用第三方库（国内打不开 CDN 也能下）：自己写 SpreadsheetML，打成不压缩的 zip。图片取不到的格子写“图片没取到”，表照样下。
+# 主图 80px，锚在自己那一格里（随单元格移动和缩放：Excel 里筛选、排序时图跟着行走）；列宽按微软雅黑 10 号 1 个字符 ≈ 8px 换算来居中。
 # POPUP 的 open() 每次打开小窗都调用 window.skuTable(小窗内容)。用原始字符串：正则里的反斜杠原样进网页
 SKU_JS = r"""<script>(function(){
 function closest(el,sel){while(el&&el.nodeType===1){if(el.matches?el.matches(sel):el.msMatchesSelector(sel))return el;el=el.parentNode;}return null;}
 function el(tag,cls,text){var x=document.createElement(tag);if(cls)x.className=cls;if(text!=null)x.textContent=text;return x;}
 function num(r,k){var v=r.getAttribute('data-'+k);return v===null||v===''?NaN:+v;}
-function cell(v){v=v==null?'':String(v);return /[",\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+var TOP='一周翻倍',PX=80,EMU=9525;
+var CRC=[];(function(){for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;CRC[n]=c>>>0;}})();
+function crc(b){var c=-1;for(var i=0;i<b.length;i++)c=CRC[(c^b[i])&255]^(c>>>8);return (c^-1)>>>0;}
+function u8(s){return new TextEncoder().encode(s);}
+function zip(files){var parts=[],cd=[],off=0,size=0;
+files.forEach(function(f){var name=u8(f[0]),d=typeof f[1]==='string'?u8(f[1]):f[1],c=crc(d);
+var h=new DataView(new ArrayBuffer(30));h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x800,true);h.setUint16(12,33,true);
+h.setUint32(14,c,true);h.setUint32(18,d.length,true);h.setUint32(22,d.length,true);h.setUint16(26,name.length,true);
+var e=new DataView(new ArrayBuffer(46));e.setUint32(0,0x02014b50,true);e.setUint16(4,20,true);e.setUint16(6,20,true);e.setUint16(8,0x800,true);
+e.setUint16(14,33,true);e.setUint32(16,c,true);e.setUint32(20,d.length,true);e.setUint32(24,d.length,true);e.setUint16(28,name.length,true);
+e.setUint32(42,off,true);parts.push(new Uint8Array(h.buffer),name,d);cd.push(new Uint8Array(e.buffer),name);
+off+=30+name.length+d.length;size+=46+name.length;});
+var z=new DataView(new ArrayBuffer(22));z.setUint32(0,0x06054b50,true);z.setUint16(8,files.length,true);z.setUint16(10,files.length,true);
+z.setUint32(12,size,true);z.setUint32(16,off,true);
+return new Blob(parts.concat(cd,[new Uint8Array(z.buffer)]),{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});}
+function x(s){return String(s==null?'':s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/g,'').replace(/&/g,'&amp;')
+.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function L(i){var s='';for(i++;i>0;i=Math.floor((i-1)/26))s=String.fromCharCode(65+(i-1)%26)+s;return s;}
+function lines(s,w){var n=0;String(s==null?'':s).split('\n').forEach(function(p){var u=0;for(var i=0;i<p.length;i++)u+=p.charCodeAt(i)>0x2e80?1.9:1;
+n+=Math.max(1,Math.ceil(u/Math.max(1,w-1.5)));});return n;}
+function pic(url){return new Promise(function(ok){if(!url)return ok(null);var done=false,t=setTimeout(function(){fin(null);},12000);
+function fin(v){if(!done){done=true;clearTimeout(t);ok(v);}}
+fetch(url,{mode:'cors',credentials:'omit',referrerPolicy:'no-referrer'}).then(function(r){if(!r.ok)throw new Error(r.status);return r.blob();})
+.then(function(b){var u=URL.createObjectURL(b),im=new Image();im.onerror=function(){URL.revokeObjectURL(u);fin(null);};
+im.onload=function(){var S=200,cv=document.createElement('canvas'),g=cv.getContext('2d'),k=Math.min(S/im.naturalWidth,S/im.naturalHeight);
+cv.width=cv.height=S;g.fillStyle='#fff';g.fillRect(0,0,S,S);g.drawImage(im,(S-im.naturalWidth*k)/2,(S-im.naturalHeight*k)/2,im.naturalWidth*k,im.naturalHeight*k);
+URL.revokeObjectURL(u);cv.toBlob(function(o){if(!o)return fin(null);o.arrayBuffer().then(function(a){fin(new Uint8Array(a));},function(){fin(null);});},'image/jpeg',0.9);};
+im.src=u;}).catch(function(){fin(null);});});}
+var F=[{},{b:1,c:'FFFFFF'},{b:1,sz:16,c:'7048E8'},{sz:9.5,c:'667085'},{u:1,c:'1C6DD0'},{b:1,c:'7048E8'},{b:1,c:'E8590C'},{b:1,c:'2B8A3E'},
+{b:1,c:'1C6DD0'},{c:'C92A2A'},{i:1,c:'98A2B3'},{b:1}];
+var FILL=['344054','7048E8','EFEBFF','F0F2F5'];
+var NF=[[164,'"$"#,##0.00'],[165,'"$"#,##0'],[166,'+"$"#,##0;[Red]-"$"#,##0;"$"0'],[167,'"×"0.00'],[168,'"★"0.0'],[169,'0" 天"']];
+var XF=[['base',0,0,0,0],['title',0,2,0,0,'left','center'],['sub',0,3,0,0,'left','center',1],['head',0,1,2,0,'center','center',1],
+['img',0,0,0,1,'center','center'],['nimg',0,10,0,1,'center','center'],['ttl',0,0,0,1,'left','center',1],['link',0,4,0,1,'center','center'],
+['text',0,0,0,1,'center','center',1],['wrap',0,0,0,1,'left','center',1],['top',0,1,3,1,'center','center'],['mid',0,5,4,1,'center','center'],
+['k突然爆火',0,6,0,1,'center','center'],['k新品潜力',0,7,0,1,'center','center'],['k上升中',0,8,0,1,'center','center'],
+['price',164,0,0,1,'right','center'],['int',3,0,0,1,'right','center'],['money',165,0,0,1,'right','center'],['delta',166,0,0,1,'right','center'],
+['bar',167,11,0,1,'right','center'],['ratio',167,0,0,1,'right','center'],['days',169,0,0,1,'right','center'],['rating',168,0,0,1,'right','center'],
+['na',0,10,0,1,'right','center'],['risk',0,9,0,1,'left','center',1],['muted',0,3,0,1,'left','center',1],
+['nhead',0,11,5,0,'left','center'],['nkey',0,11,0,1,'left','top',1],['note',0,0,0,1,'left','top',1],['para',0,0,0,0,'left','top',1]];
+var NUMS={price:1,int:1,money:1,delta:1,bar:1,ratio:1,days:1,rating:1};
+var HEAD='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n',RT='http://schemas.openxmlformats.org/officeDocument/2006/relationships/',
+NS='xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"',
+PR='<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',S={};
+var XFS=XF.map(function(a,i){S[a[0]]=i;return '<xf numFmtId="'+a[1]+'" fontId="'+a[2]+'" fillId="'+a[3]+'" borderId="'+a[4]+'" xfId="0"'
++(i?' applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="'+a[5]+'" vertical="'+a[6]+'"'
++(a[7]?' wrapText="1"':'')+'/></xf>':'/>');});
+function font(o){return '<font>'+(o.b?'<b/>':'')+(o.i?'<i/>':'')+(o.u?'<u/>':'')+'<sz val="'+(o.sz||10)+'"/><color rgb="FF'+(o.c||'1C2230')
++'"/><name val="微软雅黑"/><family val="2"/><charset val="134"/></font>';}
+var STYLES=HEAD+'<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="'+NF.length+'">'
++NF.map(function(f){return '<numFmt numFmtId="'+f[0]+'" formatCode="'+x(f[1])+'"/>';}).join('')+'</numFmts><fonts count="'+F.length+'">'
++F.map(font).join('')+'</fonts><fills count="'+(FILL.length+2)+'"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
++FILL.map(function(c){return '<fill><patternFill patternType="solid"><fgColor rgb="FF'+c+'"/><bgColor indexed="64"/></patternFill></fill>';}).join('')
++'</fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin">'
++'<color rgb="FFE4E7EC"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>'
++'</cellStyleXfs><cellXfs count="'+XFS.length+'">'+XFS.join('')+'</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/>'
++'</cellStyles><dxfs count="0"/><tableStyles count="0"/></styleSheet>';
+function c(ref,s,v){var a='<c r="'+ref+'" s="'+S[s]+'"';if(v===''||v==null)return a+'/>';
+if(typeof v==='number')return isFinite(v)?a+'><v>'+v+'</v></c>':a+'/>';return a+' t="inlineStr"><is><t xml:space="preserve">'+x(v)+'</t></is></c>';}
+function row(y,ht,cells){return '<row r="'+y+'" ht="'+ht+'" customHeight="1">'+cells.join('')+'</row>';}
+// o = {name, title, sub, hint, cols:[[表头, 列宽, 样式, 说明]], rows:[{v:[...], pic:Uint8Array|null}]}
+function book(o){var cols=o.cols,last=L(cols.length-1),end=o.rows.length+3,R=[],links=[],pics=[],bar=-1,q="'"+o.name+"'";
+R.push(row(1,30,[c('A1','title',o.title)]),row(2,22,[c('A2','sub',o.sub)]),row(3,34,cols.map(function(k,i){return c(L(i)+'3','head',String(k[0]).replace('÷','÷\n'));})));
+o.rows.forEach(function(r,j){var y=j+4,ht=66;
+cols.forEach(function(k,i){var v=r.v[i];if(v&&typeof v==='object')v=v[0];if(typeof v==='string'&&k[2]!=='img')ht=Math.max(ht,lines(v,k[1])*14+8);});
+ht=Math.min(ht,150);
+R.push(row(y,ht,cols.map(function(k,i){var ref=L(i)+y,v=r.v[i],t=k[2];
+if(t==='img'){if(r.pic){pics.push({col:i,row:y-1,w:k[1],ht:ht,data:r.pic});return c(ref,'img','');}return c(ref,'nimg',v?'图片没取到':'无图');}
+if(t==='link'||t==='title'){if(v&&v[1])links.push([ref,v[1]]);return c(ref,t==='title'?'ttl':'link',v&&v[0]);}
+if(t==='tier')return c(ref,v===TOP?'top':'mid',v);
+if(t==='kind')return c(ref,S['k'+v]!=null?'k'+v:'text',v);
+if(NUMS[t]){if(t==='bar')bar=i;return typeof v==='number'?c(ref,t,v):c(ref,'na',v);}
+return c(ref,S[t]!=null?t:'wrap',v);})));});
+var sheet=HEAD+'<worksheet '+NS+'><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:'+last+end+'"/><sheetViews>'
++'<sheetView showGridLines="0" tabSelected="1" workbookViewId="0"><pane xSplit="2" ySplit="3" topLeftCell="C4" activePane="bottomRight" state="frozen"/>'
++'<selection pane="topRight" activeCell="C1" sqref="C1"/><selection pane="bottomLeft" activeCell="A4" sqref="A4"/>'
++'<selection pane="bottomRight" activeCell="C4" sqref="C4"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="16"/><cols>'
++cols.map(function(k,i){return '<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+k[1]+'" customWidth="1"/>';}).join('')+'</cols><sheetData>'+R.join('')
++'</sheetData><autoFilter ref="A3:'+last+end+'"/><mergeCells count="2"><mergeCell ref="A1:'+last+'1"/><mergeCell ref="A2:'+last+'2"/></mergeCells>'
++(bar>=0?'<conditionalFormatting sqref="'+L(bar)+'4:'+L(bar)+end+'"><cfRule type="dataBar" priority="1"><dataBar><cfvo type="num" val="1"/>'
++'<cfvo type="max"/><color rgb="FFB197FC"/></dataBar></cfRule></conditionalFormatting>':'')
++(links.length?'<hyperlinks>'+links.map(function(h,k){return '<hyperlink ref="'+h[0]+'" r:id="rId'+(k+2)+'"/>';}).join('')+'</hyperlinks>':'')
++'<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>'
++'<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>'+(pics.length?'<drawing r:id="rId1"/>':'')+'</worksheet>';
+var notes=cols.filter(function(k){return k[3];}),N=[row(1,30,[c('A1','title',o.title+' · 判定规则和各列含义')]),row(2,lines(o.sub,104)*14+8,[c('A2','sub',o.sub)]),
+row(4,22,[c('A4','nhead','判定规则'),c('B4','nhead','')]),row(5,lines(o.hint,104)*14+10,[c('A5','para',o.hint)]),
+row(7,22,[c('A7','nhead','列'),c('B7','nhead','含义')])];
+notes.forEach(function(k,j){N.push(row(j+8,Math.max(lines(k[0],16),lines(k[3],88))*14+10,[c('A'+(j+8),'nkey',k[0]),c('B'+(j+8),'note',k[3])]));});
+var sheet2=HEAD+'<worksheet '+NS+'><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:B'+(notes.length+7)+'"/><sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews>'
++'<sheetFormatPr defaultRowHeight="16"/><cols><col min="1" max="1" width="18" customWidth="1"/><col min="2" max="2" width="90" customWidth="1"/></cols>'
++'<sheetData>'+N.join('')+'</sheetData><mergeCells count="3"><mergeCell ref="A2:B2"/><mergeCell ref="A4:B4"/><mergeCell ref="A5:B5"/></mergeCells>'
++'<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>'
++'<pageSetup paperSize="9" fitToWidth="1" fitToHeight="0"/></worksheet>';
+var files=[['[Content_Types].xml',HEAD+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
++'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
++'<Default Extension="jpeg" ContentType="image/jpeg"/>'
++'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
++'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
++'<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
++'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
++(pics.length?'<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>':'')+'</Types>'],
+['_rels/.rels',HEAD+PR+'<Relationship Id="rId1" Type="'+RT+'officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+['xl/workbook.xml',HEAD+'<workbook '+NS+'><bookViews><workbookView activeTab="0"/></bookViews><sheets><sheet name="'+x(o.name)+'" sheetId="1" r:id="rId1"/>'
++'<sheet name="说明" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">'
++x(q)+'!$A$3:$'+last+'$'+end+'</definedName><definedName name="_xlnm.Print_Titles" localSheetId="0">'+x(q)+'!$3:$3</definedName></definedNames></workbook>'],
+['xl/_rels/workbook.xml.rels',HEAD+PR+'<Relationship Id="rId1" Type="'+RT+'worksheet" Target="worksheets/sheet1.xml"/>'
++'<Relationship Id="rId2" Type="'+RT+'worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="'+RT+'styles" Target="styles.xml"/></Relationships>'],
+['xl/styles.xml',STYLES],['xl/worksheets/sheet1.xml',sheet],['xl/worksheets/sheet2.xml',sheet2]];
+if(links.length||pics.length)files.push(['xl/worksheets/_rels/sheet1.xml.rels',HEAD+PR
++(pics.length?'<Relationship Id="rId1" Type="'+RT+'drawing" Target="../drawings/drawing1.xml"/>':'')
++links.map(function(h,k){return '<Relationship Id="rId'+(k+2)+'" Type="'+RT+'hyperlink" Target="'+x(h[1])+'" TargetMode="External"/>';}).join('')
++'</Relationships>']);
+if(pics.length){files.push(['xl/drawings/drawing1.xml',HEAD+'<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
++'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
++pics.map(function(p,k){var dx=Math.max(0,Math.round((p.w*8-PX)/2)),dy=Math.max(0,Math.round((p.ht*4/3-PX)/2));
+function at(tag,ox,oy){return '<xdr:'+tag+'><xdr:col>'+p.col+'</xdr:col><xdr:colOff>'+ox*EMU+'</xdr:colOff><xdr:row>'+p.row+'</xdr:row><xdr:rowOff>'
++oy*EMU+'</xdr:rowOff></xdr:'+tag+'>';}
+return '<xdr:twoCellAnchor editAs="twoCell">'+at('from',dx,dy)+at('to',dx+PX,dy+PX)+'<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="'+(k+2)+'" name="主图 '+(k+1)
++'"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId'+(k+1)+'"/><a:stretch><a:fillRect/>'
++'</a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="'+PX*EMU+'" cy="'+PX*EMU+'"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/>'
++'</a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>';}).join('')+'</xdr:wsDr>'],
+['xl/drawings/_rels/drawing1.xml.rels',HEAD+PR+pics.map(function(p,k){return '<Relationship Id="rId'+(k+1)+'" Type="'+RT+'image" Target="../media/image'
++(k+1)+'.jpeg"/>';}).join('')+'</Relationships>']);
+pics.forEach(function(p,k){files.push(['xl/media/image'+(k+1)+'.jpeg',p.data]);});}
+return zip(files);}
 window.skuTable=function(root){var box=root.querySelector('[data-sku]');if(!box)return;var tb=box.querySelector('tbody');if(!tb)return;
 var rows=[].slice.call(tb.querySelectorAll('tr.sr'));var segs={},nodes={},order=[];
 rows.forEach(function(r){var s=r.getAttribute('data-seg'),n=r.getAttribute('data-node');segs[s]=(segs[s]||0)+1;
@@ -541,12 +670,21 @@ var so=el('select');[['','默认排序'],['-inc','月增量 高→低'],['-rev',
 ['price','售价 低→高'],['-price','售价 高→低'],['age','上架天数 少→多'],['-rating','评分 高→低']].forEach(function(o){so.appendChild(new Option(o[1],o[0]));});
 so.addEventListener('change',function(){st.s=so.value;apply();});bar.appendChild(so);
 var dl=el('button','dl','下载表格');dl.type='button';bar.appendChild(dl);bar.appendChild(cnt);box.parentNode.insertBefore(bar,box);
-dl.addEventListener('click',function(){var lines=[JSON.parse(box.getAttribute('data-head')||'[]')];
-[].forEach.call(tb.querySelectorAll('tr.sr'),function(r){if(r.style.display!=='none')lines.push(JSON.parse(r.getAttribute('data-csv')||'[]'));});
-var text=lines.map(function(l){return l.map(cell).join(',');}).join('\r\n');
-var blob=new Blob(['\ufeff'+text],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');
-a.href=URL.createObjectURL(blob);a.download=(box.getAttribute('data-file')||'潜力SKU')+'.csv';document.body.appendChild(a);a.click();
-setTimeout(function(){URL.revokeObjectURL(a.href);a.parentNode.removeChild(a);},1000);});
+dl.addEventListener('click',function(){if(dl.disabled)return;
+var cols=JSON.parse(box.getAttribute('data-cols')||'[]'),ix={},hint=root.querySelector('.hint');
+cols.forEach(function(k,i){if(!(k[2] in ix))ix[k[2]]=i;});
+var list=[].filter.call(tb.querySelectorAll('tr.sr'),function(r){return r.style.display!=='none';})
+.map(function(r){return JSON.parse(r.getAttribute('data-xl')||'[]');});
+var top=list.filter(function(v){return v[ix.tier]===TOP;}).length;
+var sub='本表 '+list.length+' 个：一周翻倍 '+top+' 个、一周涨五成 '+(list.length-top)+' 个 ｜ 筛选：'+(st.g||'全部档')+' · '+(st.n||'全部子类目')
++' · '+so.options[so.selectedIndex].text+' ｜ 点商品名或 ASIN 打开亚马逊；判定规则和各列含义见“说明”表';
+dl.disabled=true;dl.textContent='生成中…';
+Promise.all(list.map(function(v){return pic(ix.img==null?'':v[ix.img]);})).then(function(ps){
+var blob=book({name:'潜力SKU',title:box.getAttribute('data-title')||'潜力SKU',sub:sub,hint:hint?hint.textContent:'',cols:cols,
+rows:list.map(function(v,i){return {v:v,pic:ps[i]};})});
+var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(box.getAttribute('data-file')||'潜力SKU')+'.xlsx';
+document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.parentNode.removeChild(a);},1000);})
+.catch(function(e){alert('表格没生成出来：'+(e&&e.message||e));}).then(function(){dl.disabled=false;dl.textContent='下载表格';});});
 tb.addEventListener('click',function(e){if(closest(e.target,'a'))return;var r=closest(e.target,'tr.sr');if(!r)return;var c=r.nextElementSibling;
 if(c&&/\bsc\b/.test(c.className)){c.hidden=!c.hidden;r.className=c.hidden?'sr':'sr open';}});
 function apply(){var key=st.s.replace('-',''),dir=st.s.charAt(0)==='-'?-1:1,shown=0;
@@ -893,8 +1031,31 @@ SKU_HEAD = ("", "商品", "子类目", "类型", "售价", "近30天", "月增�
             "为什么值得看", "风险")
 SKU_OPT = {2, 8, 9, 10, 12}  # 手机上收起的列（子类目、近14天÷近28天、上架、评分、风险）
 SKU_NUM = range(4, 11)  # 右对齐的数字列（售价 ~ 评分）
-SKU_CSV = ("ASIN", "亚马逊链接", "品牌", "标题", "子类目", "档", "类型", "售价($)", "近30天销量(件)", "近30天销售额($)",
-           "月增量($)", "近7天÷近28天", "近14天÷近28天", "上架天数", "评分", "评论数", "为什么值得看", "风险标签", "所在板块", "判定依据")
+# 下载的 Excel 表（SKU_JS 在网页里生成 .xlsx）：(表头, 列宽（字符）, 样式, 说明)。样式决定单元格格式：img = 嵌入主图，
+# title / link = [文字, 网址] 带超链接（title 深色字、link 蓝字），tier / kind 按报告配色，price / int / money / delta / bar / ratio / days / rating 是数字格式
+# （不是数字的写成灰字，如“无法估算”），bar 另画条形图；说明写进第二张“说明”表，没有说明的列不列
+SKU_COLS = (
+    ("主图", 14, "img", ""),
+    ("商品", 42, "title", "亚马逊标题，点开是商品页"),
+    ("品牌", 13, "text", ""),
+    ("ASIN", 13, "link", "点开是商品页"),
+    ("子类目", 16, "wrap", ""),
+    ("档", 11, "tier", "一周翻倍 / 一周涨五成，条件见上面的规则"),
+    ("类型", 10, "kind", "属于哪种增长商品：突然爆火 / 新品潜力 / 上升中"),
+    ("售价($)", 9, "price", ""),
+    ("近30天销量(件)", 10, "int", "近 28 天日均 × 30（日均去掉大促日）"),
+    ("近30天销售额($)", 12, "money", "近 30 天销量 × 售价"),
+    ("月增量($)", 11, "delta", "（近 28 天日均 − 再之前 28 天正常在售日均）× 同一售价 × 30；按 0 算、对比数据不足的写“按 0”“无法估算”"),
+    ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天日均（日均去掉大促日），条越长最近一周加速越多"),
+    ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天日均"),
+    ("上架天数", 8, "days", ""),
+    ("评分", 7, "rating", ""),
+    ("评论数", 8, "int", ""),
+    ("为什么值得看", 40, "wrap", "大模型按本期算好的数据写的原因（核对过）；没有的用规则算的第一条原因"),
+    ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）"),
+    ("所在板块", 10, "text", "商品在报告里原来的板块"),
+    ("判定依据", 34, "muted", "类型 + 最近一周加速多少"),
+)
 
 
 def backtest_pct(v) -> str:
@@ -954,18 +1115,19 @@ def _sku_row(item: dict, n: int) -> str:
     inc = directions.increment(item) if countable else None
     a7, a14 = sku.get("a7"), sku.get("a14")
     reason, risks, basis = sku_reason(item), sku_risks(item), potential_sku.why(item)
-    csv = [item["asin"], amazon(item["asin"]), item.get("brand") or "", item["title"], node,
-           seg, sku["kind"], item.get("price") or "",
-           round(units) if units else "", round(rev) if rev else "",
-           round(inc) if inc is not None else increment_text(item),
-           a7 if a7 is not None else "", a14 if a14 is not None else "",
-           item.get("age_days") if item.get("age_days") is not None else "",
-           item.get("rating") if item.get("rating") is not None else "",
-           item.get("ratings") if item.get("ratings") is not None else "",
-           reason, "、".join(risks), item.get("label_cn") or "", basis]
+    url = amazon(item["asin"])
+    xl = [small_image(item["image"], 200) if item.get("image") else "", [item["title"], url], item.get("brand") or "",
+          [item["asin"], url], node, seg, sku["kind"], item.get("price") or "",
+          round(units) if units else "", round(rev) if rev else "",
+          round(inc) if inc is not None else increment_text(item),
+          a7 if a7 is not None else "", a14 if a14 is not None else "",
+          item.get("age_days") if item.get("age_days") is not None else "",
+          item.get("rating") if item.get("rating") is not None else "",
+          item.get("ratings") if item.get("ratings") is not None else "",
+          reason, "、".join(risks), item.get("label_cn") or "", basis]  # 和 SKU_COLS 一列对一列
     data = {"seg": seg, "node": node, "inc": None if inc is None else f"{inc:.0f}", "rev": None if not rev else f"{rev:.0f}",
             "price": item.get("price"), "a7": a7, "a14": a14, "age": item.get("age_days"), "rating": item.get("rating"), "i": n,
-            "csv": json.dumps(csv, ensure_ascii=False)}
+            "xl": json.dumps(xl, ensure_ascii=False)}
     attrs = "".join(f' data-{k}="{esc(v)}"' for k, v in data.items() if v not in (None, ""))
     cls = "top" if sku["tier"] == potential_sku.TOP else "mid"
     rating = f"★{item['rating']}<small>{fmt_int(item['ratings'])} 条</small>" if item.get("rating") is not None else "—"
@@ -1028,7 +1190,7 @@ def _sku_section(cur: dict, cfg: dict) -> str:
             f'<a class="h-more" href="#" data-pop="sku">全部 {len(rows)} 个 · 表格可下载 ›</a></h2>'
             f'<p class="hint">列出 {len(rows)} 个：一周翻倍 {top} 个、一周涨五成 {mid} 个。'
             f'下面是排在前面的 {len(shown)} 个（按最近一周加速排；每个子类目最多 {int(c.get("per_node", 2))} 个）。'
-            "点“全部”看完整表格，可按档、子类目筛选，点一行看卡片，下载成 Excel 能打开的表格。</p>"
+            "点“全部”看完整表格，可按档、子类目筛选，点一行看卡片，下载成带主图的 Excel 表格。</p>"
             f"{table}</section>")
 
 
@@ -1036,8 +1198,9 @@ def _sku_pop(cur: dict, hint: str, total: int, report_id: str) -> str:
     rows = cur.get("shown") or []
     top, mid = _sku_shown_counts(rows)
     summary = f'<div class="nich"><span><b>一周翻倍</b> {top} 个</span><span><b>一周涨五成</b> {mid} 个</span></div>'
-    table = (f'<div class="tbl" data-sku data-head="{esc(json.dumps(list(SKU_CSV), ensure_ascii=False))}" '
-             f'data-file="潜力SKU-{esc(report_id)}">{_sku_table(rows, cur.get("similar"))}</div>'
+    table = (f'<div class="tbl" data-sku data-cols="{esc(json.dumps(SKU_COLS, ensure_ascii=False))}" '
+             f'data-file="潜力SKU-{esc(report_id)}" data-title="潜力SKU · {esc(report_id)}">'
+             f'{_sku_table(rows, cur.get("similar"))}</div>'
              if rows else '<div class="empty">本期没有潜力SKU。</div>')
     return _pop_src("sku", "潜力SKU", "sku",
                     f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p>{summary}{table}')
