@@ -705,7 +705,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]
     # 潜力SKU 实盘跟踪（detect/potential_sku.track）：到期的用这期拉到的日数据算第 2 个月卖爆没有，再记下本期判定的
-    sku_live = potential_sku.track(state, items, report_id, cfg, clock.parse_day(max(as_of_values)) if as_of_values else None)
+    sku_live = potential_sku.track(state, items, report_id, cfg, clock.parse_day(max(as_of_values)) if as_of_values else None,
+                                   (events or {}).get("days") or ())
     key_text = crypto.report_key_text(master, report_id)
     log.mask(key_text)
     ctx = {

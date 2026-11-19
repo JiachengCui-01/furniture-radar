@@ -28,7 +28,7 @@ def test_growth_items_accelerating_in_the_last_week(cfg):
     用 last7_avg（所有商品同一个口径），不用 recent_avg7（爆火商品那里是爆发窗口的日均）。"""
     s = potential_sku.settings(cfg)
     assert potential_sku.classify(_item("A"), s) == {"tier": "一周涨五成", "kind": "上升中", "a7": 1.6, "net": 1.6, "pace": None,
-                                                     "a14": 1.3, "promo": None}
+                                                     "a14": 1.3, "promo": None, "flags": []}
     assert potential_sku.classify(_item("B", last7_avg=20.0), s)["tier"] == "一周翻倍"
     assert potential_sku.classify(_item("C", last7_avg=14.9), s) is None  # 1.49 倍：和增长商品平均一样容易爆，不列
     assert potential_sku.classify(_item("D", label="surge", surge={"kind": "稳在高位"}, rising=None), s)["kind"] == "突然爆火"
@@ -37,7 +37,7 @@ def test_growth_items_accelerating_in_the_last_week(cfg):
     window = _item("G", label="surge", surge={"kind": "稳在高位"}, rising=None, recent_avg7=30.0, last7_avg=12.0)
     assert potential_sku.classify(window, s) is None  # 爆发窗口日均 30，近 7 天其实只有 12（×1.2）
     assert potential_sku.why({**_item("B", last7_avg=20.0), "sku": potential_sku.classify(_item("B", last7_avg=20.0), s)}) == \
-        "上升中；近 7 天日均是近 28 天的 ×2.00，最近一周翻倍了"
+        "上升中；近 7 天日均是近 28 天在售日均的 ×2.00，最近一周翻倍了"
 
 
 def test_subcategory_wide_acceleration_is_taken_out(cfg):
@@ -51,7 +51,7 @@ def test_subcategory_wide_acceleration_is_taken_out(cfg):
     assert pace == {"tv": 1.2}
     sku = potential_sku.classify(star, s, pace)
     assert (sku["tier"], sku["a7"], sku["net"], sku["pace"]) == ("一周涨五成", 2.1, 1.75, 1.2)  # ×2.1 ÷ 1.2 = ×1.75
-    assert potential_sku.why({**star, "sku": sku}) ==         "上升中；近 7 天日均是近 28 天的 ×2.10（所在子类目这周整体 ×1.20，扣掉后 ×1.75），最近一周涨了五成以上"
+    assert potential_sku.why({**star, "sku": sku}) ==         "上升中；近 7 天日均是近 28 天在售日均的 ×2.10（所在子类目这周整体 ×1.20，扣掉后 ×1.75），最近一周涨了五成以上"
     assert potential_sku.classify(_item("M", node="tv", last7_avg=16.0), s, pace) is None  # ×1.6 ÷ 1.2 = ×1.33：不列
     # 不到 10 个、量不够 60 件/30 天的不算进子类目；整体在跌（<1）的不扣（不会因此多收）
     assert potential_sku.node_pace(peers[:8] + [star], s) == {}  # 9 个
@@ -109,7 +109,7 @@ def test_report_block_table_and_download(cfg):
     """第 6 张 KPI、正文前几个（每个子类目最多 per_node 个）、小窗表格：每行带筛选 / 排序用的 data-*，下载的 Excel 表一行一个商品（列和 SKU_COLS 一一对应），
     点一行展开完整卡片；提示里的数字取自 config.yaml。"""
     items = [_item("M1"), _item("M2", node_cn="书架"), _item("T1", last7_avg=20.0, node_cn="电视柜"),
-             _item("M3", node_cn="电视柜"), _item("M4", node_cn="床架", tags=["降价驱动"], label="potential", rising=None)]
+             _item("M3", node_cn="电视柜"), _item("M4", node_cn="床架", tags=["断货恢复"], label="potential", rising=None)]
     potential_sku.mark(items, cfg)
     sec = analyze.sections(items, 0)
     cur = {"shown": sec["sku"], "plain": [], "similar": {}}
@@ -133,16 +133,21 @@ def test_report_block_table_and_download(cfg):
     m4 = next(r for r in rows if r[3][0] == "M4")
     assert m4[1][1] == m4[3][1] == "https://www.amazon.com/dp/M4"  # 商品名、ASIN 都链到商品页
     assert m4[5:7] == ["一周涨五成", "新品潜力"] and m4[8] == 300 and m4[9] == 45000
-    assert m4[11:14] == [1.6, 1.6, 1.3] and m4[18] == "降价驱动"  # 没扣子类目的：扣子类目整体后和近7天÷近28天一样
+    assert m4[11:14] == [1.6, 1.6, 1.3] and m4[18] == "断货恢复"  # 没扣子类目的：扣子类目整体后和近7天÷近28天一样
     assert 'data-seg="一周翻倍"' in pop and 'data-seg="一周涨五成"' in pop and 'data-a7="2.0"' in pop
     hint = render.sku_hint(cfg)
-    assert "潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天的 1.5 倍" in hint
+    assert "潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天在售日均的 1.5 倍" in hint
+    assert "断货的日子不算进近 28 天" in hint
+    assert "一周涨五成（1.5~2 倍，不收带“月度增长尚未验证”“降价驱动”标签的：回测里和不列的一样）" in hint
     assert "所在子类目这周整体也在涨的，先扣掉整体的涨幅" in hint
-    assert "卖爆 = 第 2 个月的 30 天销量 ≥ 现在近 30 天的 2 倍且 ≥300 件，一周翻倍的只要把最近一周的速度保持两个月就够这个标准" in hint
+    assert ("卖爆 = 第 2 个月（去掉大促日）的 30 天销量 ≥ 现在近 30 天（在售日均 × 30）的 2 倍且 ≥300 件，"
+            "一周翻倍的只要把最近一周的速度保持两个月就够这个标准") in hint
     # 回测（2026-11-18 复核后）：区间是有第 2 个月结果的判定日；写前后两段的范围和不重合的“再翻一倍”，说明幸存者偏差
     assert "回测（2025-11~2026-08 每周" in hint
-    assert "一周翻倍的 26%~38% 后续卖爆，其中在最近一周的速度上再翻一倍的 8.1%；一周涨五成的 12%~15%" in hint
-    assert "加速 1.2~1.5 倍的 6.7%、不到 1.2 倍的 2.3%" in hint and "（增长商品平均 5.6%，全部商品 3.1%）" in hint
+    assert "一周翻倍的 23%~33% 后续卖爆，其中在最近一周的速度上再翻一倍的 5.5%；一周涨五成的 11%~13%" in hint
+    assert "不收的一周涨五成 8.3%、加速 1.2~1.5 倍的 6.3%、不到 1.2 倍的 2.2%" in hint
+    assert "（增长商品平均 5.1%，全部商品 2.8%）" in hint
+    assert "老品换链接的单算（新链接还在起量，基数低，多半是回到老链接原来的量）：一周翻倍 43%、一周涨五成 27%，不算进上面的比例" in hint
     assert "样本是 2026-10-23 还在全市场名单里的商品，越靠近这天判的比例越高，实际会低一些" in hint
     for old in ("把握大", "待观察", "爆发苗头", "稳步在涨", "刚起势"):
         assert old not in hint and old not in pop and old not in body, old
@@ -160,8 +165,8 @@ def test_dingtalk_lists_potential_skus(cfg):
            "diff": {"first": True}, "traits": {}}
     text = dingtalk.build_text(ctx)
     assert "🎯 潜力SKU 2**" in text
-    assert ("**🎯 潜力SKU**（增长商品里最近一周加速的，子类目整体在涨的已扣掉：一周翻倍 1，回测 26%~38% 后续卖爆；"
-            "一周涨五成 1，回测 12%~15% 后续卖爆；表格在报告里可下载）") in text
+    assert ("**🎯 潜力SKU**（增长商品里最近一周加速的，子类目整体在涨的已扣掉：一周翻倍 1，回测 23%~33% 后续卖爆；"
+            "一周涨五成 1，回测 11%~13% 后续卖爆；表格在报告里可下载）") in text
     assert "一周翻倍·上升中：" in text and "一周涨五成·上升中：" in text and "（风险：降价驱动）" in text
     assert text.index("一周翻倍·上升中：") < text.index("一周涨五成·上升中：")
     assert dingtalk.build_text(ctx, sku_items=1).count("一周涨五成·上升中：") == 0
@@ -191,10 +196,10 @@ def test_promo_days_in_last_week_are_a_risk_not_one_day_spikes(cfg):
     assert render.sku_risks(star) == ["近7天含大促日", "降价驱动"] and render.sku_risks(calm) == []
     note = potential_sku.promo_note(star["sku"], cfg)
     assert note == ("近 7 天里有大促日（11-28~11-30）：加速倍数是去掉这几天算的，剩下的是大促前后几天；"
-                    "回测里一周翻倍的这类后续卖爆 18%，近 7 天没有大促日的 36%")
+                    "回测里一周翻倍的这类后续卖爆 10%，近 7 天没有大促日的 33%")
     mid = _item("M1", as_of="2026-12-01")
     potential_sku.mark([mid], cfg, bf)
-    assert potential_sku.promo_note(mid["sku"], cfg).endswith("回测里一周涨五成的这类后续卖爆 10%，近 7 天没有大促日的 14%")
+    assert potential_sku.promo_note(mid["sku"], cfg).endswith("回测里一周涨五成的这类后续卖爆 10%，近 7 天没有大促日的 13%")
     row = render._sku_row(star, 0, cfg)
     assert f'data-tip="{note}"' in row and ">近7天含大促日、降价驱动</td>" in row
     assert json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))[18] == "近7天含大促日、降价驱动"
@@ -226,7 +231,7 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     picks = state["sku_live"]["picks"]
     assert [p["asin"] for p in picks] == ["T1", "M1", "M2"] and state["sku_live"]["since"] == "2026-11-16"
     assert picks[0] == {"asin": "T1", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.0,
-                        "u": 300.0, "title": "Wood Nightstand T1", "node": "床头柜"}
+                        "u": 300.0, "title": "Wood Nightstand T1", "node": "床头柜", "flags": []}
     assert (live["total"], live["waiting"], live["next_due"], live["done"]) == \
         (3, 3, "2027-01-10", {"一周翻倍": [0, 0], "一周涨五成": [0, 0]})
     text = render.sku_live_text(live, cfg)
@@ -257,7 +262,7 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     assert [p["asin"] for p in state["sku_live"]["picks"] if "f" not in p] == ["T1"]  # 出了结果以后再入选：另记一次
     assert potential_sku.due(state, date(2027, 1, 12)) == []
     text = render.sku_live_text(live, cfg)
-    assert ("已出结果 2 个，卖爆的一周翻倍 1/1（100%，回测 26%~38%）、一周涨五成 0/1（0%，回测 12%~15%）。"
+    assert ("已出结果 2 个，卖爆的一周翻倍 1/1（100%，回测 23%~33%）、一周涨五成 0/1（0%，回测 11%~13%）。"
             "还在等 1 个（下一批 2027-03-09 起）。") in text
     table = render._sku_live_rows(live)
     assert "出了结果的 2 个" in table and table.count("<tr>") == 3 and ">卖爆</td>" in table and ">没有</td>" in table
@@ -291,3 +296,92 @@ def test_live_outcome_needs_the_whole_second_month(cfg):
     text = render.sku_live_text(live, cfg)
     assert text.startswith("实盘跟踪：") and "已记 2 个" in text
     assert render.sku_live_text({"total": 0}, cfg) == "" and render.sku_live_text(None, cfg) == ""
+
+
+def test_weak_mid_tier_tags_are_dropped_and_caveats_are_written(cfg):
+    """2026-11-19 复核：一周涨五成里带“月度增长尚未验证”（6.7%）、“降价驱动”（9.4%）的后续卖爆和不列的（6.3%）差不多，不收；
+    一周翻倍里的照收，“月度增长尚未验证”写进风险（15.8% 对 28.8%）。老品换链接（新链接还在起量，基数低）照收，回测数单算、写进风险。"""
+    s = potential_sku.settings(cfg)
+    unver = ["对比期只有 5 天在卖", "月度增长尚未验证（完整月份不足）"]
+    assert potential_sku.classify(_item("M1", label="potential", rising=None, tags=unver), s) is None
+    assert potential_sku.classify(_item("M2", tags=["仍在上涨", "降价驱动"]), s) is None
+    assert potential_sku.classify(_item("M3", tags=["断货恢复"]), s)["tier"] == "一周涨五成"  # 别的标签照收
+    top = _item("T1", label="potential", rising=None, last7_avg=21.0, tags=unver)
+    top["sku"] = potential_sku.classify(top, s)
+    assert top["sku"]["tier"] == "一周翻倍" and top["sku"]["flags"] == ["月度增长尚未验证"]
+    pd = _item("T2", last7_avg=21.0, tags=["降价驱动"])
+    pd["sku"] = potential_sku.classify(pd, s)
+    assert pd["sku"]["flags"] == [] and render.sku_risks(pd) == ["降价驱动"]  # 一周翻倍里的降价驱动照收，红色标签照写
+    relist = _item("R1", relist={"old": "B0OLD"}, tags=["老品换链接（…）"])
+    relist["sku"] = potential_sku.classify(relist, s)
+    assert relist["sku"]["tier"] == "一周涨五成" and relist["sku"]["flags"] == ["老品换链接"]
+    assert render.sku_risks(top) == ["月度增长尚未验证"] and render.sku_risks(relist) == ["老品换链接"]
+    assert potential_sku.risk_notes(top["sku"], cfg) == [
+        "月度增长尚未验证：新品完整月份还不够，看不出月度在涨；回测里一周翻倍的这类后续卖爆 16%，其他 29%"]
+    assert potential_sku.risk_notes(relist["sku"], cfg) == [
+        "老品换链接：新链接还在起量、基数低，后续卖爆多半是回到老链接原来的量；"
+        "回测里这类一周翻倍的 43%、一周涨五成的 27% 后续卖爆，不算进两档的比例"]
+    row = render._sku_row(top, 0, cfg)
+    assert 'data-tip="月度增长尚未验证：新品完整月份还不够' in row and ">月度增长尚未验证</td>" in row
+    gloss = render._method(cfg)
+    assert "不含带“月度增长尚未验证”“降价驱动”标签的（回测里和不列的一样）" in gloss
+    assert "近 7 天日均 ÷ 近 28 天在售日的日均（断货的日子不算，都去掉大促日）" in gloss
+
+
+def test_base_is_the_in_stock_average_of_the_last_28_days(cfg):
+    """近 28 天日均以前把断货的日子按 0 算：断货恢复的商品基数被压低、加速倍数虚高，“卖爆”很多只是回到原来的量。
+    基数改按在售的日子算（analyze 的 instock_avg28）：加速倍数、子类目的倍数、实盘的卖爆基数都用它。"""
+    s = potential_sku.settings(cfg)
+    # 近 28 天里断货了一段：按日历算日均 10（×2），按在售的日子算 14（×1.43，不列）
+    back = _item("B", last7_avg=20.0, recent_avg28=10.0, instock_avg28=14.0)
+    assert potential_sku.classify(back, s) is None
+    steady = _item("S", last7_avg=21.0, recent_avg28=10.0, instock_avg28=10.0, as_of="2026-11-15")
+    steady["sku"] = potential_sku.classify(steady, s)
+    assert steady["sku"]["a7"] == 2.1 and potential_sku.base_avg(steady) == 10.0
+    assert potential_sku.base_avg(_item("X")) == 10.0  # 没有在售日均的（旧数据）用近 28 天日均
+    assert potential_sku.base_avg(_item("Y", instock_avg28=None)) is None  # 近 28 天全在断货：不算
+    peers = [_item(f"P{i}", node="tv", last7_avg=12.0, recent_avg28=5.0, instock_avg28=10.0, rising=None) for i in range(10)]
+    assert potential_sku.node_pace(peers, s) == {"tv": 1.2}
+    from datetime import date
+    state = {"asins": {}}
+    potential_sku.track(state, [{**back, "instock_avg28": 9.0, "sku": potential_sku.classify({**back, "instock_avg28": 9.0}, s),
+                                 "as_of": "2026-11-15"}], "2026-11-16", cfg, date(2026, 11, 15))
+    assert state["sku_live"]["picks"][0]["u"] == 270.0  # 在售日均 9 × 30
+
+
+def test_live_second_month_leaves_out_promo_days(cfg):
+    """实盘的第 2 个月去掉大促日（判定时的近 28 天也去掉了，前后同一个口径）：大促那几天卖得多，不能算成卖爆。"""
+    from datetime import date, timedelta
+    s = potential_sku.settings(cfg)
+    day = date(2026, 11, 15)
+    lead = (date(2026, 12, 12) - date(2026, 11, 1)).days
+    sales = [10] * lead + [18] * 30 + [5]  # 第 2 个月 540 件：不到 300 × 2
+    sales[lead + 10: lead + 14] = [200] * 4  # 其中 4 天大促（12-22 ~ 12-25）卖了 800 件
+    promo = {date(2026, 12, 12) + timedelta(days=10 + i) for i in range(4)}
+    with_promo = potential_sku.outcome(_series("2026-11-01", sales), day, 300, s)
+    without = potential_sku.outcome(_series("2026-11-01", sales), day, 300, s, promo)
+    assert with_promo["boom"] and without == {"f": 540.0, "boom": False}
+    state = {"asins": {"A": {"series": _series("2026-11-01", sales)}},
+             "sku_live": {"since": "2026-11-16", "picks": [
+                 {"asin": "A", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.1, "u": 300.0}]}}
+    live = potential_sku.track(state, [], "2027-01-12", cfg, date(2027, 1, 12), promo)
+    assert live["done"]["一周翻倍"] == [1, 0]
+
+
+def test_live_relist_picks_are_counted_apart(cfg):
+    """老品换链接的回测数单算、不进两档的比例，实盘也一样：两档的“卖爆个数/出结果个数”不含它，另写一句。"""
+    from datetime import date
+    lead = (date(2026, 12, 12) - date(2026, 11, 1)).days
+    boom = _series("2026-11-01", [10] * lead + [25] * 30 + [5, 5])
+    state = {"asins": {"R": {"series": boom}, "T": {"series": boom}},
+             "sku_live": {"since": "2026-11-16", "picks": [
+                 {"asin": "R", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周涨五成", "kind": "突然爆火", "net": 1.9, "u": 300.0,
+                  "flags": ["老品换链接"]},
+                 {"asin": "T", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.1, "u": 300.0}]}}
+    live = potential_sku.track(state, [], "2027-01-12", cfg, date(2027, 1, 12))
+    assert live["done"] == {"一周翻倍": [1, 1], "一周涨五成": [0, 0]} and live["relist"] == [1, 1]
+    assert len(live["rows"]) == 2
+    text = render.sku_live_text(live, cfg)
+    assert "已出结果 1 个，卖爆的一周翻倍 1/1（100%，回测 23%~33%）、一周涨五成 0/0（回测 11%~13%）；老品换链接的单算，1/1（100%）。" in text
+    assert "老品换链接（单算）" in render._sku_live_rows(live)
+

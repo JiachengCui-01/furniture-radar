@@ -462,6 +462,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         # 近 14 天日均（去掉大促日）：潜力SKU 表格里的“近14天÷近28天”（detect/potential_sku.py）
         "recent_avg14": _avg(d, idx, 14),
         "recent_avg28": _avg(d, idx, 28),
+        # 近 28 天在售日的日均（断货的日子不算，同对比期的口径）：潜力SKU 的加速倍数和卖爆的基数（detect/potential_sku.base_avg）
+        "instock_avg28": _avg(d, idx, 28, oos, zero_run),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
         "prev_avg28": _avg(d, idx - 28, 28, oos, zero_run) if idx is not None else None,
         "prev_in28": prev_in,

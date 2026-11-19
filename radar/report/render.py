@@ -1046,17 +1046,18 @@ SKU_COLS = (
     ("近30天销量(件)", 10, "int", "近 28 天日均 × 30（日均去掉大促日）"),
     ("近30天销售额($)", 12, "money", "近 30 天销量 × 售价"),
     ("月增量($)", 11, "delta", "（近 28 天日均 − 再之前 28 天正常在售日均）× 同一售价 × 30；按 0 算、对比数据不足的写“按 0”“无法估算”"),
-    ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天日均（日均去掉大促日），条越长最近一周加速越多"),
+    ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天在售日的日均（断货的日子不算，日均去掉大促日），条越长最近一周加速越多"),
     ("扣子类目整体后", 11, "ratio", "近 7 天 ÷ 近 28 天，再除以所在子类目这周整体的倍数（本期追踪的同子类目商品的中位数，"
                              "整体没在涨的不扣，和左边一样）；按它分档：≥2 倍一周翻倍、1.5~2 倍一周涨五成"),
-    ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天日均"),
+    ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天在售日的日均"),
     ("上架天数", 8, "days", ""),
     ("评分", 7, "rating", ""),
     ("评论数", 8, "int", ""),
     ("为什么值得看", 40, "wrap", "先说外观元素和功能（同类少见的、同类爆品也有的），价格放最后；大模型按本期算好的数据写（数字、特征和顺序都核对过），"
                               "没有的按同样顺序用规则拼"),
-    ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）；近 7 天里有大促日的另标“近7天含大促日”"
-                         "（加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里这类后续卖爆少一截）"),
+    ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）；另标：近 7 天里有大促日的“近7天含大促日”"
+                         "（加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里这类后续卖爆少一截）、"
+                         "一周翻倍里新品完整月份还不够的“月度增长尚未验证”、新链接还在起量的“老品换链接”（回测数单算）"),
     ("所在板块", 10, "text", "商品在报告里原来的板块"),
     ("判定依据", 34, "muted", "类型 + 最近一周加速多少（子类目整体在涨的写明扣掉以后是多少）"),
 )
@@ -1075,19 +1076,23 @@ def sku_hint(cfg: dict) -> str:
     s = potential_sku.settings(cfg)
     bt = s.get("backtest") or {}
     top, low = float(s["top_a7"]), float(s["min_a7"])
-    text = (f"潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天的 {low:g} 倍"
-            "（所在子类目这周整体也在涨的，先扣掉整体的涨幅：整类一起涨时单个商品的加速多半是跟着涨，回测里很快回落）。"
-            f"分两档：一周翻倍（≥{top:g} 倍）、一周涨五成（{low:g}~{top:g} 倍）。")
+    text = (f"潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天在售日均的 {low:g} 倍"
+            "（断货的日子不算进近 28 天；所在子类目这周整体也在涨的，先扣掉整体的涨幅：整类一起涨时单个商品的加速多半是跟着涨，"
+            f"回测里很快回落）。分两档：一周翻倍（≥{top:g} 倍）、一周涨五成（{low:g}~{top:g} 倍，"
+            "不收带“月度增长尚未验证”“降价驱动”标签的：回测里和不列的一样）。")
     if all(bt.get(k) for k in ("top_range", "mid_range", "top_again", "slow", "growth", "all", "halves")):
         halves = bt["halves"]
+        weak = f"不收的一周涨五成 {backtest_pct(bt['weak_mid'])}、" if bt.get("weak_mid") else ""
+        relist = (f"老品换链接的单算（新链接还在起量，基数低，多半是回到老链接原来的量）：一周翻倍 {backtest_pct(bt['relist'][0])}、"
+                  f"一周涨五成 {backtest_pct(bt['relist'][1])}，不算进上面的比例。" if bt.get("relist") else "")
         text += (f"回测（{bt.get('span')} 每周按同样的规则倒推，{int(bt.get('products') or 0):,} 个商品；"
-                 f"卖爆 = 第 2 个月的 30 天销量 ≥ 现在近 30 天的 {float(bt.get('boom_ratio', 2)):g} 倍且 ≥{int(bt.get('boom_units', 300))} 件，"
-                 "一周翻倍的只要把最近一周的速度保持两个月就够这个标准）："
+                 f"卖爆 = 第 2 个月（去掉大促日）的 30 天销量 ≥ 现在近 30 天（在售日均 × 30）的 {float(bt.get('boom_ratio', 2)):g} 倍"
+                 f"且 ≥{int(bt.get('boom_units', 300))} 件，一周翻倍的只要把最近一周的速度保持两个月就够这个标准）："
                  f"一周翻倍的 {backtest_pct(bt['top_range'][0])}~{backtest_pct(bt['top_range'][1])} 后续卖爆，"
                  f"其中在最近一周的速度上再翻一倍的 {backtest_pct(bt['top_again'])}；"
                  f"一周涨五成的 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}；"
-                 f"加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
-                 f"（增长商品平均 {backtest_pct(bt['growth'])}，全部商品 {backtest_pct(bt['all'])}）。"
+                 f"{weak}加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
+                 f"（增长商品平均 {backtest_pct(bt['growth'])}，全部商品 {backtest_pct(bt['all'])}）。{relist}"
                  f"范围的两头是 {halves[0]} 和 {halves[1]} 判的；样本是 {bt.get('sample_date')} 还在全市场名单里的商品，"
                  "越靠近这天判的比例越高，实际会低一些。评分、评论数、上架天数、价格都分不出谁更容易爆。")
     return text + "蓝海、数据陈旧、只有月度数据的不列；商品照样在原来的板块里。"
@@ -1112,8 +1117,10 @@ def sku_reason(item: dict) -> str:
 
 def sku_risks(item: dict) -> list[str]:
     """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）；
-    近 7 天里有大促日的另加“近7天含大促日”（potential_sku.PROMO，只在潜力SKU 里有），放最前。"""
-    out: list[str] = [potential_sku.PROMO] if (item.get("sku") or {}).get("promo") else []
+    近 7 天里有大促日的另加“近7天含大促日”（potential_sku.PROMO，只在潜力SKU 里有），放最前；
+    再加潜力SKU 照收但要写明的（sku["flags"]：一周翻倍里的“月度增长尚未验证”、老品换链接，不是红色标签）。"""
+    sku = item.get("sku") or {}
+    out: list[str] = ([potential_sku.PROMO] if sku.get("promo") else []) + list(sku.get("flags") or [])
     for tag in item.get("tags") or []:
         head = tag_head(tag)
         if _tag_class(tag) == "warn" and head not in out:
@@ -1130,6 +1137,7 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
     inc = directions.increment(item) if countable else None
     a7, a14 = sku.get("a7"), sku.get("a14")
     reason, risks, basis = sku_reason(item), sku_risks(item), potential_sku.why(item)
+    notes = potential_sku.risk_notes(sku, cfg or {})  # 风险格鼠标停留：近7天含大促日、月度增长尚未验证、老品换链接的回测数
     url = amazon(item["asin"])
     xl = [small_image(item["image"], 200) if item.get("image") else "", [item["title"], url], item.get("brand") or "",
           [item["asin"], url], node, seg, sku["kind"], item.get("price") or "",
@@ -1163,8 +1171,7 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
         ("n", "", age),
         ("n", "", rating),
         ("why", "", esc(reason)),
-        ("rk", f' data-tip="{esc(potential_sku.promo_note(sku, cfg or {}))}"' if sku.get("promo") else "",
-         esc("、".join(risks))),
+        ("rk", f' data-tip="{esc("。".join(notes))}"' if notes else "", esc("、".join(risks))),
     ]
     tds = []
     for i, (klass, extra, inner) in enumerate(cells):
@@ -1212,7 +1219,7 @@ def _sku_section(cur: dict, cfg: dict) -> str:
 
 
 def live_rate(k: int, n: int, ref: str = "") -> str:
-    """实盘“卖爆个数/出结果个数”，括号里是比例和回测的范围：1/4（25%，回测 26%~38%）。"""
+    """实盘“卖爆个数/出结果个数”，括号里是比例和回测的范围：1/4（25%，回测 23%~33%）。"""
     inner = "，".join(x for x in (f"{k / n:.0%}" if n else "", ref) if x)
     return f"{k}/{n}" + (f"（{inner}）" if inner else "")
 
@@ -1227,12 +1234,14 @@ def sku_live_text(live: dict | None, cfg: dict) -> str:
     (n1, k1), (n2, k2) = done.get(potential_sku.TOP, [0, 0]), done.get(potential_sku.MID, [0, 0])
     how = (f"{live.get('since')} 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记），"
            "判定后满 56 天用那时拉到的日数据看第 2 个月（判定后第 27~56 天）卖爆没有，标准同回测")
-    if not n1 + n2:
+    if not n1 + n2 + (live.get("relist") or [0])[0]:
         due = f"，最早 {live['next_due']} 出结果" if live.get("next_due") else ""
         return f"实盘跟踪：{how}。已记 {live['total']} 个，还没有到期的{due}。"
     ref = lambda key: (f"回测 {backtest_pct(bt[key][0])}~{backtest_pct(bt[key][1])}" if bt.get(key) else "")  # noqa: E731
+    rn, rk = live.get("relist") or [0, 0]
+    relist = f"；老品换链接的单算，{live_rate(rk, rn)}" if rn else ""
     text = (f"实盘（{how}）：已出结果 {n1 + n2} 个，卖爆的一周翻倍 {live_rate(k1, n1, ref('top_range'))}、"
-            f"一周涨五成 {live_rate(k2, n2, ref('mid_range'))}。还在等 {live.get('waiting', 0)} 个")
+            f"一周涨五成 {live_rate(k2, n2, ref('mid_range'))}{relist}。还在等 {live.get('waiting', 0)} 个")
     if live.get("next_due"):
         text += f"（下一批 {live['next_due']} 起）"
     if live.get("overdue"):
@@ -1249,7 +1258,8 @@ def _sku_live_rows(live: dict | None) -> str:
         return ""
     body = "".join(
         f'<tr><td>{esc(p["day"])}</td><td><a href="{amazon(p["asin"])}" {LINK}>{esc((p.get("title") or p["asin"])[:48])}</a>'
-        f'<small> {esc(p["asin"])}</small></td><td>{esc(p.get("node") or "")}</td><td>{esc(p["tier"])}</td>'
+        f'<small> {esc(p["asin"])}</small></td><td>{esc(p.get("node") or "")}</td>'
+        f'<td>{esc(p["tier"])}{"<small>老品换链接（单算）</small>" if "老品换链接" in (p.get("flags") or []) else ""}</td>'
         f'<td class=n>{fmt_int(p["u"])} 件</td><td class=n>{fmt_int(p["f"])} 件</td>'
         f'<td>{"卖爆" if p.get("boom") else "没有"}</td></tr>' for p in rows)
     head = ("<tr><th>判定日</th><th>商品</th><th>子类目</th><th>档</th><th class=n>判定时近30天</th>"
@@ -2015,13 +2025,15 @@ def _method(cfg: dict, repo_url: str = "") -> str:
     bt = ps.get("backtest") or {}
     rows += [("潜力SKU", "本期增长商品里最容易后续卖爆的一份清单（不分店铺，只在本期追踪的商品里挑）：最近一周在加速的，"
                         "分一周翻倍、一周涨五成两档，各写回测里后续卖爆的比例；商品照样在原板块里，表格可下载"),
-             ("卖爆", f"潜力SKU 回测用的标准：判定后第 2 个月的 30 天销量 ≥ 现在近 30 天的 {float(bt.get('boom_ratio', 2)):g} 倍，"
-                     f"而且 ≥{int(bt.get('boom_units', 300))} 件。一周翻倍的最近一周已经是近 28 天的 2 倍，保持这个速度两个月就够"),
-             ("加速倍数", "近 7 天日均 ÷ 近 28 天日均（去掉大促日）；所在子类目这周整体也在涨的再除以子类目的倍数"
-                        f"（本期追踪的同子类目商品、近 30 天 ≥{float(ps['node_min_units']):g} 件的，各自近 7 天 ÷ 近 28 天的中位数；"
+             ("卖爆", f"潜力SKU 回测用的标准：判定后第 2 个月（判定后第 27~56 天，去掉大促日）的 30 天销量 ≥ 现在近 30 天"
+                     f"（近 28 天在售日均 × 30）的 {float(bt.get('boom_ratio', 2)):g} 倍，而且 ≥{int(bt.get('boom_units', 300))} 件。"
+                     "一周翻倍的最近一周已经是近 28 天的 2 倍，保持这个速度两个月就够"),
+             ("加速倍数", "近 7 天日均 ÷ 近 28 天在售日的日均（断货的日子不算，都去掉大促日）；所在子类目这周整体也在涨的再除以子类目的倍数"
+                        f"（本期追踪的同子类目商品、近 30 天 ≥{float(ps['node_min_units']):g} 件的，各自近 7 天 ÷ 近 28 天在售日均的中位数；"
                         f"不到 {int(ps['node_min'])} 个的子类目不扣，整体没在涨的也不扣）"),
              ("一周翻倍", f"增长商品里加速倍数 ≥ {float(ps['top_a7']):g} 的"),
-             ("一周涨五成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的"),
+             ("一周涨五成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的，"
+                         "不含带“月度增长尚未验证”“降价驱动”标签的（回测里和不列的一样）"),
              (potential_sku.PROMO, "潜力SKU 的风险标签：近 7 天（数据截止日往前 7 天）里有大促日。加速倍数是去掉大促日算的，"
                                    "剩下的是大促前后几天，回测里这类后续卖爆少一截"),
              ("实盘", "潜力SKU 每期记下判定时的近 30 天销量，判定后满 56 天用那时的日数据看它卖爆没有（标准同回测），"
