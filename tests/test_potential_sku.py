@@ -118,14 +118,14 @@ def test_report_block_table_and_download(cfg):
     assert 'id="sku"' in body and 'data-pop="sku"' in body and "全部 5 个 · 表格可下载" in body
     assert body.count('class="sr"') == 4 and 'class="sc"' not in body  # 正文不展开卡片；电视柜只放 1 个
     assert "列出 5 个：一周翻倍 1 个、一周涨五成 4 个。" in body and "按最近一周加速排" in body
-    pop = render._sku_pop(cur, render.sku_hint(cfg), 5, "2026-11-16")
+    pop = render._sku_pop(cur, render.sku_hint(cfg), 5, "2026-11-16", None, cfg)
     assert 'id="pop-sku"' in pop and "data-sku" in pop and 'data-file="潜力SKU-2026-11-16"' in pop
     assert pop.count('class="sc" hidden') == 5
     assert 'class="grp">一周翻倍·上升中<' in pop and 'class="grp">一周涨五成·新品潜力<' in pop
     cols = json.loads(re.search(r'data-cols="([^"]+)"', pop).group(1).replace("&quot;", '"'))
     assert [c[0] for c in cols[:7]] == ["主图", "商品", "品牌", "ASIN", "子类目", "档", "类型"] and len(cols) == len(render.SKU_COLS)
-    assert [c[0] for c in cols[11:14]] == ["近7天÷近28天", "扣子类目整体后", "近14天÷近28天"]
-    assert [c[2] for c in cols[11:14]] == ["bar", "ratio", "ratio"]
+    assert [c[0] for c in cols[11:15]] == ["近7天÷近28天", "扣子类目整体后", "同样加速回测卖爆", "近14天÷近28天"]
+    assert [c[2] for c in cols[11:15]] == ["bar", "ratio", "text", "ratio"]
     assert all(len(c) == 4 and isinstance(c[1], int) for c in cols)
     assert 'data-title="潜力SKU · 2026-11-16"' in pop
     rows = [json.loads(m.replace("&quot;", '"')) for m in re.findall(r'data-xl="([^"]+)"', pop)]
@@ -133,7 +133,7 @@ def test_report_block_table_and_download(cfg):
     m4 = next(r for r in rows if r[3][0] == "M4")
     assert m4[1][1] == m4[3][1] == "https://www.amazon.com/dp/M4"  # 商品名、ASIN 都链到商品页
     assert m4[5:7] == ["一周涨五成", "新品潜力"] and m4[8] == 300 and m4[9] == 45000
-    assert m4[11:14] == [1.6, 1.6, 1.3] and m4[18] == "断货恢复"  # 没扣子类目的：扣子类目整体后和近7天÷近28天一样
+    assert m4[11:15] == [1.6, 1.6, "10%~11%", 1.3] and m4[19] == "断货恢复"  # 没扣子类目的：扣子类目整体后和近7天÷近28天一样
     assert 'data-seg="一周翻倍"' in pop and 'data-seg="一周涨五成"' in pop and 'data-a7="2.0"' in pop
     hint = render.sku_hint(cfg)
     assert "潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天在售日均的 1.5 倍" in hint
@@ -202,7 +202,7 @@ def test_promo_days_in_last_week_are_a_risk_not_one_day_spikes(cfg):
     assert potential_sku.promo_note(mid["sku"], cfg).endswith("回测里一周涨五成的这类后续卖爆 10%，近 7 天没有大促日的 13%")
     row = render._sku_row(star, 0, cfg)
     assert f'data-tip="{note}"' in row and ">近7天含大促日、降价驱动</td>" in row
-    assert json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))[18] == "近7天含大促日、降价驱动"
+    assert json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))[19] == "近7天含大促日、降价驱动"
     assert "data-tip" not in render._sku_row(calm, 1, cfg).split('class="rk')[1]
     sec = analyze.sections([star, calm], 0)
     ctx = {"title": "家具爆品雷达", "report_id": "2026-11-30", "as_of": "2026-11-30", "cfg": cfg,
@@ -262,8 +262,8 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     assert [p["asin"] for p in state["sku_live"]["picks"] if "f" not in p] == ["T1"]  # 出了结果以后再入选：另记一次
     assert potential_sku.due(state, date(2027, 1, 12)) == []
     text = render.sku_live_text(live, cfg)
-    assert ("已出结果 2 个，卖爆的一周翻倍 1/1（100%，回测 23%~33%）、一周涨五成 0/1（0%，回测 11%~13%）。"
-            "还在等 1 个（下一批 2027-03-09 起）。") in text
+    assert ("已出结果 2 个，卖爆的一周翻倍 1/1（100%，样本少，回测 23%~33%）、一周涨五成 0/1（0%，样本少，回测 11%~13%）。"
+            "还在等 1 个（下一批 2027-03-09 起）。样本少 = 出结果不到 30 个：比例上下差十几个百分点都正常，只供参考。") in text
     table = render._sku_live_rows(live)
     assert "出了结果的 2 个" in table and table.count("<tr>") == 3 and ">卖爆</td>" in table and ">没有</td>" in table
     pop = render._sku_pop({"shown": [], "plain": [], "similar": {}}, "提示", 0, "2027-01-12", live, cfg)
@@ -272,7 +272,7 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     ctx = {"title": "家具爆品雷达", "report_id": "2027-01-12", "as_of": "2027-01-12", "cfg": cfg, "sku_live": live,
            "sections": {**sec, "surge": [], "potential": [], "hot": [], "fake": [], "ocean": []},
            "diff": {"first": True}, "traits": {}}
-    assert "；实盘已出结果 2 个，卖爆的一周翻倍 1/1、一周涨五成 0/1；表格在报告里可下载）" in dingtalk.build_text(ctx)
+    assert "；实盘已出结果 2 个，卖爆的一周翻倍 1/1（样本少）、一周涨五成 0/1（样本少）；表格在报告里可下载）" in dingtalk.build_text(ctx)
 
 
 def test_live_outcome_needs_the_whole_second_month(cfg):
@@ -382,6 +382,42 @@ def test_live_relist_picks_are_counted_apart(cfg):
     assert live["done"] == {"一周翻倍": [1, 1], "一周涨五成": [0, 0]} and live["relist"] == [1, 1]
     assert len(live["rows"]) == 2
     text = render.sku_live_text(live, cfg)
-    assert "已出结果 1 个，卖爆的一周翻倍 1/1（100%，回测 23%~33%）、一周涨五成 0/0（回测 11%~13%）；老品换链接的单算，1/1（100%）。" in text
+    assert ("已出结果 1 个，卖爆的一周翻倍 1/1（100%，样本少，回测 23%~33%）、一周涨五成 0/0（回测 11%~13%）；"
+            "老品换链接的单算，1/1（100%，样本少）。") in text
     assert "老品换链接（单算）" in render._sku_live_rows(live)
+
+
+def test_each_row_shows_the_backtest_rate_of_its_own_acceleration_band(cfg):
+    """一档一个数盖住了档里的差别（×1.5~1.75 10.7%、×2.5 以上 46.3%）：表格“回测卖爆”一列写同一段加速倍数（扣过子类目）的
+    后续卖爆，前段~后段；老品换链接的写单算的比例。提示里写分段，和同一档里还分得出的（上架一年以上、量大、评论多），评分、价格分不出。"""
+    s = potential_sku.settings(cfg)
+    cases = {"A": 15.5, "B": 18.0, "C": 21.0, "D": 26.0}  # 近 7 天日均，近 28 天 10
+    texts = {}
+    for asin, l7 in cases.items():
+        sku = potential_sku.classify(_item(asin, last7_avg=l7), s)
+        texts[asin] = render.sku_band_text(sku, cfg)
+    assert texts == {"A": "10%~11%", "B": "15%~18%", "C": "21%~26%", "D": "32%~63%"}
+    assert potential_sku.band({"net": 1.49}, cfg) is None and potential_sku.band({"net": 1.75}, cfg) == (0.148, 0.18)
+    relist = potential_sku.classify(_item("R", relist={"old": "B0OLD"}), s)
+    assert render.sku_band_text(relist, cfg) == "单算 27%"
+    item = _item("C", last7_avg=21.0)
+    item["sku"] = potential_sku.classify(item, s)
+    row = render._sku_row(item, 0, cfg)
+    assert '<td class="n">21%~26%</td>' in row
+    # 还符合同一档里分得出的条件的：括号里另写那一类的比例
+    big = _item("G", last7_avg=50.0, recent_avg28=25.0, ratings=800)  # 近 30 天 750 件、评论 800 条的一周翻倍
+    big["sku"] = potential_sku.classify(big, s)
+    assert render.sku_band_text(big["sku"], cfg, big) == "21%~26%（近30天≥600件的 12%；评论500条以上的 41%）"
+    old = _item("O", last7_avg=18.0, age_days=500)
+    old["sku"] = potential_sku.classify(old, s)
+    assert render.sku_band_text(old["sku"], cfg, old) == "15%~18%（上架一年以上的 9.2%）"
+    assert render.sku_band_text(old["sku"], cfg) == "15%~18%"
+    assert render.sku_band_text({**relist, "tier": "一周涨五成"}, cfg, _item("R", age_days=400)) == "单算 27%（上架一年以上的 9.2%）"
+    hint = render.sku_hint(cfg)
+    assert "档里加速越猛越容易卖爆：×1.5~1.75 10%~11%、×1.75~2 15%~18%、×2~2.5 21%~26%、×2.5 以上 32%~63%（表格“回测卖爆”一列）。" in hint
+    assert ("同一档里还分得出的：一周涨五成里上架一年以上的 9.2%（其他 15%）；一周翻倍里近 30 天 ≥600 件的 12%（其他 31%，"
+            "卖爆要翻倍，量大的难翻）、评论 500 条以上的 41%（其他 24%）。评分、价格分组后高低不一，分不出。") in hint
+    assert "评分、评论数、上架天数、价格都分不出谁更容易爆" not in hint
+    assert render.SKU_HEAD[8] == "回测卖爆" and len(render.SKU_HEAD) == 14
+    assert "回测卖爆" in render._method(cfg)
 

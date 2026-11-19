@@ -1027,10 +1027,10 @@ def _gallery(cur: dict, cfg: dict) -> str:
 
 
 # ---------------- 潜力SKU（detect/potential_sku.py）：正文放前几个，小窗里是完整表格（筛选、排序、展开卡片、下载） ----------------
-SKU_HEAD = ("", "商品", "子类目", "类型", "售价", "近30天", "月增量", "近7天÷近28天", "近14天÷近28天", "上架", "评分",
+SKU_HEAD = ("", "商品", "子类目", "类型", "售价", "近30天", "月增量", "近7天÷近28天", "回测卖爆", "近14天÷近28天", "上架", "评分",
             "为什么值得看", "风险")
-SKU_OPT = {2, 8, 9, 10, 12}  # 手机上收起的列（子类目、近14天÷近28天、上架、评分、风险）
-SKU_NUM = range(4, 11)  # 右对齐的数字列（售价 ~ 评分）
+SKU_OPT = {2, 9, 10, 11, 13}  # 手机上收起的列（子类目、近14天÷近28天、上架、评分、风险）
+SKU_NUM = range(4, 12)  # 右对齐的数字列（售价 ~ 评分）
 # 下载的 Excel 表（SKU_JS 在网页里生成 .xlsx）：(表头, 列宽（字符）, 样式, 说明)。样式决定单元格格式：img = 嵌入主图，
 # title / link = [文字, 网址] 带超链接（title 深色字、link 蓝字），tier / kind 按报告配色，price / int / money / delta / bar / ratio / days / rating 是数字格式
 # （不是数字的写成灰字，如“无法估算”），bar 另画条形图；说明写进第二张“说明”表，没有说明的列不列
@@ -1049,6 +1049,10 @@ SKU_COLS = (
     ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天在售日的日均（断货的日子不算，日均去掉大促日），条越长最近一周加速越多"),
     ("扣子类目整体后", 11, "ratio", "近 7 天 ÷ 近 28 天，再除以所在子类目这周整体的倍数（本期追踪的同子类目商品的中位数，"
                              "整体没在涨的不扣，和左边一样）；按它分档：≥2 倍一周翻倍、1.5~2 倍一周涨五成"),
+    ("同样加速回测卖爆", 14, "text", "回测里加速倍数（扣子类目整体后）在同一段的商品后续卖爆的比例，写前段~后段判的"
+                              "（×1.5~1.75、×1.75~2、×2~2.5、×2.5 以上四段）；老品换链接的写单算的比例。"
+                              "还符合“同一档里分得出的”条件的（一周涨五成里上架一年以上、一周翻倍里近 30 天 ≥600 件、评论 500 条以上），"
+                              "括号里另写那一类的比例"),
     ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天在售日的日均"),
     ("上架天数", 8, "days", ""),
     ("评分", 7, "rating", ""),
@@ -1094,7 +1098,18 @@ def sku_hint(cfg: dict) -> str:
                  f"{weak}加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
                  f"（增长商品平均 {backtest_pct(bt['growth'])}，全部商品 {backtest_pct(bt['all'])}）。{relist}"
                  f"范围的两头是 {halves[0]} 和 {halves[1]} 判的；样本是 {bt.get('sample_date')} 还在全市场名单里的商品，"
-                 "越靠近这天判的比例越高，实际会低一些。评分、评论数、上架天数、价格都分不出谁更容易爆。")
+                 "越靠近这天判的比例越高，实际会低一些。")
+        if bt.get("bands"):
+            text += ("档里加速越猛越容易卖爆："
+                     + "、".join(f"×{float(lo):g}{'~' + format(float(nxt[0]), 'g') if nxt else ' 以上'} "
+                                 f"{backtest_pct(a)}~{backtest_pct(b)}"
+                                 for (lo, a, b), nxt in zip(bt["bands"], [*bt["bands"][1:], None]))
+                     + "（表格“回测卖爆”一列）。")
+        if all(bt.get(k) for k in ("age_mid", "big_top", "reviews_top")):
+            text += (f"同一档里还分得出的：一周涨五成里上架一年以上的 {backtest_pct(bt['age_mid'][0])}（其他 {backtest_pct(bt['age_mid'][1])}）；"
+                     f"一周翻倍里近 30 天 ≥600 件的 {backtest_pct(bt['big_top'][0])}（其他 {backtest_pct(bt['big_top'][1])}，"
+                     f"卖爆要翻倍，量大的难翻）、评论 500 条以上的 {backtest_pct(bt['reviews_top'][0])}"
+                     f"（其他 {backtest_pct(bt['reviews_top'][1])}）。评分、价格分组后高低不一，分不出。")
     return text + "蓝海、数据陈旧、只有月度数据的不列；商品照样在原来的板块里。"
 
 
@@ -1103,6 +1118,30 @@ def _sku_money(item: dict) -> tuple[float | None, float | None]:
     a28, price = item.get("recent_avg28"), item.get("price")
     units = a28 * 30 if a28 is not None else None
     return units, (units * price if units is not None and price else None)
+
+
+def sku_band_text(sku: dict, cfg: dict, item: dict | None = None) -> str:
+    """表格“回测卖爆”一列：回测里同一段加速倍数的后续卖爆（前段~后段，potential_sku.band）；老品换链接的写单算的比例。
+    给了商品时，它还符合提示里“同一档里还分得出的”条件的，括号里另写那一类的比例（一周涨五成里上架一年以上、
+    一周翻倍里近 30 天 ≥600 件、一周翻倍里评论 500 条以上）：同一段加速里量大的也低（×2~2.5 ≥600 件 12% 对 26%）。"""
+    bt = potential_sku.settings(cfg).get("backtest") or {}
+    top = sku.get("tier") == potential_sku.TOP
+    if potential_sku.RELIST in (sku.get("flags") or []) and bt.get("relist"):
+        text = f"单算 {backtest_pct(bt['relist'][0 if top else 1])}"
+    else:
+        hit = potential_sku.band(sku, cfg)
+        text = f"{backtest_pct(hit[0])}~{backtest_pct(hit[1])}" if hit else ""
+    if not text or item is None:
+        return text
+    base = potential_sku.base_avg(item)
+    also = []
+    if not top and bt.get("age_mid") and (item.get("age_days") or 0) >= 365:
+        also.append(f"上架一年以上的 {backtest_pct(bt['age_mid'][0])}")
+    if top and bt.get("big_top") and base and base * 30 >= 600:
+        also.append(f"近30天≥600件的 {backtest_pct(bt['big_top'][0])}")
+    if top and bt.get("reviews_top") and (item.get("ratings") or 0) >= 500:
+        also.append(f"评论500条以上的 {backtest_pct(bt['reviews_top'][0])}")
+    return text + (f"（{'；'.join(also)}）" if also else "")
 
 
 def sku_reason(item: dict) -> str:
@@ -1138,12 +1177,13 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
     a7, a14 = sku.get("a7"), sku.get("a14")
     reason, risks, basis = sku_reason(item), sku_risks(item), potential_sku.why(item)
     notes = potential_sku.risk_notes(sku, cfg or {})  # 风险格鼠标停留：近7天含大促日、月度增长尚未验证、老品换链接的回测数
+    band_text = sku_band_text(sku, cfg or {}, item)  # 同样加速的回测卖爆（前段~后段；分得出的条件另写）
     url = amazon(item["asin"])
     xl = [small_image(item["image"], 200) if item.get("image") else "", [item["title"], url], item.get("brand") or "",
           [item["asin"], url], node, seg, sku["kind"], item.get("price") or "",
           round(units) if units else "", round(rev) if rev else "",
           round(inc) if inc is not None else increment_text(item),
-          a7 if a7 is not None else "", sku.get("net", a7) if a7 is not None else "", a14 if a14 is not None else "",
+          a7 if a7 is not None else "", sku.get("net", a7) if a7 is not None else "", band_text, a14 if a14 is not None else "",
           item.get("age_days") if item.get("age_days") is not None else "",
           item.get("rating") if item.get("rating") is not None else "",
           item.get("ratings") if item.get("ratings") is not None else "",
@@ -1167,6 +1207,7 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
         ("n", "", esc(increment_text(item))),
         ("n", f' data-tip="{esc(basis)}"' if sku.get("pace") else "",  # 子类目整体在涨的：下面写扣掉以后的倍数（按它分档）
          "—" if a7 is None else f"×{a7:.2f}" + (f"<small>扣子类目后 ×{sku['net']:.2f}</small>" if sku.get("pace") else "")),
+        ("n", "", esc(band_text) or "—"),
         ("n", "", "—" if a14 is None else f"×{a14:.2f}"),
         ("n", "", age),
         ("n", "", rating),
@@ -1218,9 +1259,9 @@ def _sku_section(cur: dict, cfg: dict) -> str:
             f"{table}</section>")
 
 
-def live_rate(k: int, n: int, ref: str = "") -> str:
-    """实盘“卖爆个数/出结果个数”，括号里是比例和回测的范围：1/4（25%，回测 23%~33%）。"""
-    inner = "，".join(x for x in (f"{k / n:.0%}" if n else "", ref) if x)
+def live_rate(k: int, n: int, ref: str = "", few: int = 0) -> str:
+    """实盘“卖爆个数/出结果个数”，括号里是比例、样本少（0 < n < few）和回测的范围：1/4（25%，样本少，回测 23%~33%）。"""
+    inner = "，".join(x for x in (f"{k / n:.0%}" if n else "", "样本少" if 0 < n < few else "", ref) if x)
     return f"{k}/{n}" + (f"（{inner}）" if inner else "")
 
 
@@ -1238,17 +1279,21 @@ def sku_live_text(live: dict | None, cfg: dict) -> str:
         due = f"，最早 {live['next_due']} 出结果" if live.get("next_due") else ""
         return f"实盘跟踪：{how}。已记 {live['total']} 个，还没有到期的{due}。"
     ref = lambda key: (f"回测 {backtest_pct(bt[key][0])}~{backtest_pct(bt[key][1])}" if bt.get(key) else "")  # noqa: E731
+    few = int(potential_sku.settings(cfg)["live_min"])
     rn, rk = live.get("relist") or [0, 0]
-    relist = f"；老品换链接的单算，{live_rate(rk, rn)}" if rn else ""
-    text = (f"实盘（{how}）：已出结果 {n1 + n2} 个，卖爆的一周翻倍 {live_rate(k1, n1, ref('top_range'))}、"
-            f"一周涨五成 {live_rate(k2, n2, ref('mid_range'))}{relist}。还在等 {live.get('waiting', 0)} 个")
+    relist = f"；老品换链接的单算，{live_rate(rk, rn, few=few)}" if rn else ""
+    text = (f"实盘（{how}）：已出结果 {n1 + n2} 个，卖爆的一周翻倍 {live_rate(k1, n1, ref('top_range'), few)}、"
+            f"一周涨五成 {live_rate(k2, n2, ref('mid_range'), few)}{relist}。还在等 {live.get('waiting', 0)} 个")
     if live.get("next_due"):
         text += f"（下一批 {live['next_due']} 起）"
     if live.get("overdue"):
         text += f"，到期了还没拉到日数据 {live['overdue']} 个"
     if live.get("short"):
         text += f"，日数据不全没算 {live['short']} 个"
-    return text + "。"
+    text += "。"
+    if any(0 < n < few for n in (n1, n2, rn)):  # 按判定周整周重抽，单周 0%~80% 都有：少的时候比例只供参考
+        text += f"样本少 = 出结果不到 {few} 个：比例上下差十几个百分点都正常，只供参考。"
+    return text
 
 
 def _sku_live_rows(live: dict | None) -> str:
@@ -2037,7 +2082,10 @@ def _method(cfg: dict, repo_url: str = "") -> str:
              (potential_sku.PROMO, "潜力SKU 的风险标签：近 7 天（数据截止日往前 7 天）里有大促日。加速倍数是去掉大促日算的，"
                                    "剩下的是大促前后几天，回测里这类后续卖爆少一截"),
              ("实盘", "潜力SKU 每期记下判定时的近 30 天销量，判定后满 56 天用那时的日数据看它卖爆没有（标准同回测），"
-                    "在潜力SKU 小窗里写出了结果的个数和比例")]
+                    f"在潜力SKU 小窗里写出了结果的个数和比例；一档出结果不到 {int(ps['live_min'])} 个的写“样本少”，只供参考"),
+             ("回测卖爆", "潜力SKU 表格里的一列：回测里加速倍数（扣过子类目）在同一段的商品后续卖爆的比例，写前段~后段判的；"
+                        "老品换链接的写单算的比例；还符合上架一年以上（一周涨五成）、近 30 天 ≥600 件或评论 500 条以上（一周翻倍）的，"
+                        "括号里另写那一类的比例")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
                             "2026-11-07 以前的旧识别结果误标多，只用标题也写了的（开放格、谷仓门、镜子照用）"))
