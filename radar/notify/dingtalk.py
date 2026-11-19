@@ -158,8 +158,12 @@ def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> s
         rate = lambda key: (f"，回测 {sku_pct(bt[key][0])}~{sku_pct(bt[key][1])} 后续卖爆"  # noqa: E731
                             if bt.get(key) else "")
         top = sum(1 for i in sku if i["sku"]["tier"] == potential_sku.TOP)
+        # 实盘（potential_sku.track）：有出了结果的才写，“卖爆个数/出结果个数”
+        done = (ctx.get("sku_live") or {}).get("done") or {}
+        (n1, k1), (n2, k2) = done.get(potential_sku.TOP, [0, 0]), done.get(potential_sku.MID, [0, 0])
+        live = (f"；实盘已出结果 {n1 + n2} 个，卖爆的一周翻倍 {k1}/{n1}、一周涨五成 {k2}/{n2}" if n1 + n2 else "")
         lines.append(f"**🎯 潜力SKU**（增长商品里最近一周加速的，子类目整体在涨的已扣掉：一周翻倍 {top}{rate('top_range')}；"
-                     f"一周涨五成 {len(sku) - top}{rate('mid_range')}；表格在报告里可下载）")
+                     f"一周涨五成 {len(sku) - top}{rate('mid_range')}{live}；表格在报告里可下载）")
         for item in sku[:n_sku]:
             head = potential_sku.label_of(item["sku"])
             price = f"${item['price']:.0f}，" if item.get("price") else ""

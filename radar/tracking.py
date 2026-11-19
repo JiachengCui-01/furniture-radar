@@ -25,7 +25,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 
 from . import clock, log, monthly_lists, universe, vision
-from .detect import blueocean, showcase
+from .detect import blueocean, potential_sku, showcase
 from .detect.rules import current_rating, low_rating
 from .discovery import clean_text, hobby_node, keep_product
 from .series import Daily, build_daily
@@ -37,9 +37,10 @@ REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "ocean": "蓝海
              "similar": "爆款相似款", "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
 
 
-def watchlist(state: dict, runs: int) -> list[str]:
+def watchlist(state: dict, runs: int, today=None) -> list[str]:
     """往期上榜的：近 runs 期被标为爆火 / 潜力 / 异常的，再加那几期的潜力SKU（detect/potential_sku.py：
-    下期要复查它们还在不在清单里，“与上期对比”写出真实结果，没拉到日数据就只能算“没追踪”）。"""
+    下期要复查它们还在不在清单里，“与上期对比”写出真实结果，没拉到日数据就只能算“没追踪”），
+    再加实盘跟踪到期的潜力SKU（判定后满 56 天还没出结果的：拉到这期的日数据才算得出第 2 个月卖爆没有，potential_sku.due）。"""
     out: list[str] = []
     recent = (state.get("runs") or [])[-runs:][::-1]
     for run in recent:
@@ -50,6 +51,9 @@ def watchlist(state: dict, runs: int) -> list[str]:
         for asin in run.get("sku") or {}:
             if asin not in out:
                 out.append(asin)
+    for asin in potential_sku.due(state, today):
+        if asin not in out:
+            out.append(asin)
     return out
 
 
@@ -228,7 +232,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
     # 1. 必看：往期上榜的（最近一期的在前）+ 每个子类目月销量前几（轮流取，截断时每个子类目都有覆盖）+ 全部类目里销量最大的。
     #    两份名额分开：往期上榜的多了（全市场名单以后每期约 90 个）也不挤掉头部
     nodes = {n["path"] for n in (disc or {}).get("nodes") or []}
-    for asin in watchlist(state, pcfg["watch_runs"]):
+    for asin in watchlist(state, pcfg["watch_runs"], today):
         rec = state["asins"].get(asin) or {}
         if nodes and rec.get("node") not in nodes:
             continue  # 范围调整后，旧范围里的商品（例如沙发、床垫）不再追踪

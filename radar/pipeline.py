@@ -497,10 +497,12 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     state["calls"][month] = used_this_month + vendor.billable_calls
     # 不在本期池子里的丢掉大块日数据（下次进池会重新拉）；保留“上次查过”的记号、评论观测和材质缓存，
     # 轮查靠它排先后。很久没进池的整条删除。
-    # 月度名单补判的商品（monthly_run）只留缓存，不留日数据：以前进过池子的旧日数据留着，重新生成报告时会被当成追踪商品
+    # 月度名单补判的商品（monthly_run）只留缓存，不留日数据：以前进过池子的旧日数据留着，重新生成报告时会被当成追踪商品。
+    # 潜力SKU 实盘还在等结果的不整条删（到期要靠它的子类目、评分进必看，potential_sku.due）
+    waiting = potential_sku.waiting(state)
     for asin, rec in list(state["asins"].items()):
         last = max(int(rec.get("last_pool_run", 0)), int(rec.get("monthly_run", 0)))
-        if last < run_seq - FORGET_RUNS:
+        if last < run_seq - FORGET_RUNS and asin not in waiting:
             del state["asins"][asin]
         elif int(rec.get("last_pool_run", 0)) < run_seq:
             rec.pop("series", None)
@@ -702,6 +704,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]
+    # 潜力SKU 实盘跟踪（detect/potential_sku.track）：到期的用这期拉到的日数据算第 2 个月卖爆没有，再记下本期判定的
+    sku_live = potential_sku.track(state, items, report_id, cfg, clock.parse_day(max(as_of_values)) if as_of_values else None)
     key_text = crypto.report_key_text(master, report_id)
     log.mask(key_text)
     ctx = {
@@ -714,6 +718,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "period_text": _period_text((disc or {}).get("period")),
         "as_of": max(as_of_values) if as_of_values else "—",
         "items": items,
+        "sku_live": sku_live,
         "focus": analyze.focus_items(items),
         "sections": sec,
         "curated": curated_lists(items, sec, state, cfg, common),

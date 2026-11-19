@@ -1055,7 +1055,8 @@ SKU_COLS = (
     ("评论数", 8, "int", ""),
     ("为什么值得看", 40, "wrap", "先说外观元素和功能（同类少见的、同类爆品也有的），价格放最后；大模型按本期算好的数据写（数字、特征和顺序都核对过），"
                               "没有的按同样顺序用规则拼"),
-    ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）"),
+    ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）；近 7 天里有大促日的另标“近7天含大促日”"
+                         "（加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里这类后续卖爆少一截）"),
     ("所在板块", 10, "text", "商品在报告里原来的板块"),
     ("判定依据", 34, "muted", "类型 + 最近一周加速多少（子类目整体在涨的写明扣掉以后是多少）"),
 )
@@ -1110,8 +1111,9 @@ def sku_reason(item: dict) -> str:
 
 
 def sku_risks(item: dict) -> list[str]:
-    """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）。"""
-    out: list[str] = []
+    """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）；
+    近 7 天里有大促日的另加“近7天含大促日”（potential_sku.PROMO，只在潜力SKU 里有），放最前。"""
+    out: list[str] = [potential_sku.PROMO] if (item.get("sku") or {}).get("promo") else []
     for tag in item.get("tags") or []:
         head = tag_head(tag)
         if _tag_class(tag) == "warn" and head not in out:
@@ -1119,7 +1121,7 @@ def sku_risks(item: dict) -> list[str]:
     return out
 
 
-def _sku_row(item: dict, n: int) -> str:
+def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
     sku = item["sku"]
     seg = sku["tier"]
     node = item.get("node_cn") or item.get("node_name") or ""
@@ -1161,7 +1163,8 @@ def _sku_row(item: dict, n: int) -> str:
         ("n", "", age),
         ("n", "", rating),
         ("why", "", esc(reason)),
-        ("rk", "", esc("、".join(risks))),
+        ("rk", f' data-tip="{esc(potential_sku.promo_note(sku, cfg or {}))}"' if sku.get("promo") else "",
+         esc("、".join(risks))),
     ]
     tds = []
     for i, (klass, extra, inner) in enumerate(cells):
@@ -1171,7 +1174,7 @@ def _sku_row(item: dict, n: int) -> str:
     return f'<tr class="sr"{attrs}>{"".join(tds)}</tr>'
 
 
-def _sku_table(rows: list[dict], similar: dict | None = None, expand: bool = True) -> str:
+def _sku_table(rows: list[dict], similar: dict | None = None, expand: bool = True, cfg: dict | None = None) -> str:
     def th(i: int, h: str) -> str:
         names = " ".join(x for x in ("opt" if i in SKU_OPT else "", "n" if i in SKU_NUM else "") if x)
         text = esc(h).replace("÷", "÷<br>")
@@ -1179,7 +1182,7 @@ def _sku_table(rows: list[dict], similar: dict | None = None, expand: bool = Tru
     head = "".join(th(i, h) for i, h in enumerate(SKU_HEAD))
     body = []
     for n, item in enumerate(rows):
-        body.append(_sku_row(item, n))
+        body.append(_sku_row(item, n, cfg))
         if expand:
             body.append(f'<tr class="sc" hidden><td colspan="{len(SKU_HEAD)}">'
                         f'{card(item, growth_kind(item) or "rising", potential_sku.label_of(item["sku"]), similar=(similar or {}).get(item["asin"], []))}'
@@ -1198,7 +1201,7 @@ def _sku_section(cur: dict, cfg: dict) -> str:
     rows = cur.get("shown") or []
     shown = showcase.gallery(rows, int(c.get("body_rows", 10)), int(c.get("per_node", 2)))
     top, mid = _sku_shown_counts(rows)
-    table = (f'<div class="tbl">{_sku_table(shown, expand=False)}</div>' if shown
+    table = (f'<div class="tbl">{_sku_table(shown, expand=False, cfg=cfg)}</div>' if shown
              else '<p class="empty">本期没有潜力SKU。</p>')
     return (f'<section id="sku" style="--c:var(--sku)"><h2><span class="dot"></span>潜力SKU'
             f'<a class="h-more" href="#" data-pop="sku">全部 {len(rows)} 个 · 表格可下载 ›</a></h2>'
@@ -1208,16 +1211,65 @@ def _sku_section(cur: dict, cfg: dict) -> str:
             f"{table}</section>")
 
 
-def _sku_pop(cur: dict, hint: str, total: int, report_id: str) -> str:
+def live_rate(k: int, n: int, ref: str = "") -> str:
+    """实盘“卖爆个数/出结果个数”，括号里是比例和回测的范围：1/4（25%，回测 26%~38%）。"""
+    inner = "，".join(x for x in (f"{k / n:.0%}" if n else "", ref) if x)
+    return f"{k}/{n}" + (f"（{inner}）" if inner else "")
+
+
+def sku_live_text(live: dict | None, cfg: dict) -> str:
+    """潜力SKU 实盘命中率（detect/potential_sku.track）：出了结果的按档写“卖爆个数/出结果个数”，和回测的范围放在一起；
+    还没有到期的写什么时候出第一批。没开始记（旧数据重新生成之前）的返回空。"""
+    if not live or not live.get("total"):
+        return ""
+    bt = potential_sku.settings(cfg).get("backtest") or {}
+    done = live.get("done") or {}
+    (n1, k1), (n2, k2) = done.get(potential_sku.TOP, [0, 0]), done.get(potential_sku.MID, [0, 0])
+    how = (f"{live.get('since')} 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记），"
+           "判定后满 56 天用那时拉到的日数据看第 2 个月（判定后第 27~56 天）卖爆没有，标准同回测")
+    if not n1 + n2:
+        due = f"，最早 {live['next_due']} 出结果" if live.get("next_due") else ""
+        return f"实盘跟踪：{how}。已记 {live['total']} 个，还没有到期的{due}。"
+    ref = lambda key: (f"回测 {backtest_pct(bt[key][0])}~{backtest_pct(bt[key][1])}" if bt.get(key) else "")  # noqa: E731
+    text = (f"实盘（{how}）：已出结果 {n1 + n2} 个，卖爆的一周翻倍 {live_rate(k1, n1, ref('top_range'))}、"
+            f"一周涨五成 {live_rate(k2, n2, ref('mid_range'))}。还在等 {live.get('waiting', 0)} 个")
+    if live.get("next_due"):
+        text += f"（下一批 {live['next_due']} 起）"
+    if live.get("overdue"):
+        text += f"，到期了还没拉到日数据 {live['overdue']} 个"
+    if live.get("short"):
+        text += f"，日数据不全没算 {live['short']} 个"
+    return text + "。"
+
+
+def _sku_live_rows(live: dict | None) -> str:
+    """出了结果的明细（判定日新的在前）：判定日、商品、子类目、档、判定时近 30 天、第 2 个月、卖爆没有。"""
+    rows = (live or {}).get("rows") or []
+    if not rows:
+        return ""
+    body = "".join(
+        f'<tr><td>{esc(p["day"])}</td><td><a href="{amazon(p["asin"])}" {LINK}>{esc((p.get("title") or p["asin"])[:48])}</a>'
+        f'<small> {esc(p["asin"])}</small></td><td>{esc(p.get("node") or "")}</td><td>{esc(p["tier"])}</td>'
+        f'<td class=n>{fmt_int(p["u"])} 件</td><td class=n>{fmt_int(p["f"])} 件</td>'
+        f'<td>{"卖爆" if p.get("boom") else "没有"}</td></tr>' for p in rows)
+    head = ("<tr><th>判定日</th><th>商品</th><th>子类目</th><th>档</th><th class=n>判定时近30天</th>"
+            "<th class=n>第2个月</th><th>结果</th></tr>")
+    return (f'<details class="rules"><summary>出了结果的 {len(rows)} 个</summary>'
+            f'<div class=tbl><table><thead>{head}</thead><tbody>{body}</tbody></table></div></details>')
+
+
+def _sku_pop(cur: dict, hint: str, total: int, report_id: str, live: dict | None = None, cfg: dict | None = None) -> str:
     rows = cur.get("shown") or []
     top, mid = _sku_shown_counts(rows)
     summary = f'<div class="nich"><span><b>一周翻倍</b> {top} 个</span><span><b>一周涨五成</b> {mid} 个</span></div>'
     table = (f'<div class="tbl" data-sku data-cols="{esc(json.dumps(SKU_COLS, ensure_ascii=False))}" '
              f'data-file="潜力SKU-{esc(report_id)}" data-title="潜力SKU · {esc(report_id)}">'
-             f'{_sku_table(rows, cur.get("similar"))}</div>'
+             f'{_sku_table(rows, cur.get("similar"), cfg=cfg)}</div>'
              if rows else '<div class="empty">本期没有潜力SKU。</div>')
+    live_text = sku_live_text(live, cfg or {})
+    live_html = f'<p class="hint">{esc(live_text)}</p>{_sku_live_rows(live)}' if live_text else ""
     return _pop_src("sku", "潜力SKU", "sku",
-                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p>{summary}{table}')
+                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p>{live_html}{summary}{table}')
 
 
 def _kpi(key: str, label: str, desc: str, rows: list[dict], total: int, folded: str = "简单款、相近款") -> str:
@@ -1969,7 +2021,11 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                         f"（本期追踪的同子类目商品、近 30 天 ≥{float(ps['node_min_units']):g} 件的，各自近 7 天 ÷ 近 28 天的中位数；"
                         f"不到 {int(ps['node_min'])} 个的子类目不扣，整体没在涨的也不扣）"),
              ("一周翻倍", f"增长商品里加速倍数 ≥ {float(ps['top_a7']):g} 的"),
-             ("一周涨五成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的")]
+             ("一周涨五成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的"),
+             (potential_sku.PROMO, "潜力SKU 的风险标签：近 7 天（数据截止日往前 7 天）里有大促日。加速倍数是去掉大促日算的，"
+                                   "剩下的是大促前后几天，回测里这类后续卖爆少一截"),
+             ("实盘", "潜力SKU 每期记下判定时的近 30 天销量，判定后满 56 天用那时的日数据看它卖爆没有（标准同回测），"
+                    "在潜力SKU 小窗里写出了结果的个数和比例")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
                             "2026-11-07 以前的旧识别结果误标多，只用标题也写了的（开放格、谷仓门、镜子照用）"))
@@ -2130,7 +2186,7 @@ def render(ctx: dict) -> str:
         _ocean_pop(cur["ocean"], hints["ocean"], counts.get("ocean", 0), ctx["coverage"]),
         _section_pop("fake", "异常信号", hints["fake"], {"shown": sec["fake"]}, counts["fake"]),
         _growth_pop(cur["growth"], hints["growth"], len(ctx.get("focus") or [])),
-        _sku_pop(cur["sku"], hints["sku"], counts.get("sku", 0), ctx.get("report_id") or ""),
+        _sku_pop(cur["sku"], hints["sku"], counts.get("sku", 0), ctx.get("report_id") or "", ctx.get("sku_live"), cfg),
         _pop_src("all", f"全部追踪商品（{counts['total']} 个" + (f"，简单款 {n_plain} 个不列" if n_plain
                                                                else "") + "）", "muted",
                  f'<p class="hint">{esc(hints["all"])}</p>{_all_table(tracked)}'),

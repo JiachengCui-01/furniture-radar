@@ -566,8 +566,9 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
             kept.append(item)
     ocean["hobby_dropped"] = len(items) - len(kept) - len(ocean_items)
     items, ocean_extra = kept, ocean_items + ocean_extra
-    # 潜力SKU（detect/potential_sku.py）：增长商品里最近一周加速的，另成一份清单，商品照样在原板块里
-    potential_sku.mark(items, cfg)
+    # 潜力SKU（detect/potential_sku.py）：增长商品里最近一周加速的，另成一份清单，商品照样在原板块里；
+    # 近 7 天里有大促日的打风险标签（加速倍数是去掉大促日算的，回测里不准）
+    potential_sku.mark(items, cfg, ev["days"])
     check = None
     if usable_revision(revision, th):  # 数据说明里写：当期拉到的数偏不偏高、校正了没有
         need = 1 + (1 / float(revision["median"]) - 1) * float(th.get("revision_inflation_share", 0.5))
