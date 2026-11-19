@@ -29,8 +29,9 @@
      ×2.5 以上 41 次 46.3%（32%~63%）；老品换链接的写单算的比例。分段每段 ≥40 次，单调。
      这一行还符合 ⑤ 里分得出的条件时，括号里另写那一类的比例（同一段加速里量大的也低：×2~2.5 ≥600 件 12% 对 26%）。
   ⑤ 提示里原来写“评分、评论数、上架天数、价格都分不出谁更容易爆”，说过头了：同一档里分得出的是
-     一周涨五成里上架一年以上的 9.2%（423 次，其他 14.7%）、一周翻倍里近 30 天 ≥600 件的 12.5%（40 次，其他 31.1%，
-     卖爆要翻倍，量大的难翻）、一周翻倍里评论 500 条以上的 41.3%（46 次，其他 24.0%），前后两段都对得上；评分、价格分组后高低不一，分不出。
+     一周涨五成里上架一年以上的 9.2%（423 次，其他 14.7%）、一周翻倍里近 30 天 ≥600 件的 12.8%（39 次，其他 30.9%，
+     卖爆要翻倍，量大的难翻；近 30 天同表格那一列 = 近 28 天日均 × 30，断货的日子按 0）、一周翻倍里评论 500 条以上的 41.3%
+     （46 次，其他 24.0%），前后两段都对得上；评分、价格分组后高低不一，分不出。
   ⑥ 实盘每档出结果不到 live_min 个时比例旁写“样本少”：按判定周整周重抽，单周 0%~80% 都有，30 个时 95% 区间还有 ±16 个百分点。
 
 为什么扣子类目整体（2026-11-18 复核回测发现）：整个子类目一起涨的那几周（年底节日这类），单个商品的加速不是它自己的，
@@ -70,10 +71,18 @@
 
 实盘命中率（track / LIVE_KEY，2026-11-18 加）：回测有幸存者偏差，只能靠实盘纠正。每期把判定的潜力SKU（含简单款，同回测）记进
 state["sku_live"]：判定时的数据截止日、档、类型、加速倍数、近 30 天销量（近 28 天在售日均 × 30，去掉大促日、校正过修订的）；
-同一个商品还在等结果时再入选不另记（回测按商品去重后比例几乎不变）。判定后第 56 天的日数据有了（那期拉到了它的日数据）就算结果，
-口径同回测：第 2 个月 = 判定后第 27~56 天这 30 天的销量（去掉那期测出的大促日，有 ≥20 天的数才算，按 30 天折算），
-≥ 判定时近 30 天的 boom_ratio 倍且 ≥ boom_units 件算卖爆。到期还没出结果的下期必看（tracking.watchlist），拉到日数据就能算。
-重新生成本期时先去掉本期记的再按现在的规则重记。报告潜力SKU 小窗、钉钉里写已出结果的个数和比例，和回测的范围放在一起。"""
+同一个商品还在等结果时再入选不另记（回测按商品去重后比例几乎不变）。到期（第 2 个月结束再过 OUT_SETTLE 天，最近几天的数改完了）
+以后拉到它的日数据就算结果，口径同回测：第 2 个月 = 判定后第 27~56 天这 30 天的销量（去掉那期测出的大促日，有 ≥20 天的数才算，
+按 30 天折算），≥ 判定时近 30 天的 boom_ratio 倍且 ≥ boom_units 件算卖爆。到期还没出结果的下期必看（tracking.watchlist）；
+到期后 OUT_WAIT 天还没有第 56 天日数据的（断货、下架后卖家精灵的日数据停在最后在售那天，或一直没拉到）不再等，
+记成停更、不算进比例（回测样本的日数据都到了第 56 天以后），报告里写个数。
+重新生成本期时先去掉本期记的再按现在的规则重记。报告潜力SKU 小窗、钉钉里写已出结果的个数和比例，和回测的范围放在一起。
+
+2026-11-19 边界复核（用户：不要为了改而改，多一些边界代码）改的三处：按显示的两位小数分档（classify）、
+实盘等修订完再算、停更的不再一直等（OUT_SETTLE / OUT_WAIT）；“近30天≥600件”按表格那一列的近 30 天算（report.render.sku_band_text）。
+查过、不用改的：同一父体的几个子体都在追踪里的 0 个（池子按父体去重，实盘也没有同父体两条）；
+在售日均算不出、近 28 天却有量的增长商品 0 个；日数据停更超过 stale_days 的本来就不判增长（不会把正在断货的列进来）；
+近 7 天去掉大促日后只剩 ≤3 天的只有 Prime Day 那一周（回测一周翻倍 11 次 9.1%、一周涨五成 55 次 16.4%），已有“近7天含大促日”标签。"""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -90,6 +99,12 @@ UNVER, PRICE, RELIST = "月度增长尚未验证", "降价驱动", "老品换链
 WEAK_MID = (UNVER, PRICE)  # 一周涨五成不收：回测里和不列的一样（文件说明 ③）
 LIVE_KEY = "sku_live"  # state 里实盘跟踪的记录
 OUT_FROM, OUT_TO, OUT_MIN_DAYS = 27, 56, 20  # 第 2 个月 = 判定后第 27~56 天（30 天），有 ≥20 天的数才算（同回测）
+# 第 2 个月结束后再等这么多天、用那以后拉的日数据算：最近几天的数卖家精灵还会改（各期测到改最近 5~9 天，×0.82~×1.08，
+# 量修订只看 14 天），回测用的是改完的。以前满 56 天就算，第 2 个月按各期测到的修订平均多算约 1.9%（10-23 那次 6.6%）
+OUT_SETTLE = 14
+# 到期后最多再等这么多天：断货、下架后卖家精灵的日数据停在最后在售那天（本期拉到的 629 个里 29 个停了 3 天以上），
+# 等不到第 56 天；以前一直等，每期都进必看、多花一次调用，状态里也不删，“到期了还没拉到”越积越多
+OUT_WAIT = 28
 MAX_PICKS = 3000  # 实盘记录最多留这么多条（每期新记约 10~20 条，够两三年）
 
 
@@ -157,7 +172,9 @@ def classify(item: dict, s: dict, pace: dict[str, float] | None = None, events=(
         return None
     tide = (pace or {}).get(item.get("node") or "")
     tide = tide if tide and tide > 1 + 1e-9 else None
-    net = a7 / tide if tide else a7
+    # 按显示的两位小数分档、对段。以前按没取整的分：×1.996 显示 ×2.00 却在一周涨五成、对的是 ×2~2.5 那段的回测数，
+    # ×1.4952 显示 ×1.50 却不收（回测两档里 0.58% 跨线）
+    net = round(a7 / tide if tide else a7, 2)
     if net < float(s["min_a7"]) - 1e-9:
         return None
     tier = TOP if net >= float(s["top_a7"]) - 1e-9 else MID
@@ -168,7 +185,7 @@ def classify(item: dict, s: dict, pace: dict[str, float] | None = None, events=(
     if item.get("relist"):
         flags.append(RELIST)
     return {"tier": tier, "kind": KIND_CN[growth],
-            "a7": round(a7, 2), "net": round(net, 2), "pace": tide, "a14": None if a14 is None else round(a14, 2),
+            "a7": round(a7, 2), "net": net, "pace": tide, "a14": None if a14 is None else round(a14, 2),
             "promo": promo_days(item.get("as_of"), events) or None, "flags": flags}
 
 
@@ -261,16 +278,29 @@ def risk_notes(sku: dict, cfg: dict) -> list[str]:
 # ---------------- 实盘命中率：判定后第 2 个月到底卖爆没有（说明见文件开头） ----------------
 
 def _due(pick: dict) -> date:
-    return clock.parse_day(pick["day"]) + timedelta(days=OUT_TO)
+    """出结果的日子：第 2 个月结束（判定后第 56 天）再过 OUT_SETTLE 天，最近几天的数改完了。"""
+    return clock.parse_day(pick["day"]) + timedelta(days=OUT_TO + OUT_SETTLE)
 
 
-def outcome(series: dict | None, day: date, units: float, s: dict, events=()) -> dict | None:
-    """判定日 day 之后第 2 个月的结果：{"f": 第 2 个月的 30 天销量, "boom": 卖爆没有}；数据不到第 56 天的返回 None（还要等），
+def _settled(rec: dict, pick: dict) -> bool:
+    """这个商品存着的日数据是不是到期（_due）以后拉的：那时第 2 个月的数已经改完。
+    按拉取时间（tracking.fetch_one 记的 fetched_at）看，不看日数据最后一天：断货后日数据停在最后在售那天，
+    第 56 天以后才停的（回测里算的）也要算得出来。没记拉取时间的（旧状态）看日数据最后一天。"""
+    fetched = clock.parse_day(rec.get("fetched_at"))
+    if fetched is None:
+        d = Daily.from_record(rec.get("series"))
+        fetched = d.as_of() if d else None
+    return bool(fetched and fetched >= _due(pick))
+
+
+def outcome(series: dict | None, day: date, units: float, s: dict, events=(), settled: bool = True) -> dict | None:
+    """判定日 day 之后第 2 个月的结果：{"f": 第 2 个月的 30 天销量, "boom": 卖爆没有}；数据不到第 56 天的、
+    日数据不是到期以后拉的（settled 为 False，最近几天的数还会改）返回 None（还要等），
     到了但有数的不到 20 天的 f 是 None（数据不全，不算进比例）。units = 判定时的近 30 天销量（在售日均 × 30）。
     events = 大促日（不算进第 2 个月）。口径同回测。"""
     d = Daily.from_record(series)
     as_of = d.as_of() if d else None
-    if d is None or as_of is None or as_of < day + timedelta(days=OUT_TO):
+    if not settled or d is None or as_of is None or as_of < day + timedelta(days=OUT_TO):
         return None
     idx = d.index_of(day)
     if idx < 0:
@@ -296,8 +326,11 @@ def track(state: dict, items: list[dict], report_id: str, cfg: dict, data_date: 
     for p in picks:
         if "f" in p:
             continue
-        got = outcome(((state.get("asins") or {}).get(p["asin"]) or {}).get("series"), clock.parse_day(p["day"]), p["u"], s,
-                      events)
+        rec = (state.get("asins") or {}).get(p["asin"]) or {}
+        got = outcome(rec.get("series"), clock.parse_day(p["day"]), p["u"], s, events, settled=_settled(rec, p))
+        if got is None and data_date and data_date >= _due(p) + timedelta(days=OUT_WAIT):
+            # 到期 OUT_WAIT 天还没有第 56 天的日数据（停更或一直没拉到）：不再等，不算进比例（回测样本的日数据都到了第 56 天以后）
+            got = {"f": None, "boom": False, "stop": True}
         if got:
             p.update(got, done=report_id)
     waiting = {p["asin"] for p in picks if "f" not in p}
@@ -316,8 +349,8 @@ def track(state: dict, items: list[dict], report_id: str, cfg: dict, data_date: 
 
 def summary(live: dict | None, data_date: date | None) -> dict:
     """报告、钉钉里写的：done {档: [出结果的个数, 卖爆的个数]}（不含老品换链接，同回测）、relist（老品换链接单算的 [个数, 卖爆]）、
-    还在等的、到期了还没拉到日数据的（overdue）、数据不全没算的（short）、下一批出结果的日期（next_due）、
-    出了结果的明细（rows，判定日新的在前，含老品换链接）。"""
+    还在等的、到期了还没拉到第 56 天日数据的（overdue，最多再等 OUT_WAIT 天）、到期 OUT_WAIT 天还没有、不再等的（stop）、
+    第 2 个月有数的不到 20 天没算的（short）、下一批出结果的日期（next_due）、出了结果的明细（rows，判定日新的在前，含老品换链接）。"""
     picks = (live or {}).get("picks") or []
     every = [p for p in picks if p.get("f") is not None]
     done = [p for p in every if RELIST not in (p.get("flags") or [])]
@@ -329,7 +362,9 @@ def summary(live: dict | None, data_date: date | None) -> dict:
             "done": {t: [sum(1 for p in done if p["tier"] == t), sum(1 for p in done if p["tier"] == t and p["boom"])]
                      for t in (TOP, MID)},
             "relist": [len(relist), sum(1 for p in relist if p["boom"])],
-            "waiting": len(waiting), "overdue": len(overdue), "short": sum(1 for p in picks if "f" in p and p["f"] is None),
+            "waiting": len(waiting), "overdue": len(overdue),
+            "short": sum(1 for p in picks if "f" in p and p["f"] is None and not p.get("stop")),
+            "stop": sum(1 for p in picks if p.get("stop")),
             "next_due": min(later).isoformat() if later else None,
             "rows": sorted(every, key=lambda p: (p["day"], p["asin"]), reverse=True)}
 

@@ -1107,7 +1107,8 @@ def sku_hint(cfg: dict) -> str:
                      + "（表格“回测卖爆”一列）。")
         if all(bt.get(k) for k in ("age_mid", "big_top", "reviews_top")):
             text += (f"同一档里还分得出的：一周涨五成里上架一年以上的 {backtest_pct(bt['age_mid'][0])}（其他 {backtest_pct(bt['age_mid'][1])}）；"
-                     f"一周翻倍里近 30 天 ≥600 件的 {backtest_pct(bt['big_top'][0])}（其他 {backtest_pct(bt['big_top'][1])}，"
+                     f"一周翻倍里近 30 天销量（表格那一列）≥600 件的 {backtest_pct(bt['big_top'][0])}"
+                     f"（其他 {backtest_pct(bt['big_top'][1])}，"
                      f"卖爆要翻倍，量大的难翻）、评论 500 条以上的 {backtest_pct(bt['reviews_top'][0])}"
                      f"（其他 {backtest_pct(bt['reviews_top'][1])}）。评分、价格分组后高低不一，分不出。")
     return text + "蓝海、数据陈旧、只有月度数据的不列；商品照样在原来的板块里。"
@@ -1133,11 +1134,13 @@ def sku_band_text(sku: dict, cfg: dict, item: dict | None = None) -> str:
         text = f"{backtest_pct(hit[0])}~{backtest_pct(hit[1])}" if hit else ""
     if not text or item is None:
         return text
-    base = potential_sku.base_avg(item)
+    # 同表格“近30天”那一列（近 28 天日均 × 30，断货的日子按 0，取整后显示）：括号里的条件读者对得上。
+    # 以前按在售日均 × 30，断货过的表格写 560 件、括号却写“近30天≥600件”（回测一周翻倍 217 次里 1 次）
+    units = _sku_money(item)[0]
     also = []
     if not top and bt.get("age_mid") and (item.get("age_days") or 0) >= 365:
         also.append(f"上架一年以上的 {backtest_pct(bt['age_mid'][0])}")
-    if top and bt.get("big_top") and base and base * 30 >= 600:
+    if top and bt.get("big_top") and units is not None and round(units) >= 600:
         also.append(f"近30天≥600件的 {backtest_pct(bt['big_top'][0])}")
     if top and bt.get("reviews_top") and (item.get("ratings") or 0) >= 500:
         also.append(f"评论500条以上的 {backtest_pct(bt['reviews_top'][0])}")
@@ -1274,8 +1277,10 @@ def sku_live_text(live: dict | None, cfg: dict) -> str:
     done = live.get("done") or {}
     (n1, k1), (n2, k2) = done.get(potential_sku.TOP, [0, 0]), done.get(potential_sku.MID, [0, 0])
     how = (f"{live.get('since')} 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记），"
-           "判定后满 56 天用那时拉到的日数据看第 2 个月（判定后第 27~56 天）卖爆没有，标准同回测")
-    if not n1 + n2 + (live.get("relist") or [0])[0]:
+           f"第 2 个月（判定后第 27~56 天）结束再过 {potential_sku.OUT_SETTLE} 天（最近几天的数卖家精灵还会改）、"
+           "用那以后拉到的日数据看卖爆没有，标准同回测")
+    # 一个都还没到期才写“还没有到期的”：以前只看出没出结果，到期的全是数据不全、还没拉到时也这么写
+    if not n1 + n2 + (live.get("relist") or [0])[0] + sum(live.get(k) or 0 for k in ("overdue", "short", "stop")):
         due = f"，最早 {live['next_due']} 出结果" if live.get("next_due") else ""
         return f"实盘跟踪：{how}。已记 {live['total']} 个，还没有到期的{due}。"
     ref = lambda key: (f"回测 {backtest_pct(bt[key][0])}~{backtest_pct(bt[key][1])}" if bt.get(key) else "")  # noqa: E731
@@ -1287,9 +1292,12 @@ def sku_live_text(live: dict | None, cfg: dict) -> str:
     if live.get("next_due"):
         text += f"（下一批 {live['next_due']} 起）"
     if live.get("overdue"):
-        text += f"，到期了还没拉到日数据 {live['overdue']} 个"
+        text += f"，到期了还没拉到第 56 天日数据的 {live['overdue']} 个（最多再等 {potential_sku.OUT_WAIT} 天）"
+    if live.get("stop"):
+        text += (f"，到期 {potential_sku.OUT_WAIT} 天还没有、不再等的 {live['stop']} 个"
+                 "（断货、下架后卖家精灵的日数据停在最后在售那天，或一直没拉到；不算进比例）")
     if live.get("short"):
-        text += f"，日数据不全没算 {live['short']} 个"
+        text += f"，第 2 个月有数的不到 {potential_sku.OUT_MIN_DAYS} 天没算的 {live['short']} 个"
     text += "。"
     if any(0 < n < few for n in (n1, n2, rn)):  # 按判定周整周重抽，单周 0%~80% 都有：少的时候比例只供参考
         text += f"样本少 = 出结果不到 {few} 个：比例上下差十几个百分点都正常，只供参考。"
@@ -2081,10 +2089,11 @@ def _method(cfg: dict, repo_url: str = "") -> str:
                          "不含带“月度增长尚未验证”“降价驱动”标签的（回测里和不列的一样）"),
              (potential_sku.PROMO, "潜力SKU 的风险标签：近 7 天（数据截止日往前 7 天）里有大促日。加速倍数是去掉大促日算的，"
                                    "剩下的是大促前后几天，回测里这类后续卖爆少一截"),
-             ("实盘", "潜力SKU 每期记下判定时的近 30 天销量，判定后满 56 天用那时的日数据看它卖爆没有（标准同回测），"
+             ("实盘", "潜力SKU 每期记下判定时的近 30 天销量，第 2 个月结束再过 "
+                    f"{potential_sku.OUT_SETTLE} 天（最近几天的数改完）用那以后拉到的日数据看它卖爆没有（标准同回测），"
                     f"在潜力SKU 小窗里写出了结果的个数和比例；一档出结果不到 {int(ps['live_min'])} 个的写“样本少”，只供参考"),
              ("回测卖爆", "潜力SKU 表格里的一列：回测里加速倍数（扣过子类目）在同一段的商品后续卖爆的比例，写前段~后段判的；"
-                        "老品换链接的写单算的比例；还符合上架一年以上（一周涨五成）、近 30 天 ≥600 件或评论 500 条以上（一周翻倍）的，"
+                        "老品换链接的写单算的比例；还符合上架一年以上（一周涨五成）、近 30 天（表格那一列）≥600 件或评论 500 条以上（一周翻倍）的，"
                         "括号里另写那一类的比例")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"

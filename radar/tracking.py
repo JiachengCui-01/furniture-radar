@@ -40,7 +40,7 @@ REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "ocean": "蓝海
 def watchlist(state: dict, runs: int, today=None) -> list[str]:
     """往期上榜的：近 runs 期被标为爆火 / 潜力 / 异常的，再加那几期的潜力SKU（detect/potential_sku.py：
     下期要复查它们还在不在清单里，“与上期对比”写出真实结果，没拉到日数据就只能算“没追踪”），
-    再加实盘跟踪到期的潜力SKU（判定后满 56 天还没出结果的：拉到这期的日数据才算得出第 2 个月卖爆没有，potential_sku.due）。"""
+    再加实盘跟踪到期的潜力SKU（第 2 个月结束再过 14 天还没出结果的：拉到这期的日数据才算得出第 2 个月卖爆没有，potential_sku.due）。"""
     out: list[str] = []
     recent = (state.get("runs") or [])[-runs:][::-1]
     for run in recent:

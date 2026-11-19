@@ -219,9 +219,9 @@ def _series(start, values):
 
 
 def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
-    """实盘命中率：每期记下判定的潜力SKU（判定时近 30 天销量 = 近 28 天日均 × 30），判定后满 56 天用那时拉到的日数据看第 2 个月
-    （判定后第 27~56 天这 30 天）卖爆没有，口径同回测；同一个商品还在等结果时不另记，重新生成本期时按现在的规则重记；
-    到期了还没出结果的下期必看（tracking.watchlist）。报告小窗、钉钉写“卖爆个数/出结果个数”。"""
+    """实盘命中率：每期记下判定的潜力SKU（判定时近 30 天销量 = 近 28 天日均 × 30），第 2 个月（判定后第 27~56 天这 30 天）
+    结束再过 14 天（最近几天的数改完）用那以后拉到的日数据看卖爆没有，口径同回测；同一个商品还在等结果时不另记，
+    重新生成本期时按现在的规则重记；到期了还没出结果的下期必看（tracking.watchlist）。报告小窗、钉钉写“卖爆个数/出结果个数”。"""
     from datetime import date
     items = [_item("T1", last7_avg=20.0, as_of="2026-11-15"), _item("M1", as_of="2026-11-15"),
              _item("M2", as_of="2026-11-15"), _item("X", last7_avg=12.0, as_of="2026-11-15")]
@@ -233,10 +233,11 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     assert picks[0] == {"asin": "T1", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.0,
                         "u": 300.0, "title": "Wood Nightstand T1", "node": "床头柜", "flags": []}
     assert (live["total"], live["waiting"], live["next_due"], live["done"]) == \
-        (3, 3, "2027-01-10", {"一周翻倍": [0, 0], "一周涨五成": [0, 0]})
+        (3, 3, "2027-01-24", {"一周翻倍": [0, 0], "一周涨五成": [0, 0]})
     text = render.sku_live_text(live, cfg)
-    assert text.startswith("实盘跟踪：2026-11-16 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记）")
-    assert text.endswith("已记 3 个，还没有到期的，最早 2027-01-10 出结果。")
+    assert text.startswith("实盘跟踪：2026-11-16 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记），"
+                           "第 2 个月（判定后第 27~56 天）结束再过 14 天（最近几天的数卖家精灵还会改）、用那以后拉到的日数据看卖爆没有")
+    assert text.endswith("已记 3 个，还没有到期的，最早 2027-01-24 出结果。")
     # 重新生成本期：本期记的先去掉再按现在的规则重记（M2 不再算）
     del items[2]["sku"]
     potential_sku.track(state, items, "2026-11-16", cfg, date(2026, 11, 15))
@@ -244,32 +245,35 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     # 下一期 M1 还在清单：还在等结果，不另记（按第一次入选那天算）
     potential_sku.track(state, [items[1]], "2026-11-19", cfg, date(2026, 11, 18))
     assert len(state["sku_live"]["picks"]) == 2
-    # 到期（判定后满 56 天）还没出结果的：下期必看
-    assert potential_sku.due(state, date(2027, 1, 9)) == [] and potential_sku.due(state, date(2027, 1, 10)) == ["T1", "M1"]
-    assert tracking.watchlist(state, 1, date(2027, 1, 12)) == ["T1", "M1"]
+    # 到期（第 2 个月结束 2027-01-10 再过 14 天）还没出结果的：下期必看
+    assert potential_sku.due(state, date(2027, 1, 23)) == [] and potential_sku.due(state, date(2027, 1, 24)) == ["T1", "M1"]
+    assert tracking.watchlist(state, 1, date(2027, 1, 26)) == ["T1", "M1"]
     assert potential_sku.waiting(state) == {"T1", "M1"}  # 很久没进池也不从状态里整条删（pipeline 的清理）
-    # 2027-01-12 那期拉到了日数据：第 2 个月 = 2026-12-12 ~ 2027-01-10
-    days = (date(2027, 1, 12) - date(2026, 11, 1)).days + 1
+    # 2027-01-26 那期拉到了日数据：第 2 个月 = 2026-12-12 ~ 2027-01-10
+    days = (date(2027, 1, 26) - date(2026, 11, 1)).days + 1
     lead = (date(2026, 12, 12) - date(2026, 11, 1)).days
-    state["asins"]["T1"] = {"series": _series("2026-11-01", [10] * lead + [25] * 30 + [5, 5])}  # 750 件 ≥ 300 × 2：卖爆
-    state["asins"]["M1"] = {"series": _series("2026-11-01", [10] * lead + [12] * 30 + [5, 5])}  # 360 件：没有
+    fetched = "2027-01-26T04:41:00+00:00"
+    state["asins"]["T1"] = {"series": _series("2026-11-01", [10] * lead + [25] * 30 + [5] * 16),  # 750 件 ≥ 300 × 2：卖爆
+                            "fetched_at": fetched}
+    state["asins"]["M1"] = {"series": _series("2026-11-01", [10] * lead + [12] * 30 + [5] * 16),  # 360 件：没有
+                            "fetched_at": fetched}
     assert len(state["asins"]["T1"]["series"]["sales"]) == days
-    live = potential_sku.track(state, [{**items[0], "as_of": "2027-01-12"}], "2027-01-12", cfg, date(2027, 1, 12))
+    live = potential_sku.track(state, [{**items[0], "as_of": "2027-01-26"}], "2027-01-26", cfg, date(2027, 1, 26))
     done = {p["asin"]: p for p in state["sku_live"]["picks"] if "f" in p}
     assert (done["T1"]["f"], done["T1"]["boom"], done["M1"]["f"], done["M1"]["boom"]) == (750.0, True, 360.0, False)
-    assert done["T1"]["done"] == "2027-01-12"
+    assert done["T1"]["done"] == "2027-01-26"
     assert live["done"] == {"一周翻倍": [1, 1], "一周涨五成": [1, 0]} and live["overdue"] == 0
     assert [p["asin"] for p in state["sku_live"]["picks"] if "f" not in p] == ["T1"]  # 出了结果以后再入选：另记一次
-    assert potential_sku.due(state, date(2027, 1, 12)) == []
+    assert potential_sku.due(state, date(2027, 1, 26)) == []
     text = render.sku_live_text(live, cfg)
     assert ("已出结果 2 个，卖爆的一周翻倍 1/1（100%，样本少，回测 23%~33%）、一周涨五成 0/1（0%，样本少，回测 11%~13%）。"
-            "还在等 1 个（下一批 2027-03-09 起）。样本少 = 出结果不到 30 个：比例上下差十几个百分点都正常，只供参考。") in text
+            "还在等 1 个（下一批 2027-04-06 起）。样本少 = 出结果不到 30 个：比例上下差十几个百分点都正常，只供参考。") in text
     table = render._sku_live_rows(live)
     assert "出了结果的 2 个" in table and table.count("<tr>") == 3 and ">卖爆</td>" in table and ">没有</td>" in table
-    pop = render._sku_pop({"shown": [], "plain": [], "similar": {}}, "提示", 0, "2027-01-12", live, cfg)
+    pop = render._sku_pop({"shown": [], "plain": [], "similar": {}}, "提示", 0, "2027-01-26", live, cfg)
     assert render.esc(text) in pop and "出了结果的 2 个" in pop
     sec = analyze.sections([items[0]], 0)
-    ctx = {"title": "家具爆品雷达", "report_id": "2027-01-12", "as_of": "2027-01-12", "cfg": cfg, "sku_live": live,
+    ctx = {"title": "家具爆品雷达", "report_id": "2027-01-26", "as_of": "2027-01-26", "cfg": cfg, "sku_live": live,
            "sections": {**sec, "surge": [], "potential": [], "hot": [], "fake": [], "ocean": []},
            "diff": {"first": True}, "traits": {}}
     assert "；实盘已出结果 2 个，卖爆的一周翻倍 1/1（样本少）、一周涨五成 0/1（样本少）；表格在报告里可下载）" in dingtalk.build_text(ctx)
@@ -277,7 +281,7 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
 
 def test_live_outcome_needs_the_whole_second_month(cfg):
     """第 2 个月的数要到判定后第 56 天才有：没到的接着等；到了但有数的不到 20 天的算“数据不全”，不算进比例；
-    到期了这期没拉到它的日数据的写“到期了还没拉到日数据”。"""
+    到期了这期没拉到它第 56 天日数据的写“到期了还没拉到”。"""
     from datetime import date
     s = potential_sku.settings(cfg)
     day = date(2026, 11, 15)
@@ -287,15 +291,59 @@ def test_live_outcome_needs_the_whole_second_month(cfg):
     gaps = [10] * lead + [25] * 19 + [None] * 11 + [5]
     assert potential_sku.outcome(_series("2026-11-01", gaps), day, 300, s) == {"f": None, "boom": False}
     assert potential_sku.outcome(_series("2026-11-01", [10] * lead + [9] * 30), day, 100, s) == {"f": 270.0, "boom": False}  # 不到 300 件
-    state = {"asins": {"A": {"series": _series("2026-11-01", gaps)}},
+    fetched = "2027-01-26T04:41:00+00:00"
+    state = {"asins": {"A": {"series": _series("2026-11-01", gaps), "fetched_at": fetched}},
              "sku_live": {"since": "2026-11-16", "picks": [
                  {"asin": "A", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.1, "u": 300.0},
                  {"asin": "B", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周涨五成", "kind": "上升中", "net": 1.6, "u": 200.0}]}}
-    live = potential_sku.track(state, [], "2027-01-12", cfg, date(2027, 1, 12))
-    assert (live["short"], live["overdue"], live["waiting"], live["done"]) == (1, 1, 1, {"一周翻倍": [0, 0], "一周涨五成": [0, 0]})
+    live = potential_sku.track(state, [], "2027-01-26", cfg, date(2027, 1, 26))
+    assert (live["short"], live["overdue"], live["waiting"], live["stop"], live["done"]) == \
+        (1, 1, 1, 0, {"一周翻倍": [0, 0], "一周涨五成": [0, 0]})
+    # 有到期的（数据不全、还没拉到）就不能再写“还没有到期的”
     text = render.sku_live_text(live, cfg)
-    assert text.startswith("实盘跟踪：") and "已记 2 个" in text
+    assert "还没有到期" not in text and "已出结果 0 个" in text
+    assert "到期了还没拉到第 56 天日数据的 1 个（最多再等 28 天）" in text and "第 2 个月有数的不到 20 天没算的 1 个" in text
     assert render.sku_live_text({"total": 0}, cfg) == "" and render.sku_live_text(None, cfg) == ""
+
+
+def test_live_outcome_waits_for_revisions_and_gives_up_on_stopped_data(cfg):
+    """边界（2026-11-19 复核）：
+    ① 第 2 个月最后几天的数卖家精灵还会改（各期测到改最近 5~9 天），回测用的是改完的：到期 = 第 2 个月结束再过 14 天，
+       看的是这个商品的日数据什么时候拉的（fetched_at），满 56 天但拉得早的接着等；
+    ② 断货、下架后日数据停在最后在售那天：第 56 天以后才停的照算（回测里算），没到第 56 天就停的、一直没拉到的，
+       到期 28 天后不再等，记成停更、不算进比例，也不再进必看、状态里可以删；以前会一直等、每期多花一次调用。"""
+    from datetime import date
+    s = potential_sku.settings(cfg)
+    lead = (date(2026, 12, 12) - date(2026, 11, 1)).days
+    pick = lambda asin: {"asin": asin, "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍",  # noqa: E731
+                         "kind": "上升中", "net": 2.1, "u": 300.0}
+    full = _series("2026-11-01", [10] * lead + [25] * 30 + [5] * 2)  # 第 2 个月 750 件，日数据到 01-12
+    assert potential_sku.outcome(full, date(2026, 11, 15), 300, s, settled=False) is None
+    state = {"asins": {"EARLY": {"series": full, "fetched_at": "2027-01-12T04:00:00+00:00"},  # 满 56 天但拉得早：数还会改
+                       "LATE": {"series": _series("2026-11-01", [10] * lead + [25] * 30 + [5] * 4),  # 01-14 起断货，01-26 拉的
+                                "fetched_at": "2027-01-26T04:00:00+00:00"},
+                       "STOP": {"series": _series("2026-11-01", [10] * lead + [25] * 10),  # 12-21 起断货，第 2 个月不全
+                                "fetched_at": "2027-01-26T04:00:00+00:00"},
+                       "OLD": {"series": full}},  # 旧状态没记拉取时间：看日数据最后一天（01-12，不到 01-24）
+             "sku_live": {"since": "2026-11-16", "picks": [pick(a) for a in ("EARLY", "LATE", "STOP", "OLD", "MISS")]}}
+    live = potential_sku.track(state, [], "2027-01-26", cfg, date(2027, 1, 26))
+    res = {p["asin"]: (p.get("f"), p.get("boom")) for p in state["sku_live"]["picks"] if "f" in p}
+    assert res == {"LATE": (750.0, True)}
+    assert (live["waiting"], live["overdue"], live["stop"]) == (4, 4, 0)
+    assert potential_sku.due(state, date(2027, 1, 26)) == ["EARLY", "STOP", "OLD", "MISS"]
+    # 到期后 27 天还在等；28 天不再等
+    live = potential_sku.track(state, [], "2027-02-20", cfg, date(2027, 2, 20))
+    assert (live["waiting"], live["stop"]) == (4, 0)
+    live = potential_sku.track(state, [], "2027-02-21", cfg, date(2027, 2, 21))
+    assert (live["waiting"], live["stop"], live["short"], live["overdue"]) == (0, 4, 0, 0)
+    assert potential_sku.due(state, date(2027, 2, 21)) == [] and potential_sku.waiting(state) == set()
+    assert all(p["done"] == "2027-02-21" for p in state["sku_live"]["picks"] if p.get("stop"))
+    assert live["done"]["一周翻倍"] == [1, 1] and len(live["rows"]) == 1  # 不再等的不算进比例、不进明细
+    text = render.sku_live_text(live, cfg)
+    assert ("到期 28 天还没有、不再等的 4 个（断货、下架后卖家精灵的日数据停在最后在售那天，或一直没拉到；不算进比例）") in text
+    # 重新生成同一期：已经记成停更的不再改
+    potential_sku.track(state, [], "2027-02-21", cfg, date(2027, 2, 21))
+    assert sum(1 for p in state["sku_live"]["picks"] if p.get("stop")) == 4
 
 
 def test_weak_mid_tier_tags_are_dropped_and_caveats_are_written(cfg):
@@ -361,10 +409,10 @@ def test_live_second_month_leaves_out_promo_days(cfg):
     with_promo = potential_sku.outcome(_series("2026-11-01", sales), day, 300, s)
     without = potential_sku.outcome(_series("2026-11-01", sales), day, 300, s, promo)
     assert with_promo["boom"] and without == {"f": 540.0, "boom": False}
-    state = {"asins": {"A": {"series": _series("2026-11-01", sales)}},
+    state = {"asins": {"A": {"series": _series("2026-11-01", sales), "fetched_at": "2027-01-26T04:41:00+00:00"}},
              "sku_live": {"since": "2026-11-16", "picks": [
                  {"asin": "A", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.1, "u": 300.0}]}}
-    live = potential_sku.track(state, [], "2027-01-12", cfg, date(2027, 1, 12), promo)
+    live = potential_sku.track(state, [], "2027-01-26", cfg, date(2027, 1, 26), promo)
     assert live["done"]["一周翻倍"] == [1, 0]
 
 
@@ -373,12 +421,13 @@ def test_live_relist_picks_are_counted_apart(cfg):
     from datetime import date
     lead = (date(2026, 12, 12) - date(2026, 11, 1)).days
     boom = _series("2026-11-01", [10] * lead + [25] * 30 + [5, 5])
-    state = {"asins": {"R": {"series": boom}, "T": {"series": boom}},
+    fetched = "2027-01-26T04:41:00+00:00"
+    state = {"asins": {"R": {"series": boom, "fetched_at": fetched}, "T": {"series": boom, "fetched_at": fetched}},
              "sku_live": {"since": "2026-11-16", "picks": [
                  {"asin": "R", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周涨五成", "kind": "突然爆火", "net": 1.9, "u": 300.0,
                   "flags": ["老品换链接"]},
                  {"asin": "T", "rid": "2026-11-16", "day": "2026-11-15", "tier": "一周翻倍", "kind": "上升中", "net": 2.1, "u": 300.0}]}}
-    live = potential_sku.track(state, [], "2027-01-12", cfg, date(2027, 1, 12))
+    live = potential_sku.track(state, [], "2027-01-26", cfg, date(2027, 1, 26))
     assert live["done"] == {"一周翻倍": [1, 1], "一周涨五成": [0, 0]} and live["relist"] == [1, 1]
     assert len(live["rows"]) == 2
     text = render.sku_live_text(live, cfg)
@@ -407,7 +456,7 @@ def test_each_row_shows_the_backtest_rate_of_its_own_acceleration_band(cfg):
     # 还符合同一档里分得出的条件的：括号里另写那一类的比例
     big = _item("G", last7_avg=50.0, recent_avg28=25.0, ratings=800)  # 近 30 天 750 件、评论 800 条的一周翻倍
     big["sku"] = potential_sku.classify(big, s)
-    assert render.sku_band_text(big["sku"], cfg, big) == "21%~26%（近30天≥600件的 12%；评论500条以上的 41%）"
+    assert render.sku_band_text(big["sku"], cfg, big) == "21%~26%（近30天≥600件的 13%；评论500条以上的 41%）"
     old = _item("O", last7_avg=18.0, age_days=500)
     old["sku"] = potential_sku.classify(old, s)
     assert render.sku_band_text(old["sku"], cfg, old) == "15%~18%（上架一年以上的 9.2%）"
@@ -415,9 +464,43 @@ def test_each_row_shows_the_backtest_rate_of_its_own_acceleration_band(cfg):
     assert render.sku_band_text({**relist, "tier": "一周涨五成"}, cfg, _item("R", age_days=400)) == "单算 27%（上架一年以上的 9.2%）"
     hint = render.sku_hint(cfg)
     assert "档里加速越猛越容易卖爆：×1.5~1.75 10%~11%、×1.75~2 15%~18%、×2~2.5 21%~26%、×2.5 以上 32%~63%（表格“回测卖爆”一列）。" in hint
-    assert ("同一档里还分得出的：一周涨五成里上架一年以上的 9.2%（其他 15%）；一周翻倍里近 30 天 ≥600 件的 12%（其他 31%，"
+    assert ("同一档里还分得出的：一周涨五成里上架一年以上的 9.2%（其他 15%）；一周翻倍里近 30 天销量（表格那一列）≥600 件的 13%（其他 31%，"
             "卖爆要翻倍，量大的难翻）、评论 500 条以上的 41%（其他 24%）。评分、价格分组后高低不一，分不出。") in hint
     assert "评分、评论数、上架天数、价格都分不出谁更容易爆" not in hint
     assert render.SKU_HEAD[8] == "回测卖爆" and len(render.SKU_HEAD) == 14
     assert "回测卖爆" in render._method(cfg)
+
+
+def test_tier_and_band_follow_the_two_decimal_value_shown(cfg):
+    """边界（2026-11-19 复核）：以前按没取整的加速倍数分档、对段，表格显示两位小数：×1.996 显示 ×2.00 却在一周涨五成、
+    回测卖爆写 ×2~2.5 那段的数；×1.4952 显示 ×1.50 却不收（回测两档里 0.58% 跨线）。现在按显示的两位小数分。"""
+    s = potential_sku.settings(cfg)
+    edge = potential_sku.classify(_item("E", last7_avg=19.96), s)  # 1.996 → ×2.00
+    assert (edge["a7"], edge["net"], edge["tier"]) == (2.0, 2.0, "一周翻倍") and render.sku_band_text(edge, cfg) == "21%~26%"
+    low = potential_sku.classify(_item("L", last7_avg=14.952), s)  # 1.4952 → ×1.50
+    assert (low["net"], low["tier"]) == (1.5, "一周涨五成")
+    assert potential_sku.classify(_item("N", last7_avg=14.94), s) is None  # 1.494 → ×1.49
+    mid = potential_sku.classify(_item("M", last7_avg=17.496), s)  # 1.7496 → ×1.75
+    assert mid["net"] == 1.75 and render.sku_band_text(mid, cfg) == "15%~18%"
+    # 扣子类目整体后的也一样：×2.39 ÷ 1.2 = 1.9917 → ×1.99，一周涨五成
+    peers = [_item(f"P{i}", node="n1", last7_avg=12.0) for i in range(10)]
+    item = _item("T", node="n1", last7_avg=23.9)
+    potential_sku.mark(peers + [item], cfg)
+    assert (item["sku"]["net"], item["sku"]["tier"]) == (1.99, "一周涨五成")
+    row = render._sku_row(item, 0, cfg)
+    assert "扣子类目后 ×1.99" in row and '<td class="n">15%~18%</td>' in row
+
+
+def test_big_volume_note_uses_the_table_units(cfg):
+    """边界：括号里的“近30天≥600件”以前按在售日均 × 30 算，表格“近30天”那一列是近 28 天日均 × 30（断货的日子按 0）：
+    断货过的表格写 570 件、括号却写 ≥600 件。现在按表格那一列（取整后）算。"""
+    s = potential_sku.settings(cfg)
+    oos = _item("O", last7_avg=50.0, recent_avg28=19.0, instock_avg28=21.0)  # 表格 570 件，在售日均 × 30 = 630 件
+    oos["sku"] = potential_sku.classify(oos, s)
+    assert oos["sku"]["tier"] == "一周翻倍" and render.sku_band_text(oos["sku"], cfg, oos) == "21%~26%"  # ×2.38，不写括号
+    assert '<td class="n">570 件' in render._sku_row(oos, 0, cfg)
+    near = _item("N", last7_avg=50.0, recent_avg28=19.99)  # 599.7 件，表格显示 600 件
+    near["sku"] = potential_sku.classify(near, s)
+    assert render.sku_band_text(near["sku"], cfg, near) == "32%~63%（近30天≥600件的 13%）"
+    assert "一周翻倍里近 30 天销量（表格那一列）≥600 件的 13%（其他 31%，" in render.sku_hint(cfg)
 
