@@ -197,7 +197,7 @@ def test_worth_sentences_cached_and_table_falls_back_to_rule(cfg):
     item["insight"]["note"] = other["insight"]["note"] = {"compare": "…", "why": "靠价格便宜 37%。"}
     assert render.sku_reason(item) == replies["ME"]
     assert render.sku_reason(other) == "外观少见：凹槽竖纹（同类 10%）；功能多了电子壁炉（同类 20%）；价格也比同类中位低 37%。"
-    assert render.sku_reason({**other, "insight": None}).startswith("突然爆火；近 7 天日均是近 28 天在售日均的 ×2.10")
+    assert render.sku_reason({**other, "insight": None}).startswith("突然爆火；近 7 天日均是近 28 天日均的 ×2.10")
     # 事实没变：下次直接用缓存；不再列出的商品不留
     again = _sku_item(cfg)
     assert cardnotes.write_worth([again], store, cfg, "k", client=client)["cached"] == 1 and len(calls) == 1

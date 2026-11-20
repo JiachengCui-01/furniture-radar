@@ -461,9 +461,8 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
         "last7_avg": _avg(d, idx, 7),
         # 近 14 天日均（去掉大促日）：潜力SKU 表格里的“近14天÷近28天”（detect/potential_sku.py）
         "recent_avg14": _avg(d, idx, 14),
+        # 近 28 天日均（去掉大促日，断货的日子也算）：潜力SKU 的加速倍数和卖爆的基数（detect/potential_sku.base_avg）
         "recent_avg28": _avg(d, idx, 28),
-        # 近 28 天在售日的日均（断货的日子不算，同对比期的口径）：潜力SKU 的加速倍数和卖爆的基数（detect/potential_sku.base_avg）
-        "instock_avg28": _avg(d, idx, 28, oos, zero_run),
         # 之前 28 天（只算在卖的日子，同“上升中”的对比期）：开发方向按增量销售额排序用
         "prev_avg28": _avg(d, idx - 28, 28, oos, zero_run) if idx is not None else None,
         "prev_in28": prev_in,
@@ -922,8 +921,8 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     # 同一类排在一起（合计销售额大的类在前），类里按近 30 天销售额
     ocean = sorted((i for i in every if i.get("ocean")),
                    key=lambda i: (-i["ocean"]["niche_revenue"], i["ocean"]["niche"], -i["ocean"]["revenue"]))
-    # 潜力SKU（detect/potential_sku.py）：一周翻倍 → 一周涨四成，同档里按加速倍数从高到低（近 7 天 ÷ 近 28 天，
-    # 子类目整体在涨的扣掉整体的；加速越猛，回测里后续越容易卖爆）。蓝海产品也算（2026-11-20 起），所以从 every 里取
+    # 潜力SKU（detect/potential_sku.py）：一周翻倍 → 一周涨五成，同档里按加速倍数从高到低（近 7 天 ÷ 近 28 天；
+    # 加速越猛，回测里后续越容易卖爆）。蓝海产品也算（2026-11-20 起），所以从 every 里取
     def sku_key(i: dict):
         return potential_sku.tier(i), -i["sku"].get("net", i["sku"]["a7"])
     sku = sorted((i for i in every if i.get("sku")), key=sku_key)

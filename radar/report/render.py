@@ -517,7 +517,7 @@ tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px';}
 document.addEventListener('mousemove',show);document.addEventListener('touchstart',show,{passive:true});
 window.addEventListener('scroll',function(){tip.hidden=true;},true);})();</script>"""
 
-# 潜力SKU 小窗的表格：按一周翻倍 / 一周涨四成、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行（按当前排序）存成 .xlsx：
+# 潜力SKU 小窗的表格：按一周翻倍 / 一周涨五成、子类目筛，按列排，点一行展开完整卡片，“下载表格”把当前筛出的行（按当前排序）存成 .xlsx：
 # 每行嵌主图（亚马逊图床允许跨域读取，统一画成 200px 白底方图）、商品名和 ASIN 带超链接、档 / 类型按报告配色、数字带格式、
 # 近7天÷近28天画条形图、冻结表头和前两列、可筛选，第二张“说明”表放判定规则（小窗顶部那段）和各列含义（SKU_COLS）。
 # 不用第三方库（国内打不开 CDN 也能下）：自己写 SpreadsheetML，打成不压缩的 zip。图片取不到的格子写“图片没取到”，表照样下。
@@ -657,7 +657,7 @@ var rows=[].slice.call(tb.querySelectorAll('tr.sr'));var segs={},nodes={},order=
 rows.forEach(function(r){var s=r.getAttribute('data-seg'),n=r.getAttribute('data-node');segs[s]=(segs[s]||0)+1;
 if(n){if(!nodes[n]){nodes[n]=0;order.push(n);}nodes[n]++;}});
 var bar=el('div','tools'),st={g:'',n:'',s:''},cnt=el('span','cnt');
-var seg=el('span','seg');[''].concat(['一周翻倍','一周涨四成'].filter(function(k){return segs[k];})).forEach(function(k){
+var seg=el('span','seg');[''].concat(['一周翻倍','一周涨五成'].filter(function(k){return segs[k];})).forEach(function(k){
 var b=el('button',k?'':'on',k?k+' '+segs[k]:'全部 '+rows.length);b.type='button';b.setAttribute('data-g',k);seg.appendChild(b);});
 bar.appendChild(seg);seg.addEventListener('click',function(e){var b=closest(e.target,'button');if(!b)return;st.g=b.getAttribute('data-g');
 [].forEach.call(seg.children,function(x){x.className=x===b?'on':'';});apply();});
@@ -674,7 +674,7 @@ cols.forEach(function(k,i){if(!(k[2] in ix))ix[k[2]]=i;});
 var list=[].filter.call(tb.querySelectorAll('tr.sr'),function(r){return r.style.display!=='none';})
 .map(function(r){return JSON.parse(r.getAttribute('data-xl')||'[]');});
 var top=list.filter(function(v){return v[ix.tier]===TOP;}).length;
-var sub='本表 '+list.length+' 个：一周翻倍 '+top+' 个、一周涨四成 '+(list.length-top)+' 个 ｜ 筛选：'+(st.g||'全部档')+' · '+(st.n||'全部子类目')
+var sub='本表 '+list.length+' 个：一周翻倍 '+top+' 个、一周涨五成 '+(list.length-top)+' 个 ｜ 筛选：'+(st.g||'全部档')+' · '+(st.n||'全部子类目')
 +' · '+so.options[so.selectedIndex].text+' ｜ 点商品名或 ASIN 打开亚马逊；判定规则和各列含义见“说明”表';
 dl.disabled=true;dl.textContent='生成中…';
 Promise.all(list.map(function(v){return pic(ix.img==null?'':v[ix.img]);})).then(function(ps){
@@ -1038,20 +1038,19 @@ SKU_COLS = (
     ("品牌", 13, "text", ""),
     ("ASIN", 13, "link", "点开是商品页"),
     ("子类目", 16, "wrap", ""),
-    ("档", 11, "tier", "一周翻倍 / 一周涨四成，条件见上面的规则"),
+    ("档", 11, "tier", "一周翻倍 / 一周涨五成，条件见上面的规则"),
     ("类型", 10, "kind", "属于哪种增长商品：突然爆火 / 新品潜力 / 上升中"),
     ("售价($)", 9, "price", ""),
     ("近30天销量(件)", 10, "int", "近 28 天日均 × 30（日均去掉大促日）"),
     ("近30天销售额($)", 12, "money", "近 30 天销量 × 售价"),
     ("月增量($)", 11, "delta", "（近 28 天日均 − 再之前 28 天正常在售日均）× 同一售价 × 30；按 0 算、对比数据不足的写“按 0”“无法估算”"),
-    ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天在售日的日均（断货的日子不算，日均去掉大促日），条越长最近一周加速越多"),
-    ("扣子类目整体后", 11, "ratio", "近 7 天 ÷ 近 28 天，再除以所在子类目这周整体的倍数（本期追踪的同子类目商品的中位数，"
-                             "整体没在涨的不扣，和左边一样）；按它分档：≥2 倍一周翻倍、1.4~2 倍一周涨四成"),
-    ("同样加速回测卖爆", 14, "text", "回测里加速倍数（扣子类目整体后）在同一段的商品后续卖爆的比例，写前段~后段判的"
-                              "（×1.4~1.5、×1.5~1.75、×1.75~2、×2~2.5、×2.5 以上五段）；老品换链接的写单算的比例。"
-                              "还符合“同一档里分得出的”条件的（一周涨四成里上架一年以上、一周翻倍里近 30 天 ≥600 件、评论 500 条以上），"
+    ("近7天÷近28天", 11, "bar", "近 7 天日均 ÷ 近 28 天日均（日均去掉大促日，断货的日子也算），按它分档：≥2 倍一周翻倍、"
+                            "1.5~2 倍一周涨五成；条越长最近一周加速越多"),
+    ("同样加速回测卖爆", 14, "text", "回测里加速倍数在同一段的商品后续卖爆的比例，写前段~后段判的"
+                              "（×1.5~1.75、×1.75~2、×2~2.5、×2.5 以上四段）；老品换链接的写单算的比例。"
+                              "还符合“同一档里分得出的”条件的（一周涨五成里上架一年以上、一周翻倍里近 30 天 ≥600 件、评论 500 条以上），"
                               "括号里另写那一类的比例"),
-    ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天在售日的日均"),
+    ("近14天÷近28天", 11, "ratio", "近 14 天日均 ÷ 近 28 天日均"),
     ("上架天数", 8, "days", ""),
     ("评分", 7, "rating", ""),
     ("评论数", 8, "int", ""),
@@ -1059,9 +1058,9 @@ SKU_COLS = (
                               "没有的按同样顺序用规则拼"),
     ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）；另标：近 7 天里有大促日的“近7天含大促日”"
                          "（加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里这类后续卖爆少一截）、"
-                         "一周翻倍里新品完整月份还不够的“月度增长尚未验证”、新链接还在起量的“老品换链接”（回测数单算）"),
+                         "新品完整月份还不够的“月度增长尚未验证”、新链接还在起量的“老品换链接”（回测数单算）"),
     ("所在板块", 10, "text", "商品在报告里原来的板块"),
-    ("判定依据", 34, "muted", "类型 + 最近一周加速多少（子类目整体在涨的写明扣掉以后是多少）"),
+    ("判定依据", 34, "muted", "类型 + 最近一周加速多少"),
 )
 
 
@@ -1084,17 +1083,17 @@ def sku_hint(cfg: dict, rank: list | None = None) -> str:
         extra = f"（另留 {rank[0]} 个名额给近 7 天排名改善 ≥{need:g}% 的）"
     lines = [f"怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据{extra}，在其中的增长商品（突然爆火、新品潜力、上升中，"
              "蓝海产品也算）里判断。",
-             "怎么判断：加速倍数 = 近 7 天日均 ÷ 近 28 天在售日均（断货的日子不算；子类目整体在涨的先扣掉整体涨幅）。"
-             f"≥{top:g} 倍是一周翻倍；{low:g}~{top:g} 倍是一周涨四成，带“月度增长尚未验证”“降价驱动”标签的不收。"]
+             "怎么判断：加速倍数 = 近 7 天日均 ÷ 近 28 天日均（都去掉大促日，断货的日子也算）。"
+             f"≥{top:g} 倍是一周翻倍；{low:g}~{top:g} 倍是一周涨五成。"]
     if all(bt.get(k) for k in ("top_range", "mid_range", "growth")):
-        relist = (f"老品换链接单算（一周翻倍 {backtest_pct(bt['relist'][0])}、一周涨四成 {backtest_pct(bt['relist'][1])}）。"
+        relist = (f"老品换链接单算（一周翻倍 {backtest_pct(bt['relist'][0])}、一周涨五成 {backtest_pct(bt['relist'][1])}）。"
                   if bt.get("relist") else "")
         bands = "加速越猛越容易卖爆，每行见“回测卖爆”一列。" if bt.get("bands") else ""
         sample = f"（只含 {bt['sample_date']} 还在名单上的商品）" if bt.get("sample_date") else ""
         lines.append(f"回测：卖爆 = 之后第 2 个月的 30 天销量 ≥ 现在的 {float(bt.get('boom_ratio', 2)):g} 倍且 "
                      f"≥{int(bt.get('boom_units', 300))} 件（一周翻倍的保持这周的速度就够）。{bt.get('span')} 每周倒推："
                      f"一周翻倍 {backtest_pct(bt['top_range'][0])}~{backtest_pct(bt['top_range'][1])} 卖爆，"
-                     f"一周涨四成 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}，"
+                     f"一周涨五成 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}，"
                      f"增长商品平均 {backtest_pct(bt['growth'])}；{bands}{relist}样本偏乐观{sample}，实际会低一些。")
     lines.append("不判的：数据陈旧、只有月度数据的；商品照样留在原来的板块里（蓝海产品留在蓝海产品里）。")
     return "\n".join(lines)
@@ -1118,8 +1117,8 @@ def _sku_money(item: dict) -> tuple[float | None, float | None]:
 
 def sku_band_text(sku: dict, cfg: dict, item: dict | None = None) -> str:
     """表格“回测卖爆”一列：回测里同一段加速倍数的后续卖爆（前段~后段，potential_sku.band）；老品换链接的写单算的比例。
-    给了商品时，它还符合提示里“同一档里还分得出的”条件的，括号里另写那一类的比例（一周涨四成里上架一年以上、
-    一周翻倍里近 30 天 ≥600 件、一周翻倍里评论 500 条以上）：同一段加速里量大的也低（×2~2.5 ≥600 件 12% 对 26%）。"""
+    给了商品时，它还符合提示里“同一档里还分得出的”条件的，括号里另写那一类的比例（一周涨五成里上架一年以上、
+    一周翻倍里近 30 天 ≥600 件、一周翻倍里评论 500 条以上），前后两段都对得上。"""
     bt = potential_sku.settings(cfg).get("backtest") or {}
     top = sku.get("tier") == potential_sku.TOP
     if potential_sku.RELIST in (sku.get("flags") or []) and bt.get("relist"):
@@ -1129,8 +1128,7 @@ def sku_band_text(sku: dict, cfg: dict, item: dict | None = None) -> str:
         text = f"{backtest_pct(hit[0])}~{backtest_pct(hit[1])}" if hit else ""
     if not text or item is None:
         return text
-    # 同表格“近30天”那一列（近 28 天日均 × 30，断货的日子按 0，取整后显示）：括号里的条件读者对得上。
-    # 以前按在售日均 × 30，断货过的表格写 560 件、括号却写“近30天≥600件”（回测一周翻倍 217 次里 1 次）
+    # 同表格“近30天”那一列（近 28 天日均 × 30，断货的日子按 0，取整后显示）：括号里的条件读者对得上
     units = _sku_money(item)[0]
     also = []
     if not top and bt.get("age_mid") and (item.get("age_days") or 0) >= 365:
@@ -1155,7 +1153,7 @@ def sku_reason(item: dict) -> str:
 def sku_risks(item: dict) -> list[str]:
     """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）；
     近 7 天里有大促日的另加“近7天含大促日”（potential_sku.PROMO，只在潜力SKU 里有），放最前；
-    再加潜力SKU 照收但要写明的（sku["flags"]：一周翻倍里的“月度增长尚未验证”、老品换链接，不是红色标签）。"""
+    再加潜力SKU 照收但要写明的（sku["flags"]：月度增长尚未验证、老品换链接，不是红色标签）。"""
     sku = item.get("sku") or {}
     out: list[str] = ([potential_sku.PROMO] if sku.get("promo") else []) + list(sku.get("flags") or [])
     for tag in item.get("tags") or []:
@@ -1181,7 +1179,7 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
           [item["asin"], url], node, seg, sku["kind"], item.get("price") or "",
           round(units) if units else "", round(rev) if rev else "",
           round(inc) if inc is not None else increment_text(item),
-          a7 if a7 is not None else "", sku.get("net", a7) if a7 is not None else "", band_text, a14 if a14 is not None else "",
+          a7 if a7 is not None else "", band_text, a14 if a14 is not None else "",
           item.get("age_days") if item.get("age_days") is not None else "",
           item.get("rating") if item.get("rating") is not None else "",
           item.get("ratings") if item.get("ratings") is not None else "",
@@ -1198,12 +1196,11 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
                    f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
         ("nc", "", esc(node).replace("、", "、<wbr>")),  # 只在顿号处换行
         ("nd", f' data-tip="{esc(basis)}"', esc(sku["kind"]) + ("<small>蓝海产品</small>" if sku.get("ocean") else "")),
-        # 档（一周翻倍 / 一周涨四成）看上面的筛选、下载的表格“档”一列，这里不再打紫色标签；蓝海产品（只在蓝海产品里列）下面写明
+        # 档（一周翻倍 / 一周涨五成）看上面的筛选、下载的表格“档”一列，这里不再打紫色标签；蓝海产品（只在蓝海产品里列）下面写明
         ("n", "", fmt_price(item.get("price"))),
         ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
         ("n", "", esc(increment_text(item))),
-        ("n", f' data-tip="{esc(basis)}"' if sku.get("pace") else "",  # 子类目整体在涨的：下面写扣掉以后的倍数（按它分档）
-         "—" if a7 is None else f"×{a7:.2f}" + (f"<small>扣子类目后 ×{sku['net']:.2f}</small>" if sku.get("pace") else "")),
+        ("n", "", "—" if a7 is None else f"×{a7:.2f}"),
         ("n", "", esc(band_text) or "—"),
         ("n", "", "—" if a14 is None else f"×{a14:.2f}"),
         ("n", "", age),
@@ -1250,7 +1247,7 @@ def _sku_section(cur: dict, cfg: dict) -> str:
              else '<p class="empty">本期没有潜力SKU。</p>')
     return (f'<section id="sku" style="--c:var(--sku)"><h2><span class="dot"></span>潜力SKU'
             f'<a class="h-more" href="#" data-pop="sku">全部 {len(rows)} 个 · 表格可下载 ›</a></h2>'
-            f'<p class="hint">列出 {len(rows)} 个：一周翻倍 {top} 个、一周涨四成 {mid} 个。'
+            f'<p class="hint">列出 {len(rows)} 个：一周翻倍 {top} 个、一周涨五成 {mid} 个。'
             f'下面是排在前面的 {len(shown)} 个（按最近一周加速排；每个子类目最多 {int(c.get("per_node", 2))} 个）。'
             "点“全部”看完整表格，可按档、子类目筛选，点一行看卡片，下载成带主图的 Excel 表格。</p>"
             f"{table}</section>")
@@ -1282,7 +1279,7 @@ def sku_live_text(live: dict | None, cfg: dict) -> str:
     rn, rk = live.get("relist") or [0, 0]
     relist = f"；老品换链接的单算，{live_rate(rk, rn, few=few)}" if rn else ""
     text = (f"实盘（{how}）：已出结果 {n1 + n2} 个，卖爆的一周翻倍 {live_rate(k1, n1, ref('top_range'), few)}、"
-            f"一周涨四成 {live_rate(k2, n2, ref('mid_range'), few)}{relist}。还在等 {live.get('waiting', 0)} 个")
+            f"一周涨五成 {live_rate(k2, n2, ref('mid_range'), few)}{relist}。还在等 {live.get('waiting', 0)} 个")
     if live.get("next_due"):
         text += f"（下一批 {live['next_due']} 起）"
     if live.get("overdue"):
@@ -1318,7 +1315,7 @@ def _sku_live_rows(live: dict | None) -> str:
 def _sku_pop(cur: dict, hint: str, total: int, report_id: str, live: dict | None = None, cfg: dict | None = None) -> str:
     rows = cur.get("shown") or []
     top, mid = _sku_shown_counts(rows)
-    summary = f'<div class="nich"><span><b>一周翻倍</b> {top} 个</span><span><b>一周涨四成</b> {mid} 个</span></div>'
+    summary = f'<div class="nich"><span><b>一周翻倍</b> {top} 个</span><span><b>一周涨五成</b> {mid} 个</span></div>'
     table = (f'<div class="tbl" data-sku data-cols="{esc(json.dumps(SKU_COLS, ensure_ascii=False))}" '
              f'data-file="潜力SKU-{esc(report_id)}" data-title="潜力SKU · {esc(report_id)}">'
              f'{_sku_table(rows, cur.get("similar"), cfg=cfg)}</div>'
@@ -2072,23 +2069,20 @@ def _method(cfg: dict, repo_url: str = "") -> str:
     ps = potential_sku.settings(cfg)
     bt = ps.get("backtest") or {}
     rows += [("潜力SKU", "本期增长商品里最容易后续卖爆的一份清单（不分店铺，只在本期追踪的商品里挑）：最近一周在加速的，"
-                        "分一周翻倍、一周涨四成两档，各写回测里后续卖爆的比例；商品照样在原板块里，表格可下载"),
+                        "分一周翻倍、一周涨五成两档，各写回测里后续卖爆的比例；商品照样在原板块里，表格可下载"),
              ("卖爆", f"潜力SKU 回测用的标准：判定后第 2 个月（判定后第 27~56 天，去掉大促日）的 30 天销量 ≥ 现在近 30 天"
-                     f"（近 28 天在售日均 × 30）的 {float(bt.get('boom_ratio', 2)):g} 倍，而且 ≥{int(bt.get('boom_units', 300))} 件。"
+                     f"（近 28 天日均 × 30）的 {float(bt.get('boom_ratio', 2)):g} 倍，而且 ≥{int(bt.get('boom_units', 300))} 件。"
                      "一周翻倍的最近一周已经是近 28 天的 2 倍，保持这个速度两个月就够"),
-             ("加速倍数", "近 7 天日均 ÷ 近 28 天在售日的日均（断货的日子不算，都去掉大促日）；所在子类目这周整体也在涨的再除以子类目的倍数"
-                        f"（本期追踪的同子类目商品、近 30 天 ≥{float(ps['node_min_units']):g} 件的，各自近 7 天 ÷ 近 28 天在售日均的中位数；"
-                        f"不到 {int(ps['node_min'])} 个的子类目不扣，整体没在涨的也不扣）"),
+             ("加速倍数", "近 7 天日均 ÷ 近 28 天日均（都去掉大促日，断货的日子也算），按显示的两位小数分档"),
              ("一周翻倍", f"增长商品里加速倍数 ≥ {float(ps['top_a7']):g} 的"),
-             ("一周涨四成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的，"
-                         "不含带“月度增长尚未验证”“降价驱动”标签的（回测里接近不列的）"),
+             ("一周涨五成", f"增长商品里加速倍数 {float(ps['min_a7']):g}~{float(ps['top_a7']):g} 的"),
              (potential_sku.PROMO, "潜力SKU 的风险标签：近 7 天（数据截止日往前 7 天）里有大促日。加速倍数是去掉大促日算的，"
                                    "剩下的是大促前后几天，回测里这类后续卖爆少一截"),
              ("实盘", "潜力SKU 每期记下判定时的近 30 天销量，第 2 个月结束再过 "
                     f"{potential_sku.OUT_SETTLE} 天（最近几天的数改完）用那以后拉到的日数据看它卖爆没有（标准同回测），"
                     f"在潜力SKU 小窗里写出了结果的个数和比例；一档出结果不到 {int(ps['live_min'])} 个的写“样本少”，只供参考"),
-             ("回测卖爆", "潜力SKU 表格里的一列：回测里加速倍数（扣过子类目）在同一段的商品后续卖爆的比例，写前段~后段判的；"
-                        "老品换链接的写单算的比例；还符合上架一年以上（一周涨四成）、近 30 天（表格那一列）≥600 件或评论 500 条以上（一周翻倍）的，"
+             ("回测卖爆", "潜力SKU 表格里的一列：回测里加速倍数在同一段的商品后续卖爆的比例，写前段~后段判的；"
+                        "老品换链接的写单算的比例；还符合上架一年以上（一周涨五成）、近 30 天（表格那一列）≥600 件或评论 500 条以上（一周翻倍）的，"
                         "括号里另写那一类的比例")]
     rows.append(("主图特征", "每个特征按一句定义看图认（定义见 README），造型、工艺、功能要说得出在家具哪个部位；"
                             "主图说有、标题没写的再复核一次，没通过的不算；高柜 / 立式要标题写明高度才算（照片没有参照）；"
@@ -2241,7 +2235,7 @@ def render(ctx: dict) -> str:
         _kpi("hot", "持续热销", "近半年稳定在子类目头部", cur["hot"]["shown"], counts["hot"]),
         _kpi("ocean", "蓝海产品", "小众兴趣爱好专用的家具 / 收纳", cur["ocean"]["shown"], counts.get("ocean", 0), "相近款"),
         _kpi("fake", "异常信号", "疑似刷评或数据异常，需核实", sec["fake"], counts["fake"]),
-        _kpi("sku", "潜力SKU", "增长商品里一周涨四成以上的，表格可下载", cur["sku"]["shown"], counts.get("sku", 0)),
+        _kpi("sku", "潜力SKU", "增长商品里一周涨五成以上的，表格可下载", cur["sku"]["shown"], counts.get("sku", 0)),
     ])
     facts = _facts(ctx, counts, cur)
     history = ""

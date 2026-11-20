@@ -163,9 +163,9 @@ def build_text(ctx: dict, max_items: int = 3, sku_items: int | None = None) -> s
         (n1, k1), (n2, k2) = done.get(potential_sku.TOP, [0, 0]), done.get(potential_sku.MID, [0, 0])
         few = int(potential_sku.settings(cfg)["live_min"])
         tag = lambda n: "（样本少）" if 0 < n < few else ""  # noqa: E731 — 一档出结果不到 live_min 个
-        live = (f"；实盘已出结果 {n1 + n2} 个，卖爆的一周翻倍 {k1}/{n1}{tag(n1)}、一周涨四成 {k2}/{n2}{tag(n2)}" if n1 + n2 else "")
-        lines.append(f"**🎯 潜力SKU**（增长商品里最近一周加速的，子类目整体在涨的已扣掉：一周翻倍 {top}{rate('top_range')}；"
-                     f"一周涨四成 {len(sku) - top}{rate('mid_range')}{live}；表格在报告里可下载）")
+        live = (f"；实盘已出结果 {n1 + n2} 个，卖爆的一周翻倍 {k1}/{n1}{tag(n1)}、一周涨五成 {k2}/{n2}{tag(n2)}" if n1 + n2 else "")
+        lines.append(f"**🎯 潜力SKU**（增长商品里最近一周加速的：一周翻倍 {top}{rate('top_range')}；"
+                     f"一周涨五成 {len(sku) - top}{rate('mid_range')}{live}；表格在报告里可下载）")
         for item in sku[:n_sku]:
             head = potential_sku.label_of(item["sku"])
             price = f"${item['price']:.0f}，" if item.get("price") else ""
