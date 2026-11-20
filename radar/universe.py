@@ -184,6 +184,20 @@ def fetch_young(vendor: Vendor, cfg: dict, nodes: list[dict], exclude: set[str],
     return out
 
 
+def rank_gain(rows: dict[str, dict], cfg: dict) -> tuple[int, list[str]]:
+    """排名改善名额（pool.rank_gain，2026-11-20 起）：(名额, 候选)。名额 = share × 全市场名单行数（四舍五入）；
+    候选 = 名单自带的近 7 天排名改善 ≥ min_cr% 的，改善多的在前（同样多按 ASIN 排，每次一样）。没开（share 为 0）时 (0, [])。
+    初筛按“比基准”和“近 14 天”里小的那个排，只是最近一周突然加速的排得很后；这份名额专门多找最近一周在加速的（潜力SKU）。"""
+    c = cfg["pool"].get("rank_gain") or {}
+    k = int(float(c.get("share") or 0) * len(rows) + 0.5)
+    if k <= 0:
+        return 0, []
+    need = float(c.get("min_cr", 20))
+    out = sorted(((float(r["bsr_cr"]), a) for a, r in rows.items() if r.get("bsr_cr") is not None
+                  and float(r["bsr_cr"]) >= need - 1e-9), key=lambda t: (-t[0], t[1]))
+    return k, [a for _cr, a in out]
+
+
 def screen_young(rows: dict[str, dict], cfg: dict) -> list[tuple[str, float, str]]:
     """早期名单里要拉日数据的：近 7 天 BSR 改善 ≥ pool.young.bsr_cr%（名单行自带，不花调用），改善多的在前。
     回测（同上，按日数据模拟近 7 天排名变化）：不够全市场门槛时就开始的增长里，这一条能提前约 6 天抓到 46 个突然爆火，

@@ -455,9 +455,11 @@ def _publish(cfg: dict, secrets: Secrets, site: Path, master: bytes, state: dict
     # 5. 报告
     display_now = clock.to_tz(now_utc, cfg["display_timezone"])
     report_id = progress["report_id"] = _report_id(display_now.strftime("%Y-%m-%d"), state.get("reports") or [])
+    rank_slots = universe.rank_gain(uni["rows"], cfg)[0] if screened is not None else 0  # 排名改善名额（pool.rank_gain）
     coverage = {"refreshed": refreshed, "calls": vendor.billable_calls, "budget": limit, "candidates": n_cands,
                 "opportunity": mix["opportunity"] + mix["rotate"] + mix["similar"] + mix["screen"], "revision": revision,
                 "young": [len(uni.get("young") or {}), mix["young"]] if screened is not None and uni.get("young") else None,
+                "rank": [rank_slots, mix["rank"]] if rank_slots else None,
                 "prescreen": prescreened,
                 "universe": len(uni.get("rows") or {}) if screened is not None else None,
                 "universe_pages": uni.get("pages") if screened is not None else None,
@@ -904,8 +906,8 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict, ocean: list[
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],
         # tides：下一期回看这期没追踪的商品时，按这期的品类大盘扣（previous_view）
         "coverage": {k: ctx["coverage"].get(k) for k in ("refreshed", "calls", "budget", "candidates", "opportunity", "revision",
-                                                         "universe", "universe_pages", "universe_failed", "young", "prescreen", "tides",
-                                                         "unsettled")},
+                                                         "universe", "universe_pages", "universe_failed", "young", "rank", "prescreen",
+                                                         "tides", "unsettled")},
         "notify": {"title": f"{cfg['report']['title']} {ctx['report_id']}",
                    "text": dingtalk.build_text(ctx, int(cfg["notify"]["max_items"]))},
     }

@@ -446,8 +446,6 @@ details.more-facts{margin-top:4px}
 .skut small{display:block;font-size:11.5px;color:var(--muted)}
 .skut td.nc{min-width:60px;max-width:96px;white-space:normal;word-break:keep-all;line-height:1.35}.skut td.why{min-width:140px;font-size:12.5px;line-height:1.45}
 .skut td.rk{font-size:12px;color:var(--fake)}
-.sb{display:inline-block;font-size:11.5px;font-weight:600;border-radius:6px;padding:1px 6px;white-space:nowrap}
-.sb.top{background:var(--sku);color:#fff}.sb.mid{border:1px solid var(--sku);color:var(--sku)}
 .skut tr.sr{cursor:pointer}.skut tr.sr:hover td{background:var(--row)}.skut tr.sr.open td{background:var(--row);border-bottom:0}
 .skut tr.sc>td{padding:0 0 10px;background:var(--row)}.skut tr.sc .card{margin:0}
 .tools .dl{font:inherit;font-size:13px;border:1px solid var(--sku);color:var(--sku);background:var(--card);border-radius:8px;padding:3px 10px;cursor:pointer}
@@ -1195,7 +1193,6 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
             "price": item.get("price"), "a7": a7, "a14": a14, "age": item.get("age_days"), "rating": item.get("rating"), "i": n,
             "xl": json.dumps(xl, ensure_ascii=False)}
     attrs = "".join(f' data-{k}="{esc(v)}"' for k, v in data.items() if v not in (None, ""))
-    cls = "top" if sku["tier"] == potential_sku.TOP else "mid"
     rating = f"★{item['rating']}<small>{fmt_int(item['ratings'])} 条</small>" if item.get("rating") is not None else "—"
     age = f"{item['age_days']} 天" if item.get("age_days") is not None else "—"
     cells = [  # (class, 属性, 内容)；SKU_OPT 里的列手机上收起
@@ -1203,8 +1200,7 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
         ("nm", "", f'<a href="{amazon(item["asin"])}" {LINK}>{esc(short_name(item, 48))}</a>'
                    f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
         ("nc", "", esc(node).replace("、", "、<wbr>")),  # 只在顿号处换行
-        ("nd", f' data-tip="{esc(basis)}"', f'<span class="sb {cls}">{esc(seg)}</span>'
-                                          + f"<small>{esc(sku['kind'])}</small>"),
+        ("nd", f' data-tip="{esc(basis)}"', esc(sku["kind"])),  # 档（一周翻倍 / 一周涨四成）看上面的筛选、下载的表格“档”一列，这里不再打紫色标签
         ("n", "", fmt_price(item.get("price"))),
         ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
         ("n", "", esc(increment_text(item))),
@@ -2159,9 +2155,13 @@ def _facts(ctx: dict, counts: dict, cur: dict) -> list[tuple[str, str]]:
                                 f"→ 拉日数据 {cov.get('opportunity') or 0} 个"))
         if cov.get("young"):
             out.append(("早期名单", f"上架半年内、量还不够门槛的 {cov['young'][0]} 个，拉日数据 {cov['young'][1]} 个"))
+        if cov.get("rank"):
+            need = float((cfg["pool"].get("rank_gain") or {}).get("min_cr", 20))
+            out.append(("排名改善", f"全市场名单里近 7 天排名改善 ≥{need:g}% 的另留 {cov['rank'][0]} 个名额（多找最近一周在加速的），"
+                                   f"拉日数据 {cov['rank'][1]} 个（初筛已经拉到的不重复算）"))
         pre = cov.get("prescreen")
         if pre:
-            out.append(("主图预筛", f"拉日数据前先看了早期名单和全市场初筛排在前面的 {pre['looked']} 个候选的主图，"
+            out.append(("主图预筛", f"拉日数据前先看了早期名单、全市场初筛和排名改善排在前面的 {pre['looked']} 个候选的主图，"
                                    f"{pre['plain']} 个是简单款、没拉日数据（DeepSeek 识别，不花卖家精灵次数）"))
     elif cov.get("candidates"):
         out.append(("机会候选", f"{cov['candidates']} 个，本期查了 {cov.get('opportunity') or 0} 个"))

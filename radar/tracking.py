@@ -8,7 +8,9 @@
      （轮流取；只按件数挑会偏向便宜货：实测件数第一的价格中位数 $65，销售额第一的 $130，29 个子类目里 15 个不是同一个），
      名额还有剩就按月销量从全部子类目里补（持续热销板块按月销量排，床架这类大类目的头部不能漏）
   2. 相似款（≤ similar_max）：上期爆款的同类竞品（近 30 天数据）
-  3. 机会候选（剩余名额）：近 30 天上升榜 / 新品榜 / 相似款，以及月度名单里增长快或上架半年内的商品，
+  3. 机会候选（剩余名额）：翻了全市场名单的期是早期名单（pool.young）→ 全市场初筛（universe.screen）→ 排名改善名额
+     （pool.rank_gain：初筛先填到留出这份名额为止，名单近 7 天排名改善大的补上，不够的还给初筛）→ 其余早期名单；
+     没翻成时退回旧办法：近 30 天上升榜 / 新品榜 / 相似款，以及月度名单里增长快或上架半年内的商品，
      量要够：月销量 ≥ opportunity_min_units 或月销售额 ≥ opportunity_min_revenue（满足一个就行；只看件数时，
      卖得贵的商品几乎都进不来：实测被件数门槛挡掉的一半候选价格中位数 $250，其中 284 个月销售额超过 2 万美元）；
      按机会分排序；分数最高的 opportunity_every_run 个每期都看，其余按“最久没查”轮流查。
@@ -34,7 +36,7 @@ from .vendor import Vendor
 FLAG_LABELS = ("surge", "potential", "fake")
 FRESH_SOURCES = ("riser", "fresh_new", "similar")  # 近 30 天数据（截至当天）
 REASON_CN = {"watch": "往期上榜", "top": "子类目头部", "ocean": "蓝海候选", "screen": "全市场初筛", "young": "早期名单",
-             "similar": "爆款相似款", "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
+             "rank": "排名改善", "similar": "爆款相似款", "opportunity": "机会（每期）", "rotate": "机会（轮查）"}
 
 
 def watchlist(state: dict, runs: int, today=None) -> list[str]:
@@ -160,6 +162,7 @@ def prescreen(state: dict, disc: dict | None, cfg: dict, today, budget: int, api
     （DeepSeek，不花卖家精灵次数，识别过的按图片缓存），简单款（detect.showcase.is_plain：主图和标题都没有这个子类目基本结构以外的特色）
     不拉日数据——反正列不出来。11-07 那期 249 个拉了日数据的商品里，主图识别过的三分之一最后被当成简单款隐藏了。
     看前 min(max_images, 预算 × look_ahead) 个（约三分之一被跳过，多看一些才填得满池子）。没识别成的照常拉。
+    排名改善名额（pool.rank_gain）的候选另外看前 名额 × look_ahead 个（排在最前面、不占上面的个数，不挤早期名单和初筛的）。
     返回 (要跳过的 ASIN, 统计 {looked, new, plain})；没开、没有大模型密钥、本期没翻成全市场名单时返回 (空, None)。"""
     c = cfg["pool"].get("prescreen") or {}
     uni = state.get("universe") or {}
@@ -168,9 +171,11 @@ def prescreen(state: dict, disc: dict | None, cfg: dict, today, budget: int, api
     rows = {**(uni.get("young") or {}), **uni["rows"]}
     young_max = int((cfg["pool"].get("young") or {}).get("max", 0))
     young = [a for a, _s, _w in universe.screen_young(uni.get("young") or {}, cfg)]
-    order = list(dict.fromkeys(young[:young_max] + [a for a, _s, _w in universe.screen(state, uni["rows"], today, cfg)]
+    k, gain = universe.rank_gain(uni["rows"], cfg)
+    extra = gain[:int(k * float(c.get("look_ahead", 1.5)))]
+    order = list(dict.fromkeys(extra + young[:young_max] + [a for a, _s, _w in universe.screen(state, uni["rows"], today, cfg)]
                                + young[young_max:]))
-    n = min(int(c.get("max_images", 900)), int(max(0, budget) * float(c.get("look_ahead", 1.5))))
+    n = min(int(c.get("max_images", 900)), int(max(0, budget) * float(c.get("look_ahead", 1.5)))) + len(extra)
     targets, parents = [], set()
     for asin in order:
         if len(targets) >= n:
@@ -188,7 +193,7 @@ def prescreen(state: dict, disc: dict | None, cfg: dict, today, budget: int, api
     common = showcase.common_features(products + list(rows.values()), state, cfg)
     skip = {r["asin"] for r in targets if showcase.is_plain(r, state, common)}
     stats = {"looked": len(targets), "new": new, "plain": len(skip)}
-    log.info(f"主图预筛：早期名单和全市场初筛排在前面的 {len(targets)} 个候选先看主图（新识别 {new} 张），"
+    log.info(f"主图预筛：早期名单、全市场初筛和排名改善排在前面的 {len(targets)} 个候选先看主图（新识别 {new} 张），"
              f"{len(skip)} 个是简单款，不拉日数据")
     return skip, stats
 
@@ -196,7 +201,7 @@ def prescreen(state: dict, disc: dict | None, cfg: dict, today, budget: int, api
 def select_pool(disc: dict | None, state: dict, cfg: dict, today,
                 limit: int | None = None, skip: set[str] | None = None) -> tuple[list[str], dict[str, str]]:
     """返回 (ASIN 列表, 入选原因)。limit：本期还能刷新多少个（预算），池子不会超过它。
-    skip：主图预筛判成简单款的（prescreen），不以全市场初筛、早期名单进池（往期上榜、头部、蓝海候选照常）。"""
+    skip：主图预筛判成简单款的（prescreen），不以全市场初筛、早期名单、排名改善进池（往期上榜、头部、蓝海候选照常）。"""
     pcfg = cfg["pool"]
     size = int(pcfg["max_size"]) if limit is None else max(0, min(int(pcfg["max_size"]), limit))
     watch_max = min(size, int(pcfg.get("watch_max", size)))
@@ -222,7 +227,7 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
         # 兴趣爱好类目只为蓝海产品而加：只以蓝海候选进池，不占往期上榜、头部、初筛的日数据名额（11-07 那期占了约 45 个）
         if why != "ocean" and hobby_node((row or rec).get("node"), cfg):
             return False
-        if skip and why in ("screen", "young") and asin in skip:  # 主图预筛：简单款列不出来，不拉日数据
+        if skip and why in ("screen", "young", "rank") and asin in skip:  # 主图预筛：简单款列不出来，不拉日数据
             return False
         reason[asin] = why
         order.append(asin)
@@ -286,7 +291,21 @@ def select_pool(disc: dict | None, state: dict, cfg: dict, today,
             if len(order) >= ycap:
                 break
             add(asin, "young", ycap)
-        for asin, _score, _why in universe.screen(state, uni["rows"], today, cfg):
+        # 排名改善名额（pool.rank_gain，2026-11-20 起）：初筛先填到留出这份名额为止，名单自带的近 7 天排名改善大的补上
+        # （已经在池子里的跳过、往下补），不够的名额还给初筛。回测见 config.yaml pool.rank_gain
+        k, gain = universe.rank_gain(uni["rows"], cfg)
+        screened = universe.screen(state, uni["rows"], today, cfg)
+        scap = max(len(order), size - k)
+        for asin, _score, _why in screened:
+            if len(order) >= scap:
+                break
+            add(asin, "screen", scap)
+        gcap = min(size, len(order) + k)
+        for asin in gain:
+            if len(order) >= gcap:
+                break
+            add(asin, "rank", gcap)
+        for asin, _score, _why in screened:  # 排名改善的不够名额：还给初筛
             if len(order) >= size:
                 break
             add(asin, "screen", size)
