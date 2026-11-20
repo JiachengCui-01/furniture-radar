@@ -569,8 +569,9 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     ocean["hobby_dropped"] = len(items) - len(kept) - len(ocean_items)
     items, ocean_extra = kept, ocean_items + ocean_extra
     # 潜力SKU（detect/potential_sku.py）：增长商品里最近一周加速的，另成一份清单，商品照样在原板块里；
-    # 近 7 天里有大促日的打风险标签（加速倍数是去掉大促日算的，回测里不准）
-    potential_sku.mark(items, cfg, ev["days"])
+    # 近 7 天里有大促日的打风险标签（加速倍数是去掉大促日算的，回测里不准）。
+    # 拉到日数据的蓝海产品也判（2026-11-20 用户要；商品照样只在蓝海产品里列，潜力SKU 清单上标“蓝海产品”）
+    potential_sku.mark(items + ocean_items, cfg, ev["days"])
     check = None
     if usable_revision(revision, th):  # 数据说明里写：当期拉到的数偏不偏高、校正了没有
         need = 1 + (1 / float(revision["median"]) - 1) * float(th.get("revision_inflation_share", 0.5))
@@ -922,10 +923,10 @@ def sections(items: list[dict], top_n: int) -> dict[str, list[dict]]:
     ocean = sorted((i for i in every if i.get("ocean")),
                    key=lambda i: (-i["ocean"]["niche_revenue"], i["ocean"]["niche"], -i["ocean"]["revenue"]))
     # 潜力SKU（detect/potential_sku.py）：一周翻倍 → 一周涨四成，同档里按加速倍数从高到低（近 7 天 ÷ 近 28 天，
-    # 子类目整体在涨的扣掉整体的；加速越猛，回测里后续越容易卖爆）
+    # 子类目整体在涨的扣掉整体的；加速越猛，回测里后续越容易卖爆）。蓝海产品也算（2026-11-20 起），所以从 every 里取
     def sku_key(i: dict):
         return potential_sku.tier(i), -i["sku"].get("net", i["sku"]["a7"])
-    sku = sorted((i for i in items if i.get("sku")), key=sku_key)
+    sku = sorted((i for i in every if i.get("sku")), key=sku_key)
     return {"surge": cut(surge), "fake": cut(fake), "potential": cut(potential), "hot": cut(hot), "ocean": cut(ocean),
             "sku": cut(sku),
             "counts": {"surge": len(surge), "fake": len(fake), "potential": len(potential), "hot": len(hot),

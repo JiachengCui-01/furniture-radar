@@ -1082,7 +1082,8 @@ def sku_hint(cfg: dict, rank: list | None = None) -> str:
     if rank:
         need = float((cfg["pool"].get("rank_gain") or {}).get("min_cr", 20))
         extra = f"（另留 {rank[0]} 个名额给近 7 天排名改善 ≥{need:g}% 的）"
-    lines = [f"怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据{extra}，在其中的增长商品（突然爆火、新品潜力、上升中）里判断。",
+    lines = [f"怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据{extra}，在其中的增长商品（突然爆火、新品潜力、上升中，"
+             "蓝海产品也算）里判断。",
              "怎么判断：加速倍数 = 近 7 天日均 ÷ 近 28 天在售日均（断货的日子不算；子类目整体在涨的先扣掉整体涨幅）。"
              f"≥{top:g} 倍是一周翻倍；{low:g}~{top:g} 倍是一周涨四成，带“月度增长尚未验证”“降价驱动”标签的不收。"]
     if all(bt.get(k) for k in ("top_range", "mid_range", "growth")):
@@ -1095,7 +1096,7 @@ def sku_hint(cfg: dict, rank: list | None = None) -> str:
                      f"一周翻倍 {backtest_pct(bt['top_range'][0])}~{backtest_pct(bt['top_range'][1])} 卖爆，"
                      f"一周涨四成 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}，"
                      f"增长商品平均 {backtest_pct(bt['growth'])}；{bands}{relist}样本偏乐观{sample}，实际会低一些。")
-    lines.append("不判的：蓝海、数据陈旧、只有月度数据的；商品照样留在原来的板块里。")
+    lines.append("不判的：数据陈旧、只有月度数据的；商品照样留在原来的板块里（蓝海产品留在蓝海产品里）。")
     return "\n".join(lines)
 
 
@@ -1184,7 +1185,7 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
           item.get("age_days") if item.get("age_days") is not None else "",
           item.get("rating") if item.get("rating") is not None else "",
           item.get("ratings") if item.get("ratings") is not None else "",
-          reason, "、".join(risks), item.get("label_cn") or "", basis]  # 和 SKU_COLS 一列对一列
+          reason, "、".join(risks), "蓝海产品" if sku.get("ocean") else item.get("label_cn") or "", basis]  # 和 SKU_COLS 一列对一列
     data = {"seg": seg, "node": node, "inc": None if inc is None else f"{inc:.0f}", "rev": None if not rev else f"{rev:.0f}",
             "price": item.get("price"), "a7": a7, "a14": a14, "age": item.get("age_days"), "rating": item.get("rating"), "i": n,
             "xl": json.dumps(xl, ensure_ascii=False)}
@@ -1196,7 +1197,8 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
         ("nm", "", f'<a href="{amazon(item["asin"])}" {LINK}>{esc(short_name(item, 48))}</a>'
                    f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
         ("nc", "", esc(node).replace("、", "、<wbr>")),  # 只在顿号处换行
-        ("nd", f' data-tip="{esc(basis)}"', esc(sku["kind"])),  # 档（一周翻倍 / 一周涨四成）看上面的筛选、下载的表格“档”一列，这里不再打紫色标签
+        ("nd", f' data-tip="{esc(basis)}"', esc(sku["kind"]) + ("<small>蓝海产品</small>" if sku.get("ocean") else "")),
+        # 档（一周翻倍 / 一周涨四成）看上面的筛选、下载的表格“档”一列，这里不再打紫色标签；蓝海产品（只在蓝海产品里列）下面写明
         ("n", "", fmt_price(item.get("price"))),
         ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
         ("n", "", esc(increment_text(item))),
@@ -2227,7 +2229,7 @@ def render(ctx: dict) -> str:
     counts = sec["counts"]
     cfg = ctx["cfg"]
     cur = _curated(ctx)
-    by_asin = {i["asin"]: i for i in ctx["items"]}
+    by_asin = {i["asin"]: i for i in [*(sec.get("ocean") or []), *ctx["items"]]}  # 蓝海产品也判潜力SKU：复查里点得到
     pool = cur["growth"]["shown"]
     tracked = [i for i in ctx["items"] if i.get("daily", True)]
     n_plain = sum(1 for i in tracked if i.get("plain"))  # 全部追踪商品表不列简单款（_all_table），标题写个数

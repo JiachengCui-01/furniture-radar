@@ -67,12 +67,19 @@ def test_subcategory_wide_acceleration_is_taken_out(cfg):
 
 def test_only_growth_items_count(cfg):
     """不是增长商品的不收（观察里没有上升中的、持续热销里没有上升中的、评分偏低、异常）：最近一周再加速也不算；
-    蓝海、数据陈旧、只有月度名单数据的也不进。"""
+    数据陈旧、只有月度名单数据的也不进。蓝海产品 2026-11-20 起照样判（用户要），条件一样，清单上写明“蓝海产品”。"""
     s = potential_sku.settings(cfg)
     for kw in ({"rising": None}, {"label": "hot", "rising": None}, {"label": "low"}, {"label": "fake"},
-               {"ocean": {"niche": "黑胶唱片"}}, {"stale": True}, {"daily": False}):
+               {"stale": True}, {"daily": False}):
         assert potential_sku.classify(_item("A", last7_avg=25.0, **kw), s) is None, kw
     assert potential_sku.classify(_item("B", last7_avg=None), s) is None
+    ocean = potential_sku.classify(_item("O", last7_avg=25.0, ocean={"niche": "黑胶唱片"}), s)
+    assert ocean["tier"] == "一周翻倍" and ocean["ocean"] is True
+    assert potential_sku.label_of(ocean) == "一周翻倍·上升中·蓝海产品"
+    assert "ocean" not in potential_sku.classify(_item("P", last7_avg=25.0), s)
+    # 条件一样：不是增长商品的蓝海产品不收；一周涨四成里带“月度增长尚未验证”的也不收
+    assert potential_sku.classify(_item("Q", last7_avg=25.0, rising=None, ocean={"niche": "台球"}), s) is None
+    assert potential_sku.classify(_item("R", last7_avg=16.0, ocean={"niche": "台球"}, tags=["月度增长尚未验证（完整月份不足）"]), s) is None
 
 
 def test_sections_order_by_tier_then_acceleration(cfg):
@@ -139,13 +146,13 @@ def test_report_block_table_and_download(cfg):
     # 2026-11-20 用户要简要明确：一行一项（怎么收集 / 怎么判断 / 回测 / 不判的），细的回测数在“回测卖爆”一列和 README
     hint = render.sku_hint(cfg)
     assert hint.split("\n") == [
-        "怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据，在其中的增长商品（突然爆火、新品潜力、上升中）里判断。",
+        "怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据，在其中的增长商品（突然爆火、新品潜力、上升中，蓝海产品也算）里判断。",
         "怎么判断：加速倍数 = 近 7 天日均 ÷ 近 28 天在售日均（断货的日子不算；子类目整体在涨的先扣掉整体涨幅）。"
         "≥2 倍是一周翻倍；1.4~2 倍是一周涨四成，带“月度增长尚未验证”“降价驱动”标签的不收。",
         "回测：卖爆 = 之后第 2 个月的 30 天销量 ≥ 现在的 2 倍且 ≥300 件（一周翻倍的保持这周的速度就够）。2025-11~2026-08 每周倒推："
         "一周翻倍 22%~32% 卖爆，一周涨四成 10%~12%，增长商品平均 5.1%；加速越猛越容易卖爆，每行见“回测卖爆”一列。"
         "老品换链接单算（一周翻倍 45%、一周涨四成 24%）。样本偏乐观（只含 2026-10-23 还在名单上的商品），实际会低一些。",
-        "不判的：蓝海、数据陈旧、只有月度数据的；商品照样留在原来的板块里。"]
+        "不判的：数据陈旧、只有月度数据的；商品照样留在原来的板块里（蓝海产品留在蓝海产品里）。"]
     assert len(hint) < 500
     # 本期留了排名改善名额的：怎么收集里写上
     assert "拉日数据（另留 79 个名额给近 7 天排名改善 ≥20% 的），在其中" in render.sku_hint(cfg, [79, 64])
@@ -532,3 +539,24 @@ def test_big_volume_note_uses_the_table_units(cfg):
     assert render.sku_band_text(near["sku"], cfg, near) == "32%~63%（近30天≥600件的 12%）"
     assert render.sku_band_text(near["sku"], cfg) == "32%~63%"
 
+
+
+def test_blue_ocean_items_are_judged_but_stay_in_the_blue_ocean_board(cfg):
+    """2026-11-20 用户：蓝海也要判进来。蓝海产品只在蓝海产品里列（不进突然爆火、新品潜力、增长商品），潜力SKU 清单上照样判，
+    表格“类型”下面写“蓝海产品”，下载的表格“所在板块”写蓝海产品；上期是潜力SKU 的蓝海产品本期还在追踪就不算“没追踪”。"""
+    from radar.detect import diff
+    sea = _item("SEA", last7_avg=25.0, ocean={"niche": "台球", "niche_revenue": 1.0, "revenue": 1.0}, label="potential", rising=None)
+    items = [_item("M1"), sea]
+    potential_sku.mark(items, cfg)
+    sec = analyze.sections(items, 0)
+    assert [i["asin"] for i in sec["sku"]] == ["SEA", "M1"] and sec["counts"]["sku"] == 2
+    assert [i["asin"] for i in sec["ocean"]] == ["SEA"] and not sec["potential"]  # 照样只在蓝海产品里
+    row = render._sku_row(sea, 0, cfg)
+    assert '<td class="nd" data-tip=' in row and ">新品潜力<small>蓝海产品</small></td>" in row
+    xl = json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))
+    assert xl[6] == "新品潜力" and xl[-2] == "蓝海产品"
+    # 复查：上期潜力SKU 里的蓝海产品，本期拉到了日数据（sku_tracked）但不再符合 → 还在追踪但不再符合，不是“没追踪”
+    prev = {"id": "2026-11-02", "labels": {"M1": ["watch"]}, "sku": {"SEA": ["一周翻倍", "新品潜力"], "GONE": ["一周涨四成", "上升中"]}}
+    got = diff.compare(prev, {"M1": "watch"}, sku={"M1": ["一周涨四成", "上升中"]}, sku_tracked={"SEA"})["sku_check"]
+    assert got["lost"] == {"SEA": "一周翻倍"} and got["gone"] == ["GONE"]
+    assert diff.compare(prev, {"M1": "watch"}, sku={})["sku_check"]["gone"] == ["SEA", "GONE"]  # 不传时和以前一样

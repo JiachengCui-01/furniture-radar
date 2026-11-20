@@ -60,7 +60,8 @@
 之前试过、用户否掉的（都在 2026-11-17）：“有空间没发力”（回测起量不比基准高）、“把握大 / 待观察”（按会不会接着涨分，不是按会不会爆）、
 “爆发苗头 + 稳步在涨”（稳步在涨卖爆只有 6.5%，而且“稳步在涨·突然爆火”名字自相矛盾；不在增长商品里的也收了）。
 
-不进清单：蓝海产品（只在蓝海产品里列出，2026-11-07 用户要求）、数据陈旧、只有月度名单数据的（没有日数据，看不出最近一周）。
+不进清单：数据陈旧、只有月度名单数据的（没有日数据，看不出最近一周）。蓝海产品 2026-11-20 起照样判（用户要；以前不判）：
+条件一样，商品照样只在蓝海产品里列，清单上标“蓝海产品”（sku["ocean"]）。兴趣爱好类目（11-07 才加）不在回测样本里。
 评分偏低、异常信号本来就不是增长商品。原有板块都不动，商品照样在原板块里。
 
 风险标签“近7天含大促日”（PROMO，2026-11-18 复核时加）：近 7 天（数据截止日往前 7 天）里有大促日（events.detect 从本期日数据测出的）。
@@ -179,12 +180,13 @@ def promo_days(as_of, events) -> list[str]:
 
 
 def classify(item: dict, s: dict, pace: dict[str, float] | None = None, events=()) -> dict | None:
-    """这个商品算不算潜力SKU：返回 {tier, kind, a7, net, pace, a14, promo, flags}，不算的返回 None。s = settings(cfg)。
+    """这个商品算不算潜力SKU：返回 {tier, kind, a7, net, pace, a14, promo, flags}（蓝海产品另有 ocean: True），不算的返回 None。
+    s = settings(cfg)。蓝海产品照样判（2026-11-20 起；以前不判），条件一样。
     a7 = 近 7 天 ÷ 近 28 天在售日均（表格里显示的）；pace = 所在子类目这周整体的倍数（大于 1 才有，见 node_pace）；
     net = a7 ÷ pace（没有 pace 时就是 a7），按它分档、排序。promo = 近 7 天里的大促日（风险标签 PROMO），没有的是 None。
     一周涨四成里带 WEAK_MID 标签的不收；flags = 照收但要写明的：一周翻倍里的“月度增长尚未验证”、老品换链接。"""
     growth = growth_kind(item)
-    if not growth or item.get("ocean") or item.get("stale") or item.get("daily") is False:
+    if not growth or item.get("stale") or item.get("daily") is False:
         return None
     a28 = base_avg(item)
     a7 = _ratio(item.get("last7_avg"), a28)
@@ -204,9 +206,12 @@ def classify(item: dict, s: dict, pace: dict[str, float] | None = None, events=(
     flags = [UNVER] if _tagged(item, UNVER) else []
     if item.get("relist"):
         flags.append(RELIST)
-    return {"tier": tier, "kind": KIND_CN[growth],
-            "a7": round(a7, 2), "net": net, "pace": tide, "a14": None if a14 is None else round(a14, 2),
-            "promo": promo_days(item.get("as_of"), events) or None, "flags": flags}
+    out = {"tier": tier, "kind": KIND_CN[growth],
+           "a7": round(a7, 2), "net": net, "pace": tide, "a14": None if a14 is None else round(a14, 2),
+           "promo": promo_days(item.get("as_of"), events) or None, "flags": flags}
+    if item.get("ocean"):  # 蓝海产品只在蓝海产品里列（不进突然爆火、新品潜力、增长商品），清单上写明在哪
+        out["ocean"] = True
+    return out
 
 
 def mark(items: list[dict], cfg: dict, events=()) -> int:
@@ -226,8 +231,8 @@ def tier(item: dict) -> int:
 
 
 def label_of(sku: dict | None) -> str:
-    """卡片、表格上的一句：“一周翻倍·突然爆火”“一周涨四成·上升中”。"""
-    return f"{sku['tier']}·{sku['kind']}" if sku else ""
+    """卡片、表格上的一句：“一周翻倍·突然爆火”“一周涨四成·上升中”；蓝海产品后面加“·蓝海产品”。"""
+    return f"{sku['tier']}·{sku['kind']}" + ("·蓝海产品" if sku.get("ocean") else "") if sku else ""
 
 
 def why(item: dict) -> str:

@@ -707,8 +707,10 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
     labels = {i["asin"]: i["label"] for i in items}
     as_of_values = [i["as_of"] for i in items if i.get("as_of") and i.get("daily", True)]
     # 潜力SKU 实盘跟踪（detect/potential_sku.track）：到期的用这期拉到的日数据算第 2 个月卖爆没有，再记下本期判定的
-    sku_live = potential_sku.track(state, items, report_id, cfg, clock.parse_day(max(as_of_values)) if as_of_values else None,
-                                   (events or {}).get("days") or ())
+    sku_live = potential_sku.track(state, items + [i for i in extra if i.get("sku")], report_id, cfg,
+                                   clock.parse_day(max(as_of_values)) if as_of_values else None, (events or {}).get("days") or ())
+    # 本期的潜力SKU（含蓝海产品，2026-11-20 起）：下期复查、下期优先拉日数据
+    sku_record = potential_sku.record(items + extra)
     key_text = crypto.report_key_text(master, report_id)
     log.mask(key_text)
     ctx = {
@@ -722,6 +724,7 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "as_of": max(as_of_values) if as_of_values else "—",
         "items": items,
         "sku_live": sku_live,
+        "sku_record": sku_record,
         "focus": analyze.focus_items(items),
         "sections": sec,
         "curated": curated_lists(items, sec, state, cfg, common),
@@ -730,7 +733,8 @@ def build_report(cfg: dict, secrets: Secrets, master: bytes, site: Path, state: 
         "scope_key": scope_key or discovery.scope_key(cfg),
         "diff": diffing.compare(prev_run if prev_run and prev_run.get("scope_key") == (scope_key or discovery.scope_key(cfg))
                                 else None, labels, monthly={i["asin"] for i in items if not i.get("daily", True)},
-                                retro=retro, growth=growth_map(items), sku=potential_sku.record(items)),
+                                retro=retro, growth=growth_map(items), sku=sku_record,
+                                sku_tracked={i["asin"] for i in extra if not i.get("list_only") and i.get("daily", True)}),
         "monthly": monthly or {},
         "monthly_judged": monthly_judged or [],
         "coverage": {**coverage, "stale": sum(1 for i in items if i["stale"])},
@@ -900,7 +904,7 @@ def _run_record(cfg: dict, ctx: dict, date_text: str, labels: dict, ocean: list[
         # 下期“与上期对比”用：本期提示了大促后数据待修订（events.bsr_lift）时，下期写明这些增长商品哪些仍成立（diff.compare）
         "growth": growth_map(ctx["items"]), "lift": bool((ctx.get("events") or {}).get("lift")),
         # 潜力SKU {ASIN: [档, 类型]}：下期“与上期对比”复查（detect/potential_sku.recheck），下期优先拉日数据（tracking.watchlist）
-        "sku": potential_sku.record(ctx["items"]),
+        "sku": ctx["sku_record"] if "sku_record" in ctx else potential_sku.record(ctx["items"]),
         "monthly_judged": ctx.get("monthly_judged") or [],
         "scope_key": ctx.get("scope_key") or discovery.scope_key(cfg),
         "counts": ctx["sections"]["counts"], "generated_at": ctx["generated_at"],

@@ -18,12 +18,13 @@ LABELS = ("surge", "potential", "hot", "fake")
 
 def compare(prev_run: dict | None, current: dict[str, str], monthly: set[str] = frozenset(),
             retro: dict[str, str] | None = None, growth: dict[str, str] | None = None,
-            sku: dict[str, list[str]] | None = None) -> dict:
+            sku: dict[str, list[str]] | None = None, sku_tracked: set[str] | frozenset = frozenset()) -> dict:
     """monthly：本期月度名单补判出的持续热销；retro：上期没追踪的商品回看上期那天的判定；
     growth：本期的增长商品 {ASIN: surge / potential / rising}（analyze.growth_kind）。
     结果的 retro = 上期板块来自回看的商品（只列出现在依旧 / 新进入 / 不再爆火里的）；
     recheck = 上期提示了大促后数据待修订时，上期的增长商品本期 仍是（held）/ 不再是（lost，值是上期是哪种）/ 本期没追踪（gone），
-    其余时候为 None。sku：本期的潜力SKU（potential_sku.record）→ sku_check（potential_sku.recheck，上期没记时为 None）。"""
+    其余时候为 None。sku：本期的潜力SKU（potential_sku.record）→ sku_check（potential_sku.recheck，上期没记时为 None）；
+    sku_tracked：本期拉到日数据、但不在 current 里的蓝海产品（也判潜力SKU，复查时算“还在追踪”）。"""
     if not prev_run:
         return {"first": True, "still": [], "new": {label: [] for label in LABELS}, "moved_from": {}, "cooled": [],
                 "covered": [], "retro": [], "recheck": None, "sku_check": None}
@@ -41,7 +42,7 @@ def compare(prev_run: dict | None, current: dict[str, str], monthly: set[str] = 
     return {"first": False, "prev_id": prev_run.get("id"), "still": still, "new": new, "moved_from": moved_from,
             "cooled": cooled, "covered": covered, "retro": sorted(a for a in looked if a in shown),
             "recheck": recheck(prev_run, current, growth or {}),
-            "sku_check": potential_sku.recheck(prev_run, sku or {}, current)}
+            "sku_check": potential_sku.recheck(prev_run, sku or {}, set(current) | set(sku_tracked))}
 
 
 def recheck(prev_run: dict, current: dict[str, str], growth: dict[str, str]) -> dict | None:
