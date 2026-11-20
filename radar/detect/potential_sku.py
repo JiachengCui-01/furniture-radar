@@ -7,7 +7,8 @@
   潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中，同 analyze.growth_kind）里，
             加速倍数 ≥ min_a7（最近一周在加速）的，分两档：
     一周翻倍   = 加速倍数 ≥ top_a7；
-    一周涨五成 = 其余（min_a7 ~ top_a7 倍），但不收带“月度增长尚未验证”“降价驱动”标签的（WEAK_MID）。
+    一周涨四成 = 其余（min_a7 ~ top_a7 倍），但不收带“月度增长尚未验证”“降价驱动”标签的（WEAK_MID）。
+                 2026-11-20 起线在 ×1.4（以前 ×1.5、叫一周涨五成，见文件末尾）。
   加速倍数 = 近 7 天日均 ÷ 近 28 天在售日的日均，所在子类目这周整体也在加速的先扣掉整体的（除以子类目的倍数，只除大于 1 的）。
   子类目的倍数（node_pace）= 本期追踪的同子类目商品（有日数据、不陈旧、近 28 天在售日均 × 30 ≥ node_min_units 件）
   各自近 7 天 ÷ 近 28 天在售日均的中位数，不到 node_min 个的子类目不算（不扣）。
@@ -42,15 +43,16 @@
 
 回测（10-23 全市场试跑 6,458 个商品各 418 天的日数据，2025-11-15~2026-09-26 每周用现在的规则倒推判一次，看之后的真实销量；
 第 2 个月的结果要到判定后 57 天才有，所以算进比例的只到 2026-08-22 判的），只看增长商品 13,145 次：后续卖爆 5.1%（全部商品 2.8%）。
-2026-11-19 的口径（不含老品换链接）：
-  一周翻倍 217 次（181 个商品）：卖爆 27.7%（2025-11~2026-03 判的 22.8%、2026-04~08 的 33.0%），2 个月内新进子类目销量前 10% 16.1%。
-  一周涨五成 994 次（756 个商品）：卖爆 12.4%（前段 11.3%、后段 13.3%），新进前 10% 6.1%。
-  不收的：一周涨五成里月度增长尚未验证 / 降价驱动的 8.3%（363 次）；加速 1.2~1.5 倍的 6.3%；不到 1.2 倍的 2.2%。
-  按判定周整周重抽，95% 区间一周翻倍 21%~36%、一周涨五成 10%~15%。抓到的增长商品后续卖爆 34%。
-  以前的口径：11-18 一周翻倍 359 次 32.0%、一周涨五成 1,495 次 13.3%；扣子类目整体以前 486 次 26.5%、1,927 次 11.8%。
+2026-11-20 的口径（按显示的两位小数分档，不含老品换链接）：
+  一周翻倍 222 次（184 个商品）：卖爆 27.0%（2025-11~2026-03 判的 22.4%、2026-04~08 的 32.1%），2 个月内新进子类目销量前 10% 15.8%。
+  一周涨四成 1,591 次（1,083 个商品）：卖爆 11.3%（前段 10.4%、后段 12.1%），新进前 10% 5.8%。
+  不收的：一周涨四成里月度增长尚未验证 / 降价驱动的 7.3%（524 次）；加速 1.2~1.4 倍的 5.3%；不到 1.2 倍的 2.2%。
+  按判定周整周重抽，95% 区间一周翻倍 20.5%~35%、一周涨四成 9.5%~13%。抓到的增长商品后续卖爆 44%。
+  以前的口径：11-19 一周翻倍 217 次 27.7%、一周涨五成（×1.5~2）994 次 12.4%，抓到 34%；
+  11-18 一周翻倍 359 次 32.0%、一周涨五成 1,495 次 13.3%；扣子类目整体以前 486 次 26.5%、1,927 次 11.8%。
   评分、价格、是爆火还是上升中，叠加上去都提不高多少，所以只按这一条（不收的两种标签见上面 ③）。
 “卖爆”的标准（第 2 个月 ≥ 现在近 30 天的 2 倍）和一周翻倍有一半是重合的：一周翻倍的最近一周已经是近 28 天的 2 倍，
-只要把这个速度保持两个月就够标准；在这周的速度上再翻一倍的只有 5.5%（不到 1.2 倍的 1.7%）。报告里写明这一点。
+只要把这个速度保持两个月就够标准；在这周的速度上再翻一倍的只有 5.4%（不到 1.2 倍的 1.7%）。报告里写明这一点。
 样本是 10-23 那天还在全市场名单里的商品（幸存者偏差：越靠近 10-23 判的比例越高，后段比前段高一截），实际会低一些，
 报告和钉钉里写前后两段的范围，不只写平均。
 这些数写在 config.yaml thresholds.potential_sku.backtest，报告提示、钉钉里照抄；改了门槛要重新回测再改这些数。
@@ -62,9 +64,9 @@
 评分偏低、异常信号本来就不是增长商品。原有板块都不动，商品照样在原板块里。
 
 风险标签“近7天含大促日”（PROMO，2026-11-18 复核时加）：近 7 天（数据截止日往前 7 天）里有大促日（events.detect 从本期日数据测出的）。
-加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里明显不准（11-19 的口径）：一周翻倍的后续卖爆 9.6%（52 次），
-不含的 33.3%（165 次），黑五（2025-11-29、12-06 两个判定日）和 Prime Day（2026-06-27）都低；一周涨五成 10.3%（116 次）对 12.6%。
-只打标签、不剔除（还是比不列的加速 1.2~1.5 倍的 6.3% 高）。现有的“大促拉动”管不到：它只标去掉大促日就不是增长商品的，潜力SKU 都是增长商品。
+加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里明显不准（11-20 的口径）：一周翻倍的后续卖爆 9.4%（53 次），
+不含的 32.5%（169 次），黑五（2025-11-29、12-06 两个判定日）和 Prime Day（2026-06-27）都低；一周涨四成 8.5%（164 次）对 11.6%。
+只打标签、不剔除（还是比不列的加速 1.2~1.4 倍的 5.3% 高）。现有的“大促拉动”管不到：它只标去掉大促日就不是增长商品的，潜力SKU 都是增长商品。
 复核时还查过“近 7 天靠一两天冲出来的”，不是风险，没加标签：同样的加速倍数下，最高两天占近 7 天 ≥40% 的后续卖爆不比其他低
 （1.5~1.75 倍 24% 对 11%、1.75~2 倍 25% 对 18%、2~2.5 倍 32% 对 29%）；最高一天占 ≥35% 的 1,772 次里只有 6 次；
 近 7 天缺数据的 6 次。先前看到的“最高一天占一半以上、后续很少卖爆”是缺了几天数据的，不是冲量。
@@ -82,7 +84,18 @@ state["sku_live"]：判定时的数据截止日、档、类型、加速倍数、
 实盘等修订完再算、停更的不再一直等（OUT_SETTLE / OUT_WAIT）；“近30天≥600件”按表格那一列的近 30 天算（report.render.sku_band_text）。
 查过、不用改的：同一父体的几个子体都在追踪里的 0 个（池子按父体去重，实盘也没有同父体两条）；
 在售日均算不出、近 28 天却有量的增长商品 0 个；日数据停更超过 stale_days 的本来就不判增长（不会把正在断货的列进来）；
-近 7 天去掉大促日后只剩 ≤3 天的只有 Prime Day 那一周（回测一周翻倍 11 次 9.1%、一周涨五成 55 次 16.4%），已有“近7天含大促日”标签。"""
+近 7 天去掉大促日后只剩 ≤3 天的只有 Prime Day 那一周（回测一周翻倍 11 次 9.1%、一周涨五成 55 次 16.4%），已有“近7天含大促日”标签。
+
+2026-11-20 一周涨五成的线从 ×1.5 放到 ×1.4，改叫“一周涨四成”（用户问 11-16 那期只有 8 个是不是太严，看了回测后定的）：
+  回测里 ×1.4~1.5（不含两种标签、老品换链接）570 次卖爆 9.6%（前段 8.9%、后段 10.5%），和 ×1.5~1.75 的 10.6% 差不多；
+  再往下 ×1.35~1.4 只有 3.8%、×1.3~1.35 5.5%，和增长商品平均（5.1%）一样。1.4 是看了分段才定的（相邻分段有 ±2 个百分点的
+  波动），前后两段时间都一样。放到 ×1.4 后回测每期列出的中位 26 → 40 个，两档合起来卖爆 14.9% → 13.2%，
+  抓到的增长商品后续卖爆 34% → 44%；11-16 那期多收 8 个（1 个老品换链接）。
+  11-16 那期少主要不是线：本期 190 个增长商品，按回测的比例该有约 18 个；×1.5 以上的 18 个里 10 个带两种标签
+  （9 个新品潜力“月度增长尚未验证”，回测这类后续卖爆 5.9%，照样不收），回测里这个占比中位 26%、最多 47%。
+  回测的数同时按显示的两位小数分档重算（11-19 改了分档、数没重算：一周翻倍 217 → 222 次、27.7% → 27.0%），
+  表格“回测卖爆”加 ×1.4~1.5 一段（8.9%~10%）。
+  状态里以前记的“一周涨五成”（实盘记录、上期的潜力SKU）读的时候按一周涨四成算（tier_name：≥1.5 倍是现在一周涨四成的一部分）。"""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -91,12 +104,14 @@ from statistics import median
 from .. import clock
 from ..series import Daily
 
-TOP, MID = "一周翻倍", "一周涨五成"
+TOP, MID = "一周翻倍", "一周涨四成"
+# 以前的叫法 → 现在的：2026-11-20 以前线在 ×1.5、叫一周涨五成（是现在一周涨四成的一部分）。实盘记录、runs 里上期的潜力SKU 存的是名字
+OLD_NAMES = {"一周涨五成": MID}
 KIND_CN = {"surge": "突然爆火", "potential": "新品潜力", "rising": "上升中"}
-DEFAULTS = {"top_a7": 2.0, "min_a7": 1.5, "node_min": 10, "node_min_units": 60, "live_min": 30}
+DEFAULTS = {"top_a7": 2.0, "min_a7": 1.4, "node_min": 10, "node_min_units": 60, "live_min": 30}
 PROMO = "近7天含大促日"  # 风险标签的短名（表格、下载的 Excel、钉钉）
 UNVER, PRICE, RELIST = "月度增长尚未验证", "降价驱动", "老品换链接"
-WEAK_MID = (UNVER, PRICE)  # 一周涨五成不收：回测里和不列的一样（文件说明 ③）
+WEAK_MID = (UNVER, PRICE)  # 一周涨四成不收：回测里接近不列的（文件说明 ③，11-20 的口径 7.3% 对 1.2~1.4 倍的 5.3%）
 LIVE_KEY = "sku_live"  # state 里实盘跟踪的记录
 OUT_FROM, OUT_TO, OUT_MIN_DAYS = 27, 56, 20  # 第 2 个月 = 判定后第 27~56 天（30 天），有 ≥20 天的数才算（同回测）
 # 第 2 个月结束后再等这么多天、用那以后拉的日数据算：最近几天的数卖家精灵还会改（各期测到改最近 5~9 天，×0.82~×1.08，
@@ -112,6 +127,11 @@ def settings(cfg: dict) -> dict:
     """thresholds.potential_sku，缺的用默认。"""
     own = (cfg.get("thresholds") or {}).get("potential_sku") or {}
     return {**DEFAULTS, **{k: v for k, v in own.items() if v is not None}}
+
+
+def tier_name(name: str | None) -> str | None:
+    """状态里存着的档名换成现在的叫法（OLD_NAMES）；别的原样返回。"""
+    return OLD_NAMES.get(name, name) if name else name
 
 
 def _ratio(a: float | None, b: float | None) -> float | None:
@@ -162,7 +182,7 @@ def classify(item: dict, s: dict, pace: dict[str, float] | None = None, events=(
     """这个商品算不算潜力SKU：返回 {tier, kind, a7, net, pace, a14, promo, flags}，不算的返回 None。s = settings(cfg)。
     a7 = 近 7 天 ÷ 近 28 天在售日均（表格里显示的）；pace = 所在子类目这周整体的倍数（大于 1 才有，见 node_pace）；
     net = a7 ÷ pace（没有 pace 时就是 a7），按它分档、排序。promo = 近 7 天里的大促日（风险标签 PROMO），没有的是 None。
-    一周涨五成里带 WEAK_MID 标签的不收；flags = 照收但要写明的：一周翻倍里的“月度增长尚未验证”、老品换链接。"""
+    一周涨四成里带 WEAK_MID 标签的不收；flags = 照收但要写明的：一周翻倍里的“月度增长尚未验证”、老品换链接。"""
     growth = growth_kind(item)
     if not growth or item.get("ocean") or item.get("stale") or item.get("daily") is False:
         return None
@@ -172,8 +192,8 @@ def classify(item: dict, s: dict, pace: dict[str, float] | None = None, events=(
         return None
     tide = (pace or {}).get(item.get("node") or "")
     tide = tide if tide and tide > 1 + 1e-9 else None
-    # 按显示的两位小数分档、对段。以前按没取整的分：×1.996 显示 ×2.00 却在一周涨五成、对的是 ×2~2.5 那段的回测数，
-    # ×1.4952 显示 ×1.50 却不收（回测两档里 0.58% 跨线）
+    # 按显示的两位小数分档、对段。以前按没取整的分：×1.996 显示 ×2.00 却在中间一档、对的是 ×2~2.5 那段的回测数，
+    # 下限那条线一样（以前 ×1.4952 显示 ×1.50 却不收；现在线在 ×1.4，×1.3952 显示 ×1.40 要收，回测增长商品里 57 次在这条线上取整跨线）
     net = round(a7 / tide if tide else a7, 2)
     if net < float(s["min_a7"]) - 1e-9:
         return None
@@ -201,19 +221,19 @@ def mark(items: list[dict], cfg: dict, events=()) -> int:
 
 
 def tier(item: dict) -> int:
-    """清单里的顺序：一周翻倍 → 一周涨五成（同档里按加速倍数 net 从高到低，见 analyze.sections）。"""
+    """清单里的顺序：一周翻倍 → 一周涨四成（同档里按加速倍数 net 从高到低，见 analyze.sections）。"""
     return 0 if (item.get("sku") or {}).get("tier") == TOP else 1
 
 
 def label_of(sku: dict | None) -> str:
-    """卡片、表格上的一句：“一周翻倍·突然爆火”“一周涨五成·上升中”。"""
+    """卡片、表格上的一句：“一周翻倍·突然爆火”“一周涨四成·上升中”。"""
     return f"{sku['tier']}·{sku['kind']}" if sku else ""
 
 
 def why(item: dict) -> str:
     """为什么算（规则一句话，数字取自商品）：表格、钉钉、卡片上都用这一句。子类目整体在涨的写明扣掉以后是多少。"""
     sku = item.get("sku") or {}
-    tail = "，最近一周翻倍了" if sku.get("tier") == TOP else "，最近一周涨了五成以上"
+    tail = "，最近一周翻倍了" if sku.get("tier") == TOP else "，最近一周涨了四成以上"
     pace = (f"（所在子类目这周整体 ×{sku['pace']:.2f}，扣掉后 ×{sku.get('net', sku['a7']):.2f}）"
             if sku.get("pace") else "")
     return f"{sku.get('kind', '')}；近 7 天日均是近 28 天在售日均的 ×{sku['a7']:.2f}{pace}{tail}"
@@ -232,7 +252,7 @@ def recheck(prev_run: dict | None, current: dict[str, list[str]], tracked: dict)
         return None
     return {"total": len(before),
             "held": [a for a in before if a in current],
-            "lost": {a: v[0] for a, v in before.items() if a not in current and a in tracked},
+            "lost": {a: tier_name(v[0]) for a, v in before.items() if a not in current and a in tracked},
             "gone": [a for a in before if a not in current and a not in tracked]}
 
 
@@ -271,7 +291,7 @@ def risk_notes(sku: dict, cfg: dict) -> list[str]:
     if RELIST in flags:
         r = bt.get("relist")
         out.append("老品换链接：新链接还在起量、基数低，后续卖爆多半是回到老链接原来的量"
-                   + (f"；回测里这类一周翻倍的 {r[0]:.0%}、一周涨五成的 {r[1]:.0%} 后续卖爆，不算进两档的比例" if r else ""))
+                   + (f"；回测里这类一周翻倍的 {r[0]:.0%}、一周涨四成的 {r[1]:.0%} 后续卖爆，不算进两档的比例" if r else ""))
     return out
 
 
@@ -324,6 +344,8 @@ def track(state: dict, items: list[dict], report_id: str, cfg: dict, data_date: 
     live = state.setdefault(LIVE_KEY, {"since": report_id, "picks": []})
     picks = [p for p in live.get("picks") or [] if p.get("rid") != report_id or "f" in p]
     for p in picks:
+        if p.get("tier") in OLD_NAMES:  # 以前的叫法（一周涨五成）换成现在的，存回状态
+            p["tier"] = tier_name(p["tier"])
         if "f" in p:
             continue
         rec = (state.get("asins") or {}).get(p["asin"]) or {}
@@ -359,8 +381,8 @@ def summary(live: dict | None, data_date: date | None) -> dict:
     overdue = [p for p in waiting if data_date and _due(p) <= data_date]
     later = [_due(p) for p in waiting if not (data_date and _due(p) <= data_date)]
     return {"since": (live or {}).get("since"), "total": len(picks),
-            "done": {t: [sum(1 for p in done if p["tier"] == t), sum(1 for p in done if p["tier"] == t and p["boom"])]
-                     for t in (TOP, MID)},
+            "done": {t: [sum(1 for p in done if tier_name(p["tier"]) == t),
+                         sum(1 for p in done if tier_name(p["tier"]) == t and p["boom"])] for t in (TOP, MID)},
             "relist": [len(relist), sum(1 for p in relist if p["boom"])],
             "waiting": len(waiting), "overdue": len(overdue),
             "short": sum(1 for p in picks if "f" in p and p["f"] is None and not p.get("stop")),
