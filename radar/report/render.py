@@ -109,7 +109,7 @@ body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 -apple-syste
 header h1{font-size:22px;margin:2px 0}
 .sub{color:var(--muted);font-size:13px}
 a{color:var(--accent)}
-.hint{color:var(--muted);font-size:13px;margin:0 0 10px}
+.hint{color:var(--muted);font-size:13px;margin:0 0 10px}.hint.lines{white-space:pre-line}.hint.lines b{color:var(--text)}
 .empty{color:var(--muted);font-size:14px;padding:6px 0}
 img{display:block}
 .ph{display:flex;align-items:center;justify-content:center;background:var(--chip);color:var(--muted);font-weight:600;
@@ -1071,45 +1071,41 @@ def backtest_pct(v) -> str:
     return f"{v:.1%}" if v < 0.1 else f"{v:.0%}"
 
 
-def sku_hint(cfg: dict) -> str:
-    """潜力SKU 小窗顶部的一句话：条件的数字取自 config.yaml，回测数取自 thresholds.potential_sku.backtest。
-    2026-11-18 复核后：写明“卖爆”和一周翻倍有一半重合（守住最近一周的速度两个月就够）、回测比例写前后两段时间的范围
-    （样本有幸存者偏差，越靠近取样那天判的越高），不只写平均。"""
+def sku_hint(cfg: dict, rank: list | None = None) -> str:
+    """潜力SKU 小窗顶部的说明，一行一项：怎么收集 / 怎么判断 / 回测 / 不判的（2026-11-20 用户要简要明确，以前一大段）。
+    细的回测数（加速分段、同一档里分得出的、不列的那几档、前后两段）在表格“回测卖爆”一列和 README，这里只写两档的范围。
+    数字取自 config.yaml；rank = 本期 coverage["rank"]（[排名改善名额, 拉了几个]；没留这份名额的期是 None，不写）。"""
     s = potential_sku.settings(cfg)
     bt = s.get("backtest") or {}
     top, low = float(s["top_a7"]), float(s["min_a7"])
-    text = (f"潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天在售日均的 {low:g} 倍"
-            "（断货的日子不算进近 28 天；所在子类目这周整体也在涨的，先扣掉整体的涨幅：整类一起涨时单个商品的加速多半是跟着涨，"
-            f"回测里很快回落）。分两档：一周翻倍（≥{top:g} 倍）、一周涨四成（{low:g}~{top:g} 倍，"
-            "不收带“月度增长尚未验证”“降价驱动”标签的：回测里接近不列的）。")
-    if all(bt.get(k) for k in ("top_range", "mid_range", "top_again", "slow", "growth", "all", "halves")):
-        halves = bt["halves"]
-        weak = f"不收的一周涨四成 {backtest_pct(bt['weak_mid'])}、" if bt.get("weak_mid") else ""
-        relist = (f"老品换链接的单算（新链接还在起量，基数低，多半是回到老链接原来的量）：一周翻倍 {backtest_pct(bt['relist'][0])}、"
-                  f"一周涨四成 {backtest_pct(bt['relist'][1])}，不算进上面的比例。" if bt.get("relist") else "")
-        text += (f"回测（{bt.get('span')} 每周按同样的规则倒推，{int(bt.get('products') or 0):,} 个商品；"
-                 f"卖爆 = 第 2 个月（去掉大促日）的 30 天销量 ≥ 现在近 30 天（在售日均 × 30）的 {float(bt.get('boom_ratio', 2)):g} 倍"
-                 f"且 ≥{int(bt.get('boom_units', 300))} 件，一周翻倍的只要把最近一周的速度保持两个月就够这个标准）："
-                 f"一周翻倍的 {backtest_pct(bt['top_range'][0])}~{backtest_pct(bt['top_range'][1])} 后续卖爆，"
-                 f"其中在最近一周的速度上再翻一倍的 {backtest_pct(bt['top_again'])}；"
-                 f"一周涨四成的 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}；"
-                 f"{weak}加速 1.2~{low:g} 倍的 {backtest_pct(bt['slow'][0])}、不到 1.2 倍的 {backtest_pct(bt['slow'][1])}，不列"
-                 f"（增长商品平均 {backtest_pct(bt['growth'])}，全部商品 {backtest_pct(bt['all'])}）。{relist}"
-                 f"范围的两头是 {halves[0]} 和 {halves[1]} 判的；样本是 {bt.get('sample_date')} 还在全市场名单里的商品，"
-                 "越靠近这天判的比例越高，实际会低一些。")
-        if bt.get("bands"):
-            text += ("档里加速越猛越容易卖爆："
-                     + "、".join(f"×{float(lo):g}{'~' + format(float(nxt[0]), 'g') if nxt else ' 以上'} "
-                                 f"{backtest_pct(a)}~{backtest_pct(b)}"
-                                 for (lo, a, b), nxt in zip(bt["bands"], [*bt["bands"][1:], None]))
-                     + "（表格“回测卖爆”一列）。")
-        if all(bt.get(k) for k in ("age_mid", "big_top", "reviews_top")):
-            text += (f"同一档里还分得出的：一周涨四成里上架一年以上的 {backtest_pct(bt['age_mid'][0])}（其他 {backtest_pct(bt['age_mid'][1])}）；"
-                     f"一周翻倍里近 30 天销量（表格那一列）≥600 件的 {backtest_pct(bt['big_top'][0])}"
-                     f"（其他 {backtest_pct(bt['big_top'][1])}，"
-                     f"卖爆要翻倍，量大的难翻）、评论 500 条以上的 {backtest_pct(bt['reviews_top'][0])}"
-                     f"（其他 {backtest_pct(bt['reviews_top'][1])}）。评分、价格分组后高低不一，分不出。")
-    return text + "蓝海、数据陈旧、只有月度数据的不列；商品照样在原来的板块里。"
+    extra = ""
+    if rank:
+        need = float((cfg["pool"].get("rank_gain") or {}).get("min_cr", 20))
+        extra = f"（另留 {rank[0]} 个名额给近 7 天排名改善 ≥{need:g}% 的）"
+    lines = [f"怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据{extra}，在其中的增长商品（突然爆火、新品潜力、上升中）里判断。",
+             "怎么判断：加速倍数 = 近 7 天日均 ÷ 近 28 天在售日均（断货的日子不算；子类目整体在涨的先扣掉整体涨幅）。"
+             f"≥{top:g} 倍是一周翻倍；{low:g}~{top:g} 倍是一周涨四成，带“月度增长尚未验证”“降价驱动”标签的不收。"]
+    if all(bt.get(k) for k in ("top_range", "mid_range", "growth")):
+        relist = (f"老品换链接单算（一周翻倍 {backtest_pct(bt['relist'][0])}、一周涨四成 {backtest_pct(bt['relist'][1])}）。"
+                  if bt.get("relist") else "")
+        bands = "加速越猛越容易卖爆，每行见“回测卖爆”一列。" if bt.get("bands") else ""
+        sample = f"（只含 {bt['sample_date']} 还在名单上的商品）" if bt.get("sample_date") else ""
+        lines.append(f"回测：卖爆 = 之后第 2 个月的 30 天销量 ≥ 现在的 {float(bt.get('boom_ratio', 2)):g} 倍且 "
+                     f"≥{int(bt.get('boom_units', 300))} 件（一周翻倍的保持这周的速度就够）。{bt.get('span')} 每周倒推："
+                     f"一周翻倍 {backtest_pct(bt['top_range'][0])}~{backtest_pct(bt['top_range'][1])} 卖爆，"
+                     f"一周涨四成 {backtest_pct(bt['mid_range'][0])}~{backtest_pct(bt['mid_range'][1])}，"
+                     f"增长商品平均 {backtest_pct(bt['growth'])}；{bands}{relist}样本偏乐观{sample}，实际会低一些。")
+    lines.append("不判的：蓝海、数据陈旧、只有月度数据的；商品照样留在原来的板块里。")
+    return "\n".join(lines)
+
+
+def hint_lines(text: str) -> str:
+    """一行一项的说明（.hint.lines，换行照原样显示）：“怎么收集：”这类短开头加粗。下载的 Excel 取 textContent，换行保留。"""
+    out = []
+    for line in text.split("\n"):
+        head, sep, rest = line.partition("：")
+        out.append(f"<b>{esc(head + sep)}</b>{esc(rest)}" if sep and len(head) <= 4 else esc(line))
+    return "\n".join(out)
 
 
 def _sku_money(item: dict) -> tuple[float | None, float | None]:
@@ -1272,9 +1268,9 @@ def sku_live_text(live: dict | None, cfg: dict) -> str:
     bt = potential_sku.settings(cfg).get("backtest") or {}
     done = live.get("done") or {}
     (n1, k1), (n2, k2) = done.get(potential_sku.TOP, [0, 0]), done.get(potential_sku.MID, [0, 0])
-    how = (f"{live.get('since')} 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记），"
-           f"第 2 个月（判定后第 27~56 天）结束再过 {potential_sku.OUT_SETTLE} 天（最近几天的数卖家精灵还会改）、"
-           "用那以后拉到的日数据看卖爆没有，标准同回测")
+    # 2026-11-20 用户要简要：细节（含简单款、同一商品不另记、第 27~56 天、为什么再等 14 天）在 README 和 potential_sku.track
+    how = (f"{live.get('since')} 起每期记下判定的潜力SKU，第 2 个月结束再过 {potential_sku.OUT_SETTLE} 天"
+           "按回测的标准看卖爆没有")
     # 一个都还没到期才写“还没有到期的”：以前只看出没出结果，到期的全是数据不全、还没拉到时也这么写
     if not n1 + n2 + (live.get("relist") or [0])[0] + sum(live.get(k) or 0 for k in ("overdue", "short", "stop")):
         due = f"，最早 {live['next_due']} 出结果" if live.get("next_due") else ""
@@ -1327,8 +1323,8 @@ def _sku_pop(cur: dict, hint: str, total: int, report_id: str, live: dict | None
              if rows else '<div class="empty">本期没有潜力SKU。</div>')
     live_text = sku_live_text(live, cfg or {})
     live_html = f'<p class="hint">{esc(live_text)}</p>{_sku_live_rows(live)}' if live_text else ""
-    return _pop_src("sku", "潜力SKU", "sku",
-                    f'<p class="hint">{esc(hint)} {esc(_count_text(cur, total))}</p>{live_html}{summary}{table}')
+    head = hint_lines(hint + "\n本期：" + _count_text(cur, total))
+    return _pop_src("sku", "潜力SKU", "sku", f'<p class="hint lines">{head}</p>{live_html}{summary}{table}')
 
 
 def _kpi(key: str, label: str, desc: str, rows: list[dict], total: int, folded: str = "简单款、相近款") -> str:
@@ -2011,9 +2007,10 @@ def _all_table(items: list[dict]) -> str:
             "<th class=n>异常分</th><th>标签</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
 
 
-def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
+def section_hints(cfg: dict, universe: bool = True, rank: list | None = None) -> dict[str, str]:
     """每个小窗顶部的一句话入选条件（数字直接取自 config.yaml，和判定代码一一对应；完整口径见 README）。
-    universe：本期翻成了全市场名单；没翻成（预算不够）时说明机会候选退回月度名单和近 30 天榜单。"""
+    universe：本期翻成了全市场名单；没翻成（预算不够）时说明机会候选退回月度名单和近 30 天榜单。
+    rank：本期的排名改善名额（coverage["rank"]），潜力SKU 的“怎么收集”写上。"""
     th = cfg["thresholds"]
     s, h, p, f, r = th["surge"], th["hot"], th["potential"], th["fake"], th["rising"]
     o = blueocean.settings(cfg)
@@ -2040,7 +2037,7 @@ def section_hints(cfg: dict, universe: bool = True) -> dict[str, str]:
                   if universe else "本期没翻成全市场名单，不判蓝海产品。"),
         "growth": f"增长商品 = 突然爆火 + 新品潜力 + 上升中（近 28 天和近 7 天日均都 ≥ 之前 28 天的 {r['min_ratio']} 倍且 ≥{r['min_daily_sales']} 件{tide}）。按势头排。{scope}",
         "all": "本期拉了日数据的全部商品，简单款不列。板块 = 本期归入的板块（观察 = 都不属于），来源 = 被选进追踪的原因；月度名单补判的持续热销不在这里。",
-        "sku": sku_hint(cfg),
+        "sku": sku_hint(cfg, rank),
     }
 
 
@@ -2234,7 +2231,7 @@ def render(ctx: dict) -> str:
     pool = cur["growth"]["shown"]
     tracked = [i for i in ctx["items"] if i.get("daily", True)]
     n_plain = sum(1 for i in tracked if i.get("plain"))  # 全部追踪商品表不列简单款（_all_table），标题写个数
-    hints = section_hints(cfg, universe=bool(ctx["coverage"].get("universe")))
+    hints = section_hints(cfg, universe=bool(ctx["coverage"].get("universe")), rank=ctx["coverage"].get("rank"))
     young = cfg["thresholds"]["potential"]["max_age_days"]  # 突然爆火 / 潜力按上架天数分开（rules.new_days）
     kpi = "".join([
         _kpi("surge", "突然爆火", f"上架超 {young} 天，近 1~2 周销量突然翻倍", cur["surge"]["shown"], counts["surge"]),

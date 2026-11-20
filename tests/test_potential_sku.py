@@ -136,20 +136,24 @@ def test_report_block_table_and_download(cfg):
     assert m4[5:7] == ["一周涨四成", "新品潜力"] and m4[8] == 300 and m4[9] == 45000
     assert m4[11:15] == [1.6, 1.6, "10%~11%", 1.3] and m4[19] == "断货恢复"  # 没扣子类目的：扣子类目整体后和近7天÷近28天一样
     assert 'data-seg="一周翻倍"' in pop and 'data-seg="一周涨四成"' in pop and 'data-a7="2.0"' in pop
+    # 2026-11-20 用户要简要明确：一行一项（怎么收集 / 怎么判断 / 回测 / 不判的），细的回测数在“回测卖爆”一列和 README
     hint = render.sku_hint(cfg)
-    assert "潜力SKU = 本期增长商品（突然爆火、新品潜力、上升中）里最近一周在加速的：近 7 天日均 ≥ 近 28 天在售日均的 1.4 倍" in hint
-    assert "断货的日子不算进近 28 天" in hint
-    assert "一周涨四成（1.4~2 倍，不收带“月度增长尚未验证”“降价驱动”标签的：回测里接近不列的）" in hint
-    assert "所在子类目这周整体也在涨的，先扣掉整体的涨幅" in hint
-    assert ("卖爆 = 第 2 个月（去掉大促日）的 30 天销量 ≥ 现在近 30 天（在售日均 × 30）的 2 倍且 ≥300 件，"
-            "一周翻倍的只要把最近一周的速度保持两个月就够这个标准") in hint
-    # 回测（2026-11-18 复核后）：区间是有第 2 个月结果的判定日；写前后两段的范围和不重合的“再翻一倍”，说明幸存者偏差
-    assert "回测（2025-11~2026-08 每周" in hint
-    assert "一周翻倍的 22%~32% 后续卖爆，其中在最近一周的速度上再翻一倍的 5.4%；一周涨四成的 10%~12%" in hint
-    assert "不收的一周涨四成 7.3%、加速 1.2~1.4 倍的 5.3%、不到 1.2 倍的 2.2%" in hint
-    assert "（增长商品平均 5.1%，全部商品 2.8%）" in hint
-    assert "老品换链接的单算（新链接还在起量，基数低，多半是回到老链接原来的量）：一周翻倍 45%、一周涨四成 24%，不算进上面的比例" in hint
-    assert "样本是 2026-10-23 还在全市场名单里的商品，越靠近这天判的比例越高，实际会低一些" in hint
+    assert hint.split("\n") == [
+        "怎么收集：每期按卖家精灵全市场名单挑可能在涨的商品拉日数据，在其中的增长商品（突然爆火、新品潜力、上升中）里判断。",
+        "怎么判断：加速倍数 = 近 7 天日均 ÷ 近 28 天在售日均（断货的日子不算；子类目整体在涨的先扣掉整体涨幅）。"
+        "≥2 倍是一周翻倍；1.4~2 倍是一周涨四成，带“月度增长尚未验证”“降价驱动”标签的不收。",
+        "回测：卖爆 = 之后第 2 个月的 30 天销量 ≥ 现在的 2 倍且 ≥300 件（一周翻倍的保持这周的速度就够）。2025-11~2026-08 每周倒推："
+        "一周翻倍 22%~32% 卖爆，一周涨四成 10%~12%，增长商品平均 5.1%；加速越猛越容易卖爆，每行见“回测卖爆”一列。"
+        "老品换链接单算（一周翻倍 45%、一周涨四成 24%）。样本偏乐观（只含 2026-10-23 还在名单上的商品），实际会低一些。",
+        "不判的：蓝海、数据陈旧、只有月度数据的；商品照样留在原来的板块里。"]
+    assert len(hint) < 500
+    # 本期留了排名改善名额的：怎么收集里写上
+    assert "拉日数据（另留 79 个名额给近 7 天排名改善 ≥20% 的），在其中" in render.sku_hint(cfg, [79, 64])
+    assert render.section_hints(cfg, rank=[79, 64])["sku"] == render.sku_hint(cfg, [79, 64])
+    # 小窗：开头加粗、一行一项，最后一行是本期的判定 / 列出个数
+    pop2 = render._sku_pop(cur, hint, 5, "2026-11-16", None, cfg)
+    assert '<p class="hint lines"><b>怎么收集：</b>每期按卖家精灵' in pop2 and "\n<b>本期：</b>共 5 个。</p>" in pop2
+    assert render.hint_lines("说明一句话，没有短开头：这里") == "说明一句话，没有短开头：这里"
     for old in ("把握大", "待观察", "爆发苗头", "稳步在涨", "刚起势"):
         assert old not in hint and old not in pop and old not in body, old
     js = render.SKU_JS
@@ -236,8 +240,7 @@ def test_live_hit_rate_is_tracked_two_months_after_each_pick(cfg):
     assert (live["total"], live["waiting"], live["next_due"], live["done"]) == \
         (3, 3, "2027-01-24", {"一周翻倍": [0, 0], "一周涨四成": [0, 0]})
     text = render.sku_live_text(live, cfg)
-    assert text.startswith("实盘跟踪：2026-11-16 这期起每期记下判定的潜力SKU（含简单款；同一个商品还在等结果时再入选不另记），"
-                           "第 2 个月（判定后第 27~56 天）结束再过 14 天（最近几天的数卖家精灵还会改）、用那以后拉到的日数据看卖爆没有")
+    assert text == "实盘跟踪：2026-11-16 起每期记下判定的潜力SKU，第 2 个月结束再过 14 天按回测的标准看卖爆没有。已记 3 个，还没有到期的，最早 2027-01-24 出结果。"
     assert text.endswith("已记 3 个，还没有到期的，最早 2027-01-24 出结果。")
     # 重新生成本期：本期记的先去掉再按现在的规则重记（M2 不再算）
     del items[2]["sku"]
@@ -464,11 +467,8 @@ def test_each_row_shows_the_backtest_rate_of_its_own_acceleration_band(cfg):
     assert render.sku_band_text(old["sku"], cfg, old) == "15%~18%（上架一年以上的 8.9%）"
     assert render.sku_band_text(old["sku"], cfg) == "15%~18%"
     assert render.sku_band_text({**relist, "tier": "一周涨四成"}, cfg, _item("R", age_days=400)) == "单算 24%（上架一年以上的 8.9%）"
-    hint = render.sku_hint(cfg)
-    assert "档里加速越猛越容易卖爆：×1.4~1.5 8.9%~10%、×1.5~1.75 10%~11%、×1.75~2 15%~18%、×2~2.5 20%~25%、×2.5 以上 32%~63%（表格“回测卖爆”一列）。" in hint
-    assert ("同一档里还分得出的：一周涨四成里上架一年以上的 8.9%（其他 13%）；一周翻倍里近 30 天销量（表格那一列）≥600 件的 12%（其他 30%，"
-            "卖爆要翻倍，量大的难翻）、评论 500 条以上的 41%（其他 23%）。评分、价格分组后高低不一，分不出。") in hint
-    assert "评分、评论数、上架天数、价格都分不出谁更容易爆" not in hint
+    hint = render.sku_hint(cfg)  # 分段、同一档里分得出的比例只在“回测卖爆”一列写（2026-11-20 起提示里不再列）
+    assert "加速越猛越容易卖爆，每行见“回测卖爆”一列。" in hint and "×1.4~1.5" not in hint
     assert render.SKU_HEAD[8] == "回测卖爆" and len(render.SKU_HEAD) == 14
     assert "回测卖爆" in render._method(cfg)
 
@@ -530,5 +530,5 @@ def test_big_volume_note_uses_the_table_units(cfg):
     near = _item("N", last7_avg=50.0, recent_avg28=19.99)  # 599.7 件，表格显示 600 件
     near["sku"] = potential_sku.classify(near, s)
     assert render.sku_band_text(near["sku"], cfg, near) == "32%~63%（近30天≥600件的 12%）"
-    assert "一周翻倍里近 30 天销量（表格那一列）≥600 件的 12%（其他 30%，" in render.sku_hint(cfg)
+    assert render.sku_band_text(near["sku"], cfg) == "32%~63%"
 
