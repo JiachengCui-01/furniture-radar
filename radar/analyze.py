@@ -379,7 +379,7 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     if potential and potential.get("launch"):  # 潜力的第二条路：近期新上架、近 1~2 周就达到了突然爆火的门槛
         tags.append("新品爆发" if potential["from_zero"] else f"新品起量快（{potential['launch']}）")
     elif potential and potential.get("growth") is None:
-        tags.append("月度增长尚未验证（完整月份不足）")
+        tags.append("月度增长尚未验证（新品，完整月份不足）")  # 只有新品潜力（上架 ≤90 天）会这样：写明是因为新品
     if label == "fake" and surge:
         tags.insert(0, "假爆火嫌疑")
     tags.extend(fake["tags"])

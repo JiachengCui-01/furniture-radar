@@ -362,7 +362,8 @@ def test_tagged_items_are_kept_and_caveats_are_written(cfg):
     relist = _item("R1", relist={"old": "B0OLD"}, tags=["老品换链接（…）"])
     relist["sku"] = potential_sku.classify(relist, s)
     assert relist["sku"]["tier"] == "一周涨五成" and relist["sku"]["flags"] == ["老品换链接"]
-    assert render.sku_risks(top) == ["月度增长尚未验证"] and render.sku_risks(relist) == ["老品换链接"]
+    # 风险里写明是因为新品（2026-11-21 用户要）；卡片上的标签全文也写“新品”
+    assert render.sku_risks(top) == ["月度增长尚未验证（新品，完整月份不足）"] and render.sku_risks(relist) == ["老品换链接"]
     assert potential_sku.risk_notes(top["sku"], cfg) == [
         "月度增长尚未验证：新品完整月份还不够，看不出月度在涨；回测里一周翻倍的这类后续卖爆 8%，其他 25%"]
     assert potential_sku.risk_notes(m1["sku"], cfg) == [
@@ -371,7 +372,7 @@ def test_tagged_items_are_kept_and_caveats_are_written(cfg):
         "老品换链接：新链接还在起量、基数低，后续卖爆多半是回到老链接原来的量；"
         "回测里这类一周翻倍的 43%、一周涨五成的 29% 后续卖爆，不算进两档的比例"]
     row = render._sku_row(top, 0, cfg)
-    assert '<small class="rk" data-tip="月度增长尚未验证：新品完整月份还不够' in row and ">风险：月度增长尚未验证</small>" in row
+    assert '<small class="rk" data-tip="月度增长尚未验证：新品完整月份还不够' in row and ">风险：月度增长尚未验证（新品，完整月份不足）</small>" in row
     gloss = render._method(cfg)
     assert "接近不列的" not in gloss and "近 7 天日均 ÷ 近 28 天日均（都去掉大促日，断货的日子也算）" in gloss
 

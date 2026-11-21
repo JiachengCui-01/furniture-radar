@@ -46,7 +46,7 @@ def test_few_complete_months_are_disclosed_without_blocking_potential(cfg):
     rec = _rec([5] * 92 + [8] * 28, 4.5, available=(END - timedelta(days=90)).isoformat(), ratings=20)
     item = analyze.evaluate('NEW', rec, None, {}, cfg, END)
     assert item['label'] == 'potential'
-    assert '月度增长尚未验证（完整月份不足）' in item['tags']
+    assert '月度增长尚未验证（新品，完整月份不足）' in item['tags']
 
 
 def test_revision_cannot_compare_different_cohorts_or_divide_by_zero():

@@ -1060,7 +1060,7 @@ SKU_COLS = (
                               "没有的按同样顺序用规则拼"),
     ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）；另标：近 7 天里有大促日的“近7天含大促日”"
                          "（加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里这类后续卖爆少一截）、"
-                         "新品完整月份还不够的“月度增长尚未验证”、新链接还在起量的“老品换链接”（回测数单算）"),
+                         "新品完整月份还不够的“月度增长尚未验证（新品，完整月份不足）”、新链接还在起量的“老品换链接”（回测数单算）"),
     ("所在板块", 10, "text", "商品在报告里原来的板块"),
     ("判定依据", 34, "muted", "类型 + 最近一周加速多少"),
 )
@@ -1155,14 +1155,15 @@ def sku_reason(item: dict) -> str:
 def sku_risks(item: dict) -> list[str]:
     """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）；
     近 7 天里有大促日的另加“近7天含大促日”（potential_sku.PROMO，只在潜力SKU 里有），放最前；
-    再加潜力SKU 照收但要写明的（sku["flags"]：月度增长尚未验证、老品换链接，不是红色标签）。"""
+    再加潜力SKU 照收但要写明的（sku["flags"]：月度增长尚未验证、老品换链接，不是红色标签）。
+    月度增长尚未验证写成 potential_sku.UNVER_SHOW（写明是因为新品）。"""
     sku = item.get("sku") or {}
     out: list[str] = ([potential_sku.PROMO] if sku.get("promo") else []) + list(sku.get("flags") or [])
     for tag in item.get("tags") or []:
         head = tag_head(tag)
         if _tag_class(tag) == "warn" and head not in out:
             out.append(head)
-    return out
+    return [potential_sku.UNVER_SHOW if r == potential_sku.UNVER else r for r in out]
 
 
 def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
