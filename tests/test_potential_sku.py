@@ -200,9 +200,9 @@ def test_promo_days_in_last_week_are_a_risk_not_one_day_spikes(cfg):
     potential_sku.mark([mid], cfg, bf)
     assert potential_sku.promo_note(mid["sku"], cfg).endswith("回测里一周涨五成的这类后续卖爆 7%，近 7 天没有大促日的 10%")
     row = render._sku_row(star, 0, cfg)
-    assert f'data-tip="{note}"' in row and ">近7天含大促日、降价驱动</td>" in row
+    assert f'<small class="rk" data-tip="{note}">风险：近7天含大促日、降价驱动</small>' in row
     assert json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))[18] == "近7天含大促日、降价驱动"
-    assert "data-tip" not in render._sku_row(calm, 1, cfg).split('class="rk')[1]
+    assert 'class="rk"' not in render._sku_row(calm, 1, cfg)  # 没有风险的不写这一行
     sec = analyze.sections([star, calm], 0)
     ctx = {"title": "家具爆品雷达", "report_id": "2026-11-30", "as_of": "2026-11-30", "cfg": cfg,
            "sections": {**sec, "surge": [], "potential": [], "hot": [], "fake": [], "ocean": []},
@@ -371,7 +371,7 @@ def test_tagged_items_are_kept_and_caveats_are_written(cfg):
         "老品换链接：新链接还在起量、基数低，后续卖爆多半是回到老链接原来的量；"
         "回测里这类一周翻倍的 43%、一周涨五成的 29% 后续卖爆，不算进两档的比例"]
     row = render._sku_row(top, 0, cfg)
-    assert 'data-tip="月度增长尚未验证：新品完整月份还不够' in row and ">月度增长尚未验证</td>" in row
+    assert '<small class="rk" data-tip="月度增长尚未验证：新品完整月份还不够' in row and ">风险：月度增长尚未验证</small>" in row
     gloss = render._method(cfg)
     assert "接近不列的" not in gloss and "近 7 天日均 ÷ 近 28 天日均（都去掉大促日，断货的日子也算）" in gloss
 
@@ -442,7 +442,7 @@ def test_each_row_shows_the_backtest_rate_of_its_own_acceleration_band(cfg):
     assert render.sku_band_text(relist, cfg) == "单算 29%"
     item = _item("C", last7_avg=21.0)
     item["sku"] = potential_sku.classify(item, s)
-    assert '<td class="n">15%~24%</td>' in render._sku_row(item, 0, cfg)
+    assert '<td class="n bt">15%~24%</td>' in render._sku_row(item, 0, cfg)
     big = _item("G", last7_avg=50.0, recent_avg28=25.0, ratings=800)  # 近 30 天 750 件、评论 800 条的一周翻倍（×2.0）
     big["sku"] = potential_sku.classify(big, s)
     assert render.sku_band_text(big["sku"], cfg, big) == "15%~24%（近30天≥600件的 15%；评论500条以上的 41%）"
@@ -453,7 +453,7 @@ def test_each_row_shows_the_backtest_rate_of_its_own_acceleration_band(cfg):
     assert render.sku_band_text({**relist, "tier": "一周涨五成"}, cfg, _item("R", age_days=400)) == "单算 29%（上架一年以上的 7.8%）"
     hint = render.sku_hint(cfg)  # 分段、同一档里分得出的比例只在“回测卖爆”一列写
     assert "加速越猛越容易卖爆，每行见“回测卖爆”一列。" in hint and "×1.5~1.75" not in hint
-    assert render.SKU_HEAD[8] == "回测卖爆" and len(render.SKU_HEAD) == 14
+    assert render.SKU_HEAD[6] == "回测卖爆" and len(render.SKU_HEAD) == 9
     assert "回测卖爆" in render._method(cfg)
 
 
@@ -520,7 +520,7 @@ def test_blue_ocean_items_are_judged_but_stay_in_the_blue_ocean_board(cfg):
     assert [i["asin"] for i in sec["sku"]] == ["SEA", "M1"] and sec["counts"]["sku"] == 2
     assert [i["asin"] for i in sec["ocean"]] == ["SEA"] and not sec["potential"]  # 照样只在蓝海产品里
     row = render._sku_row(sea, 0, cfg)
-    assert '<td class="nd" data-tip=' in row and ">新品潜力<small>蓝海产品</small></td>" in row
+    assert '<td class="nc opt" data-tip=' in row and "<small>新品潜力</small><small>蓝海产品</small></td>" in row
     xl = json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))
     assert xl[6] == "新品潜力" and xl[-2] == "蓝海产品"
     # 复查：上期潜力SKU 里的蓝海产品，本期拉到了日数据（sku_tracked）但不再符合 → 还在追踪但不再符合，不是“没追踪”
@@ -528,3 +528,25 @@ def test_blue_ocean_items_are_judged_but_stay_in_the_blue_ocean_board(cfg):
     got = diff.compare(prev, {"M1": "watch"}, sku={"M1": ["一周涨五成", "上升中"]}, sku_tracked={"SEA"})["sku_check"]
     assert got["lost"] == {"SEA": "一周翻倍"} and got["gone"] == ["GONE"]
     assert diff.compare(prev, {"M1": "watch"}, sku={})["sku_check"]["gone"] == ["SEA", "GONE"]  # 不传时和以前一样
+
+
+def test_table_fits_the_popup_without_side_scrolling(cfg):
+    """2026-11-20 用户：小窗表格 14 列要左右拖，尽量都展示全。相关的并成一格（下面一行小字），9 列：
+    子类目下面写类型；近30天下面写销售额、月增量；近7天÷近28天下面写近14天的；回测卖爆括号里的另起小字；
+    评分下面写评论数、上架天数；风险写在“为什么值得看”下面（红字，鼠标停留写回测数）。下载的 Excel 列不变。"""
+    s = potential_sku.settings(cfg)
+    big = _item("G", last7_avg=50.0, recent_avg28=25.0, ratings=800, tags=["降价驱动"])
+    big["sku"] = potential_sku.classify(big, s)
+    row = render._sku_row(big, 0, cfg)
+    assert row.count("<td") == len(render.SKU_HEAD) == 9
+    assert render.SKU_HEAD == ("", "商品", "子类目 / 类型", "售价", "近30天 / 月增量", "近7天÷近28天", "回测卖爆", "评分 / 上架",
+                               "为什么值得看 / 风险")
+    assert ">床头柜<small>上升中</small></td>" in row
+    assert '<td class="n">750 件<small>$11 万</small><small>月增 $' in row
+    assert '<td class="n">×2.00<small>近14天 ×0.52</small></td>' in row
+    assert '<td class="n bt">15%~24%<small>近30天≥600件的 15%</small><small>评论500条以上的 41%</small></td>' in row
+    assert "★4.6<small>800 条</small><small>上架 200 天</small></td>" in row
+    assert row.endswith('<small class="rk">风险：降价驱动</small></td></tr>')
+    table = render._sku_table([big], cfg=cfg)
+    assert len(re.findall(r"<th[ >]", table)) == 9 and 'colspan="9"' in table
+    assert len(json.loads(re.search(r'data-xl="([^"]+)"', row).group(1).replace("&quot;", '"'))) == len(render.SKU_COLS)

@@ -440,17 +440,18 @@ z-index:3;background:var(--bg);padding:6px 0}
 .tools .cnt{color:var(--muted);margin-left:auto;font-size:12px}
 details.more-facts{margin-top:4px}
 /* 潜力SKU 表格（正文前几个 + 小窗全部，点一行展开卡片，可下载） */
-.skut td{vertical-align:middle}.skut th,.skut td.n,.skut td.nd{white-space:nowrap}
+.skut td{vertical-align:middle}.skut th,.skut td{padding:5px 6px}.skut th,.skut td.n{white-space:nowrap}
 .skut td.im{width:46px;padding:4px}.skut td.im img,.skut td.im .ph{width:40px;height:40px;object-fit:contain;background:var(--imgbg);border-radius:6px;border:1px solid var(--line)}
-.skut td.nm{width:170px;min-width:140px;max-width:170px;text-align:left;white-space:normal}.skut td.nm a{font-weight:600;text-decoration:none;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.35}.skut td.nm a:hover{color:var(--accent)}
+.skut td.nm{width:160px;min-width:130px;max-width:160px;text-align:left;white-space:normal}.skut td.nm a{font-weight:600;text-decoration:none;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.35}.skut td.nm a:hover{color:var(--accent)}
 .skut small{display:block;font-size:11.5px;color:var(--muted)}
-.skut td.nc{min-width:60px;max-width:96px;white-space:normal;word-break:keep-all;line-height:1.35}.skut td.why{min-width:140px;font-size:12.5px;line-height:1.45}
-.skut td.rk{font-size:12px;color:var(--fake)}
+.skut td.nc{min-width:60px;max-width:92px;white-space:normal;word-break:keep-all;line-height:1.35}.skut td.why{min-width:180px;font-size:12.5px;line-height:1.45}
+.skut td.bt{white-space:normal;max-width:118px}.skut td.bt small{word-break:keep-all}.skut small.rk{color:var(--fake);margin-top:2px}
 .skut tr.sr{cursor:pointer}.skut tr.sr:hover td{background:var(--row)}.skut tr.sr.open td{background:var(--row);border-bottom:0}
 .skut tr.sc>td{padding:0 0 10px;background:var(--row)}.skut tr.sc .card{margin:0}
 .tools .dl{font:inherit;font-size:13px;border:1px solid var(--sku);color:var(--sku);background:var(--card);border-radius:8px;padding:3px 10px;cursor:pointer}
 .tools .dl:disabled{opacity:.6;cursor:progress}
-@media (max-width:640px){.skut .opt{display:none}.skut td.nm{min-width:130px;width:150px}}
+@media (max-width:980px){.skut td.why{min-width:140px}.skut td.nm{width:136px;min-width:120px;max-width:136px}}
+@media (max-width:640px){.skut .opt{display:none}.skut td.nm{min-width:120px;width:140px}}
 """
 
 
@@ -1025,10 +1026,11 @@ def _gallery(cur: dict, cfg: dict) -> str:
 
 
 # ---------------- 潜力SKU（detect/potential_sku.py）：正文放前几个，小窗里是完整表格（筛选、排序、展开卡片、下载） ----------------
-SKU_HEAD = ("", "商品", "子类目", "类型", "售价", "近30天", "月增量", "近7天÷近28天", "回测卖爆", "近14天÷近28天", "上架", "评分",
-            "为什么值得看", "风险")
-SKU_OPT = {2, 9, 10, 11, 13}  # 手机上收起的列（子类目、近14天÷近28天、上架、评分、风险）
-SKU_NUM = range(4, 12)  # 右对齐的数字列（售价 ~ 评分）
+# 2026-11-20 用户：小窗里 14 列要左右拖，尽量都展示全 → 相关的并成一格（下面一行用小字），9 列放得下（小窗最宽 1040px）：
+# 子类目下面写类型、近30天下面写销售额和月增量、近7天÷近28天下面写近14天的、评分下面写评论数和上架天数、风险写在“为什么值得看”下面
+SKU_HEAD = ("", "商品", "子类目 / 类型", "售价", "近30天 / 月增量", "近7天÷近28天", "回测卖爆", "评分 / 上架", "为什么值得看 / 风险")
+SKU_OPT = {2, 7}  # 手机上收起的列（子类目 / 类型、评分 / 上架）
+SKU_NUM = range(3, 8)  # 右对齐的数字列（售价 ~ 评分 / 上架）
 # 下载的 Excel 表（SKU_JS 在网页里生成 .xlsx）：(表头, 列宽（字符）, 样式, 说明)。样式决定单元格格式：img = 嵌入主图，
 # title / link = [文字, 网址] 带超链接（title 深色字、link 蓝字），tier / kind 按报告配色，price / int / money / delta / bar / ratio / days / rating 是数字格式
 # （不是数字的写成灰字，如“无法估算”），bar 另画条形图；说明写进第二张“说明”表，没有说明的列不列
@@ -1188,25 +1190,26 @@ def _sku_row(item: dict, n: int, cfg: dict | None = None) -> str:
             "price": item.get("price"), "a7": a7, "a14": a14, "age": item.get("age_days"), "rating": item.get("rating"), "i": n,
             "xl": json.dumps(xl, ensure_ascii=False)}
     attrs = "".join(f' data-{k}="{esc(v)}"' for k, v in data.items() if v not in (None, ""))
-    rating = f"★{item['rating']}<small>{fmt_int(item['ratings'])} 条</small>" if item.get("rating") is not None else "—"
-    age = f"{item['age_days']} 天" if item.get("age_days") is not None else "—"
+    rating = (f"★{item['rating']}<small>{fmt_int(item['ratings'])} 条</small>" if item.get("rating") is not None else "—") \
+        + (f"<small>上架 {item['age_days']} 天</small>" if item.get("age_days") is not None else "")
+    band_main, _, band_also = (band_text or "—").partition("（")  # 括号里“同一档里分得出的”放到下面几行小字
+    band = esc(band_main) + "".join(f"<small>{esc(x)}</small>" for x in band_also.rstrip("）").split("；") if x)
+    tip = f' data-tip="{esc("。".join(notes))}"' if notes else ""  # 鼠标停在风险上：各自的回测数
+    risk = f'<small class="rk"{tip}>风险：{esc("、".join(risks))}</small>' if risks else ""
     cells = [  # (class, 属性, 内容)；SKU_OPT 里的列手机上收起
         ("im", "", _img(item, 100)),
         ("nm", "", f'<a href="{amazon(item["asin"])}" {LINK}>{esc(short_name(item, 48))}</a>'
                    f'<small>{esc(item.get("brand") or "")} · {esc(item["asin"])}</small>'),
-        ("nc", "", esc(node).replace("、", "、<wbr>")),  # 只在顿号处换行
-        ("nd", f' data-tip="{esc(basis)}"', esc(sku["kind"]) + ("<small>蓝海产品</small>" if sku.get("ocean") else "")),
-        # 档（一周翻倍 / 一周涨五成）看上面的筛选、下载的表格“档”一列，这里不再打紫色标签；蓝海产品（只在蓝海产品里列）下面写明
+        # 子类目只在顿号处换行；下面写类型（档看上面的筛选、下载的表格“档”一列，不打紫色标签），蓝海产品（只在蓝海产品里列）再写一行
+        ("nc", f' data-tip="{esc(basis)}"', esc(node).replace("、", "、<wbr>") + f"<small>{esc(sku['kind'])}</small>"
+                                            + ("<small>蓝海产品</small>" if sku.get("ocean") else "")),
         ("n", "", fmt_price(item.get("price"))),
-        ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"),
-        ("n", "", esc(increment_text(item))),
-        ("n", "", "—" if a7 is None else f"×{a7:.2f}"),
-        ("n", "", esc(band_text) or "—"),
-        ("n", "", "—" if a14 is None else f"×{a14:.2f}"),
-        ("n", "", age),
+        ("n", "", f"{fmt_int(units) if units else '—'} 件<small>{esc(directions.money_text(rev)) if rev else ''}</small>"
+                  f"<small>月增 {esc(increment_text(item))}</small>"),
+        ("n", "", ("—" if a7 is None else f"×{a7:.2f}") + ("" if a14 is None else f"<small>近14天 ×{a14:.2f}</small>")),
+        ("n bt", "", band),
         ("n", "", rating),
-        ("why", "", esc(reason)),
-        ("rk", f' data-tip="{esc("。".join(notes))}"' if notes else "", esc("、".join(risks))),
+        ("why", "", esc(reason) + risk),
     ]
     tds = []
     for i, (klass, extra, inner) in enumerate(cells):
