@@ -11,7 +11,8 @@ from .detect import fakehot, traits
 from .detect.design import main_material
 from .discovery import clean_text, hobby_node
 from .detect.rules import (current_rating, evaluate_hot, evaluate_potential, launch_potential, low_rating,
-                           momentum, new_days, rating_floor, relist_ramp, relist_text, relisted, surge_candidates)
+                           momentum, new_days, rating_floor, relist_ramp, relist_text, relisted, surge_candidates,
+                           unsteady_tag)
 from .series import Daily, baseline_average, closed_months, mean, median
 
 def display_name(brand: str, title: str) -> str:
@@ -385,6 +386,9 @@ def evaluate(asin: str, rec: dict, disc_row: dict | None, stats: dict, cfg: dict
     tags.extend(fake["tags"])
     if stale:
         tags.append("数据陈旧")
+    unsteady = None if low else unsteady_tag(rating, n_ratings, th)
+    if unsteady:  # 评论不到 unsteady_ratings 条：照收，写明评分还不稳（潜力SKU 的风险里也写）
+        tags.append(unsteady)
 
     obs = (rec.get("obs") or [{}])[-1]
     months = closed_months(rec.get("months") or [], as_of)
@@ -555,6 +559,10 @@ def analyze(state: dict, disc: dict | None, pool: list[str], cfg: dict, today: d
     cands, niches = blueocean.scan(state, today, cfg)
     ocean, judged_ocean = blueocean.mark(items, cands)
     ocean_extra = blueocean.list_items(state, cands, judged_ocean, today)
+    for item in ocean_extra:  # 只有名单数据的蓝海卡片：评论太少的同样写明（追踪商品在 evaluate 里标）
+        unsteady = unsteady_tag(item.get("rating"), item.get("ratings"), th)
+        if unsteady:
+            item["tags"].append(unsteady)
     ocean.update(niches=niches, list_only=len(ocean_extra))
     # 蓝海产品只在蓝海产品里列出（2026-11-07 用户：突然爆火、潜力里都不要有）：判过的蓝海产品从本期商品里拿出来，
     # 和只有名单数据的一样做成蓝海卡片（ocean_extra：不进任何板块、增长商品、开发方向、外观与工艺、全部追踪商品、与上期对比）；
@@ -881,7 +889,8 @@ def monthly_hot_items(state: dict, disc: dict | None, stats: dict, cfg: dict, da
             "age_days": clock.days_between(clock.parse_day(p.get("available")), data_date),
             "as_of": None, "stale": False, "label": label, "label_cn": LABEL_CN[label],
             "tags": ["只有月度数据（不在追踪池：没有走势图，不判回落；异常信号只看留评率和评论抽查）"]
-                    + (["长期头部"] if label == "fake" else []) + fake["tags"],
+                    + (["长期头部"] if label == "fake" else []) + fake["tags"]
+                    + [t for t in [unsteady_tag(rating, n_ratings, th)] if t],  # 评论太少的写明（同追踪商品）
             "surge": None, "restock": None, "rising": None, "material": main_material(title), "hot": hot,
             "potential": None, "fake": fake, "relist": None, "spark": [], "spark_start": None,
             "monthly": [[k, u] for k, u, *_ in months], "recent_avg7": None, "last7_avg": None, "recent_avg28": round(recent, 2),

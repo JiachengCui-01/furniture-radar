@@ -377,6 +377,39 @@ def test_tagged_items_are_kept_and_caveats_are_written(cfg):
     assert "接近不列的" not in gloss and "近 7 天日均 ÷ 近 28 天日均（都去掉大促日，断货的日子也算）" in gloss
 
 
+def test_few_reviews_are_kept_and_written_as_a_risk(cfg):
+    """2026-11-23 用户要（照收、风险里写明）：评论不到 5 条的潜力SKU 风险写整句“评论仅 N 条，评分还不稳”（表格、Excel、钉钉），
+    鼠标停留写回测个数；不再另写卡片短名“评论仅 N 条”。实例：Furinno 梳妆台 11-16 是 5.0 分 / 2 条，一周后亚马逊 3.9 分 / 5 条。"""
+    from radar.detect.rules import unsteady_tag
+    from radar import narrative
+    s = potential_sku.settings(cfg)
+    tag = unsteady_tag(5.0, 2, cfg["thresholds"])
+    few = _item("F1", label="potential", rising=None, rating=5.0, ratings=2,
+                tags=["月度增长尚未验证（新品，完整月份不足）", tag])
+    few["sku"] = potential_sku.classify(few, s)
+    assert few["sku"]["tier"] == "一周涨五成" and few["sku"]["unsteady"] == "评论仅 2 条，评分还不稳"
+    assert few["sku"]["flags"] == ["月度增长尚未验证"]  # 实盘记录的 flags 不变（不影响回测口径的比例）
+    assert render.sku_risks(few) == ["月度增长尚未验证（新品，完整月份不足）", "评论仅 2 条，评分还不稳"]
+    notes = potential_sku.risk_notes(few["sku"], cfg)
+    assert notes[-1] == ("评论仅 2 条，评分还不稳：几条评论的评分说明不了什么，之后几条差评就可能掉到评分门槛以下；"
+                         "回测（各期评论变多了的商品）之后掉到 4.0 以下：评论 1~4 条的 3/20 个、评论 5~9 条的 1/21 个、10 条以上的 0/56 个")
+    row = render._sku_row(few, 0, cfg)
+    assert "风险：月度增长尚未验证（新品，完整月份不足）、评论仅 2 条，评分还不稳</small>" in row
+    xl = json.loads(re.search(r'data-xl="([^"]*)"', row).group(1).replace("&quot;", '"'))
+    assert "评论仅 2 条，评分还不稳" in xl[18]
+    none = _item("N1", label="potential", rising=None, rating=None, ratings=None, tags=[unsteady_tag(None, None, cfg["thresholds"])])
+    none["sku"] = potential_sku.classify(none, s)
+    assert render.sku_risks(none) == ["还没有评分"]
+    calm = _item("C1")
+    calm["sku"] = potential_sku.classify(calm, s)
+    assert "unsteady" not in calm["sku"] and render.sku_risks(calm) == []
+    # 卡片上是红色标签，本期要点的风险提醒归进“评论太少”
+    assert render._tag_class(tag) == "warn" and narrative.risk_groups_of({"tags": [tag]}) == {"few": tag}
+    assert narrative.risk_groups_of({"tags": [unsteady_tag(None, None, cfg["thresholds"])]}).keys() == {"few"}
+    gloss = render._method(cfg)
+    assert "评分还不稳" in gloss
+
+
 def test_base_is_the_28_day_average_with_stockout_days(cfg):
     """2026-11-20 恢复成 11-17 的判定：加速倍数和卖爆的基数是近 28 天日均（analyze 的 recent_avg28，断货的日子也算进去，
     同表格“近30天”那一列），11-19~11-20 按在售日算过。"""

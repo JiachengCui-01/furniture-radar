@@ -14,6 +14,7 @@ import httpx
 from . import log, materials, shipping
 from .analyze import display_name
 from .detect import directions
+from .detect.rules import UNSTEADY_HEADS
 
 SYSTEM_PROMPT = """你是亚马逊美国站家具类目的产品设计顾问。下面是自动化系统已经计算好的本期监控结果（JSON）。
 请写报告“本期要点”里的“开发建议”：2~3 条可以用到不同品类上的设计手法。每条一行，格式固定为
@@ -357,6 +358,7 @@ RISK_GROUPS = (
      ("最近回落", "近 7 天没涨够", "短时脉冲", "上涨形态不稳")),
     ("tide", "随大盘", "所在品类整体都在涨，增长不全是它自己的", ("随大盘",)),
     ("monthly", "只有月度数据", "不在日数据追踪里：没有走势图、不判回落，只按月度名单判断", ("只有月度数据",)),
+    ("few", "评论太少", "评论太少（或还没有评分），评分还不稳：之后几条差评就可能跌破评分门槛，照收、写明", UNSTEADY_HEADS),
 )
 WARN_WORDS = ("假爆火", "降价", "陈旧", "脉冲", "断货", "评分", "回落", "不稳定", "拉动", "还会被改", "变体变多",
               "数据可能有误", "没有日数据", "没涨够")  # 卡片上标成红色的标签（render._tag_class）

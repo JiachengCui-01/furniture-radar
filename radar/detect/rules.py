@@ -34,6 +34,29 @@ def low_rating(rating: float | None, ratings: float | None, th: dict) -> bool:
     return bool(floor) and bool(rating) and rating < floor
 
 
+UNSTEADY_HEADS = ("评论仅", "还没有评分")  # unsteady_tag 的开头（本期要点风险提醒按它归类）
+
+
+def unsteady_tag(rating: float | None, ratings: float | None, th: dict) -> str | None:
+    """评论不到 unsteady_ratings 条的：照收，标“评论仅 N 条，评分还不稳”；卖家精灵没有评分的（新品还没有评论）标“还没有评分”
+    （2026-11-23 用户要，不剔除）。几条评论的评分说明不了什么：之后再来几条差评就可能掉到 4.0 以下。
+    回测数见 config.yaml unsteady_backtest。有评分、没有评论数的看不出几条，不标。"""
+    need = int(th.get("unsteady_ratings") or 0)
+    if not need:
+        return None
+    if rating is None and not ratings:
+        return f"还没有评分（卖家精灵没有它的评分，评论不到 {need} 条的照收、写明）"
+    if ratings is None or ratings >= need:
+        return None
+    return (f"评论仅 {int(ratings)} 条，评分还不稳（评论不到 {need} 条，之后几条差评就可能掉到 "
+            f"{float(th.get('min_rating') or 4.0):.1f} 以下，照收、写明）")
+
+
+def unsteady_short(tag: str) -> str:
+    """潜力SKU 风险格、钉钉里写的：括号前的整句（“评论仅 2 条，评分还不稳”），不只到逗号。"""
+    return tag.split("（", 1)[0]
+
+
 def relisted(d: Daily | None, as_of_idx: int | None, ratings: float | None, age: int | None,
              cfg: dict, check: dict | None = None) -> dict | None:
     """老品换链接：新子体挂进老父体（或老品换了新 ASIN），继承了评论和排名，上架天数不代表商品是新的。

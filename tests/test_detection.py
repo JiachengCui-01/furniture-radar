@@ -6,7 +6,7 @@ import pytest
 from radar import analyze
 from radar.detect import fakehot
 from radar.detect.rules import (current_rating, evaluate_hot, evaluate_potential, evaluate_surge, low_rating,
-                                rating_floor)
+                                rating_floor, unsteady_tag)
 from radar.series import Daily, find_pulses
 from radar.verify import summarize_reviews
 
@@ -343,6 +343,29 @@ def test_few_reviews_need_a_higher_rating(cfg):
     by_asin = {i["asin"]: i for i in analyze.analyze(state, None, ["B1", "B2"], cfg, END)["items"]}
     assert by_asin["B1"]["label"] == "low" and by_asin["B1"]["tags"][0] == "评论仅 30 条，评分 4.1 低于 4.2"
     assert by_asin["B2"]["label"] == "surge"
+
+
+def test_very_few_reviews_are_kept_with_a_warning(cfg):
+    """2026-11-23 用户要（照收、写明，不剔除）：Furinno 梳妆台 11-16 卖家精灵是 5.0 分 / 2 条，一周后亚马逊 3.9 分 / 5 条。
+    评论不到 unsteady_ratings（5）条的照样上榜，标红色的“评论仅 N 条，评分还不稳”；卖家精灵没有评分的标“还没有评分”；
+    已经评分不达标的只写低分那条，不再另标。"""
+    th = cfg["thresholds"]
+    assert unsteady_tag(5.0, 2, th).startswith("评论仅 2 条，评分还不稳（评论不到 5 条")
+    assert unsteady_tag(4.6, 4, th).startswith("评论仅 4 条，评分还不稳")
+    assert unsteady_tag(4.6, 5, th) is None and unsteady_tag(4.6, 300, th) is None
+    assert unsteady_tag(None, None, th).startswith("还没有评分（")
+    assert unsteady_tag(4.5, None, th) is None  # 有评分、没有评论数：看不出几条，不标
+    assert unsteady_tag(5.0, 2, {**th, "unsteady_ratings": 0}) is None
+    surge = [5] * 110 + [18] * 10
+    state = {"asins": {"FEW": _rec(surge, 5.0, ratings=2), "NONE": _rec(surge, None, ratings=None),
+                       "OK": _rec(surge, 4.5, ratings=5), "LOW": _rec(surge, 3.9, ratings=2)}}
+    by = {i["asin"]: i for i in analyze.analyze(state, None, list(state["asins"]), cfg, END)["items"]}
+    assert by["FEW"]["label"] == by["NONE"]["label"] == by["OK"]["label"] == "surge"  # 照收
+    assert [t for t in by["FEW"]["tags"] if t.startswith("评论仅")] == [unsteady_tag(5.0, 2, th)]
+    assert any(t.startswith("还没有评分（") for t in by["NONE"]["tags"])
+    assert not any(t.startswith(("评论仅", "还没有评分")) for t in by["OK"]["tags"])
+    assert by["LOW"]["label"] == "low" and by["LOW"]["tags"][0] == "评论仅 2 条，评分 3.9 低于 4.2"
+    assert not any("还不稳" in t for t in by["LOW"]["tags"])
 
 
 # ---------------------------------------------------------------- 假爆火 ----

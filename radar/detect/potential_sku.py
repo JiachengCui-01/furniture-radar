@@ -53,6 +53,7 @@ from datetime import date, timedelta
 
 from .. import clock
 from ..series import Daily
+from .rules import UNSTEADY_HEADS, unsteady_short
 
 TOP, MID = "一周翻倍", "一周涨五成"
 # 别的叫法 → 现在的：2026-11-20 有几个小时线在 ×1.4、叫一周涨四成，又恢复成 ×1.5 的一周涨五成。实盘记录、runs 里上期的潜力SKU 存的是名字；
@@ -140,6 +141,9 @@ def classify(item: dict, s: dict, events=()) -> dict | None:
            "promo": promo_days(item.get("as_of"), events) or None, "flags": flags}
     if item.get("ocean"):  # 蓝海产品只在蓝海产品里列（不进突然爆火、新品潜力、增长商品），清单上写明在哪
         out["ocean"] = True
+    unsteady = next((t for t in item.get("tags") or [] if t.startswith(UNSTEADY_HEADS)), None)
+    if unsteady:  # 评论太少（analyze 打的标签）：照收，风险里写“评论仅 N 条，评分还不稳”（2026-11-23 用户要）
+        out["unsteady"] = unsteady_short(unsteady)
     return out
 
 
@@ -224,7 +228,16 @@ def risk_notes(sku: dict, cfg: dict) -> list[str]:
         r = bt.get("relist")
         out.append("老品换链接：新链接还在起量、基数低，后续卖爆多半是回到老链接原来的量"
                    + (f"；回测里这类一周翻倍的 {r[0]:.0%}、一周涨五成的 {r[1]:.0%} 后续卖爆，不算进两档的比例" if r else ""))
+    if sku.get("unsteady"):
+        out.append(f"{sku['unsteady']}：几条评论的评分说明不了什么，之后几条差评就可能掉到评分门槛以下{unsteady_backtest(cfg)}")
     return out
+
+
+def unsteady_backtest(cfg: dict) -> str:
+    """评论太少的回测数（thresholds.unsteady_backtest：[评论下限, 上限, 之后 <4.0 的个数, 商品数]），样本少，写个数。"""
+    rows = (cfg.get("thresholds") or {}).get("unsteady_backtest") or []
+    parts = [f"评论 {lo}~{hi} 条的 {k}/{n} 个" if hi else f"{lo} 条以上的 {k}/{n} 个" for lo, hi, k, n in rows]
+    return ("；回测（各期评论变多了的商品）之后掉到 4.0 以下：" + "、".join(parts)) if parts else ""
 
 
 # ---------------- 实盘命中率：判定后第 2 个月到底卖爆没有（说明见文件开头） ----------------

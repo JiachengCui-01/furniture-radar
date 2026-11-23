@@ -18,7 +18,7 @@ import re
 from .. import materials, narrative, shipping
 from ..analyze import display_name, growth_kind, increment_note, usable_revision
 from .. import cardnotes
-from ..detect import blueocean, directions, events, potential_sku, showcase
+from ..detect import blueocean, directions, events, potential_sku, rules, showcase
 from ..detect.market import EDGES as market_edges
 from ..tracking import REASON_CN
 from ..vision import small_image
@@ -1060,7 +1060,8 @@ SKU_COLS = (
                               "没有的按同样顺序用规则拼"),
     ("风险标签", 14, "risk", "卡片上红色标签的短名（降价驱动、数据可能有问题……）；另标：近 7 天里有大促日的“近7天含大促日”"
                          "（加速倍数是去掉大促日算的，剩下的是大促前后几天，回测里这类后续卖爆少一截）、"
-                         "新品完整月份还不够的“月度增长尚未验证（新品，完整月份不足）”、新链接还在起量的“老品换链接”（回测数单算）"),
+                         "新品完整月份还不够的“月度增长尚未验证（新品，完整月份不足）”、新链接还在起量的“老品换链接”（回测数单算）、"
+                         "评论太少的“评论仅 N 条，评分还不稳”（还没有评分的写“还没有评分”：几条评论的评分说明不了什么）"),
     ("所在板块", 10, "text", "商品在报告里原来的板块"),
     ("判定依据", 34, "muted", "类型 + 最近一周加速多少"),
 )
@@ -1156,12 +1157,15 @@ def sku_risks(item: dict) -> list[str]:
     """红色标签的短名（降价驱动、数据可能有问题、待修订……），同卡片上的颜色口径（_tag_class）；
     近 7 天里有大促日的另加“近7天含大促日”（potential_sku.PROMO，只在潜力SKU 里有），放最前；
     再加潜力SKU 照收但要写明的（sku["flags"]：月度增长尚未验证、老品换链接，不是红色标签）。
-    月度增长尚未验证写成 potential_sku.UNVER_SHOW（写明是因为新品）。"""
+    月度增长尚未验证写成 potential_sku.UNVER_SHOW（写明是因为新品）。
+    评论太少的写整句“评论仅 N 条，评分还不稳”（sku["unsteady"]），放在别的红色标签前面。"""
     sku = item.get("sku") or {}
     out: list[str] = ([potential_sku.PROMO] if sku.get("promo") else []) + list(sku.get("flags") or [])
+    if sku.get("unsteady"):
+        out.append(sku["unsteady"])
     for tag in item.get("tags") or []:
         head = tag_head(tag)
-        if _tag_class(tag) == "warn" and head not in out:
+        if _tag_class(tag) == "warn" and head not in out and not tag.startswith(rules.UNSTEADY_HEADS):
             out.append(head)
     return [potential_sku.UNVER_SHOW if r == potential_sku.UNVER else r for r in out]
 
@@ -1857,7 +1861,7 @@ def _dir_cards(tr: dict, cfg: dict, cur: dict, focus: list[dict], by_asin: dict)
 
 
 RISK_ICON = {"fake": "fake", "suspect": "fake", "price": "price", "data": "data", "base": "scale", "relist": "link", "deal": "clock",
-             "weak": "down", "tide": "waves", "monthly": "cal", "other": "risk"}
+             "weak": "down", "tide": "waves", "monthly": "cal", "few": "risk", "other": "risk"}
 WHERE_CN = {"surge": "突然爆火", "potential": "新品潜力", "hot": "持续热销", "ocean": "蓝海产品", "growth": "增长商品", "fake": "异常信号"}
 RISK_CHIPS = 3  # 一类不超过几个商品时写品名，多了只放小图（悬停看品名、所在板块和标签）
 RISK_SHOW = 16  # 小图多于这么多时，其余的折叠
@@ -2060,6 +2064,9 @@ def _method(cfg: dict, repo_url: str = "") -> str:
         ("品类大盘", "子类目整体在涨时，增长倍数先除以大盘倍数再比门槛"),
         ("评分门槛", f"评分 <{th['min_rating']}（评论不到 {th['few_ratings']} 条时 <{th['few_ratings_min_rating']}）的不进任何板块"),
     ]
+    if th.get("unsteady_ratings"):
+        rows.append(("评分还不稳", f"评论不到 {int(th['unsteady_ratings'])} 条（或卖家精灵还没有评分）的照收，卡片上标“评论仅 N 条，评分还不稳”"
+                                f"（或“还没有评分”），潜力SKU 的风险里也写：几条评论的评分说明不了什么，之后几条差评就可能跌破评分门槛"))
     small = cfg["scope"].get("small_item") or {}
     if small:
         dims = " × ".join(f"{v:g}" for v in small.get("max_dims") or ())
